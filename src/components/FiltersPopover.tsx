@@ -2,12 +2,20 @@
 import { useMemo, useState, type ReactNode, type RefObject } from 'react';
 import type { FilterOption } from '../types/manifest';
 import { useExplorerStore } from '../stores/explorer';
+import {
+  FUZZINESS_MAX,
+  FUZZINESS_MIN,
+  FUZZINESS_STEP,
+  fuzzinessLevel,
+  useSettingsStore,
+} from '../stores/settings';
 import { CheckIcon, ChevronRightIcon, SearchIcon } from '../ui/Icons';
 import { Popover } from '../ui/Popover';
 import {
   clearQueryFilterTokens,
   hasQueryToken,
-  toggleQueryToken,
+  toggleQueryTokenInGroup,
+  type FilterGroupId,
 } from '../utils/queryTokens';
 import styles from './FiltersPopover.module.scss';
 
@@ -178,6 +186,11 @@ export function FiltersPopover({
   const filterCatalog = useExplorerStore((state) => state.filterCatalog);
   const includeUnnamed = useExplorerStore((state) => state.filters.includeUnnamed);
 
+  const fuzzySearch = useSettingsStore((state) => state.fuzzySearch);
+  const fuzziness = useSettingsStore((state) => state.fuzziness);
+  const setFuzzySearch = useSettingsStore((state) => state.setFuzzySearch);
+  const setFuzziness = useSettingsStore((state) => state.setFuzziness);
+
   // `FilterCatalog.seasons` lands from a parallel change; read it defensively
   // so this file compiles cleanly no matter which side merges first.
   const seasons: readonly FilterOption[] =
@@ -214,8 +227,11 @@ export function FiltersPopover({
   // Seasons without a computed count are kept (treated as non-empty).
   const visibleSeasons = seasons.filter((option) => (option.count ?? 1) > 0);
 
-  function toggleToken(token: string): void {
-    setQuery(toggleQueryToken(query, token));
+  const fuzzinessPercent = Math.round(fuzziness * 100);
+  const fuzzinessTier = fuzzinessLevel(fuzziness);
+
+  function toggleToken(token: string, groupId: FilterGroupId): void {
+    setQuery(toggleQueryTokenInGroup(query, token, groupId));
   }
 
   function handleReset(): void {
@@ -225,7 +241,11 @@ export function FiltersPopover({
     setSourceQuery('');
   }
 
-  function renderTokenChip(option: TokenOption, onToggle?: () => void): ReactNode {
+  function renderTokenChip(
+    option: TokenOption,
+    groupId: FilterGroupId,
+    onToggle?: () => void,
+  ): ReactNode {
     const selected = hasQueryToken(query, option.token);
     return (
       <button
@@ -235,7 +255,7 @@ export function FiltersPopover({
         aria-pressed={selected}
         title={option.token}
         onClick={() => {
-          toggleToken(option.token);
+          toggleToken(option.token, groupId);
           onToggle?.();
         }}
       >
@@ -254,11 +274,17 @@ export function FiltersPopover({
     );
   }
 
-  function renderChipGroup(title: string, options: readonly TokenOption[]): ReactNode {
+  function renderChipGroup(
+    title: string,
+    options: readonly TokenOption[],
+    groupId: FilterGroupId,
+  ): ReactNode {
     return (
       <section className={styles.group}>
         <h3 className={styles.groupTitle}>{title}</h3>
-        <div className={styles.chips}>{options.map((option) => renderTokenChip(option))}</div>
+        <div className={styles.chips}>
+          {options.map((option) => renderTokenChip(option, groupId))}
+        </div>
       </section>
     );
   }
@@ -266,6 +292,7 @@ export function FiltersPopover({
   function renderCollapsible(
     summary: string,
     options: readonly TokenOption[],
+    groupId: FilterGroupId,
   ): ReactNode {
     const hasSelected = options.some((option) => hasQueryToken(query, option.token));
     const isOpen = hasSelected || collapsibleOpen[summary] === true;
@@ -287,8 +314,10 @@ export function FiltersPopover({
         <div className={styles.collapsibleBody}>
           <div className={styles.chips}>
             {options.map((option) =>
-              renderTokenChip(option, () =>
-                setCollapsibleOpen((current) => ({ ...current, [summary]: true })),
+              renderTokenChip(
+                option,
+                groupId,
+                () => setCollapsibleOpen((current) => ({ ...current, [summary]: true })),
               ),
             )}
           </div>
@@ -314,54 +343,54 @@ export function FiltersPopover({
           </button>
         </div>
         <p className={styles.lede}>
-          Every chip writes its exact syntax into the search bar — edit, combine, and share
-          from there.
+          Chips in one section or together; sections and together — every chip writes its
+          exact syntax into the search bar to edit, combine, and share.
         </p>
 
         <div className={styles.columns}>
           <div className={styles.col}>
-            {renderChipGroup('Highlights & flags', HIGHLIGHT_OPTIONS)}
-            {renderChipGroup('Tier', TIER_OPTIONS)}
-            {renderChipGroup('Damage', DAMAGE_OPTIONS)}
+            {renderChipGroup('Highlights & flags', HIGHLIGHT_OPTIONS, 'highlights')}
+            {renderChipGroup('Tier', TIER_OPTIONS, 'tier')}
+            {renderChipGroup('Damage', DAMAGE_OPTIONS, 'damage')}
 
             <section className={styles.group}>
               <h3 className={styles.groupTitle}>Ammo &amp; slot</h3>
               <div className={styles.chips}>
-                {AMMO_OPTIONS.map((option) => renderTokenChip(option))}
+                {AMMO_OPTIONS.map((option) => renderTokenChip(option, 'ammo'))}
               </div>
               <div className={styles.chips}>
-                {SLOT_OPTIONS.map((option) => renderTokenChip(option))}
+                {SLOT_OPTIONS.map((option) => renderTokenChip(option, 'slot'))}
               </div>
             </section>
 
-            {renderChipGroup('Class', CLASS_OPTIONS)}
-            {renderChipGroup('Item type', TYPE_OPTIONS)}
+            {renderChipGroup('Class', CLASS_OPTIONS, 'class')}
+            {renderChipGroup('Item type', TYPE_OPTIONS, 'type')}
 
             <section className={styles.group}>
-              <h3 className={styles.groupTitle}>Weapon</h3>
-              {renderCollapsible('Weapon subtype', SUBTYPE_OPTIONS)}
+              {renderCollapsible('Weapon subtype', SUBTYPE_OPTIONS, 'subtype')}
             </section>
           </div>
 
           <div className={styles.col}>
             <section className={styles.group}>
-              <h3 className={styles.groupTitle}>Season / expansion</h3>
-              <div className={styles.chips}>{renderTokenChip(LATEST_SEASON_OPTION)}</div>
-              {visibleSeasons.length > 0 &&
-                renderCollapsible(
-                  'All seasons',
-                  visibleSeasons.map((option) => ({
+              {renderCollapsible(
+                'Season / expansion',
+                [
+                  LATEST_SEASON_OPTION,
+                  ...visibleSeasons.map((option) => ({
                     token: `season:${option.value}`,
                     label: option.label,
                     count: option.count,
                   })),
-                )}
+                ],
+                'season',
+              )}
             </section>
 
             <section className={styles.group}>
               <h3 className={styles.groupTitle}>Source</h3>
               <div className={styles.chips}>
-                {SOURCE_OPTIONS.map((option) => renderTokenChip(option))}
+                {SOURCE_OPTIONS.map((option) => renderTokenChip(option, 'source'))}
               </div>
               <div className={styles.searchWrap}>
                 <SearchIcon size={12} className={styles.searchIcon} />
@@ -388,7 +417,7 @@ export function FiltersPopover({
                         className={cx(styles.optionRow, selected && styles.categoryRowOn)}
                         aria-pressed={selected}
                         title={token}
-                        onClick={() => toggleToken(token)}
+                        onClick={() => toggleToken(token, 'source')}
                       >
                         <span className={styles.optionCheck} aria-hidden="true">
                           {selected && <CheckIcon size={11} />}
@@ -433,7 +462,7 @@ export function FiltersPopover({
                         className={cx(styles.optionRow, selected && styles.categoryRowOn)}
                         aria-pressed={selected}
                         title={token}
-                        onClick={() => toggleToken(token)}
+                        onClick={() => toggleToken(token, 'category')}
                       >
                         <span className={styles.optionCheck} aria-hidden="true">
                           {selected && <CheckIcon size={11} />}
@@ -463,12 +492,45 @@ export function FiltersPopover({
                 />
                 <span>Include unnamed definitions</span>
               </label>
+              <label className={styles.checkRow}>
+                <input
+                  type="checkbox"
+                  checked={fuzzySearch}
+                  onChange={(event) => setFuzzySearch(event.target.checked)}
+                />
+                <span>Fuzzy search (match typos)</span>
+              </label>
+              {fuzzySearch && (
+                <div className={styles.fuzzinessRow}>
+                  <div className={styles.fuzzinessHead}>
+                    <span className={styles.fuzzinessLabel}>Fuzziness</span>
+                    <span className={styles.fuzzinessReadout}>
+                      {fuzzinessPercent}% · {fuzzinessTier}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    className={styles.range}
+                    min={FUZZINESS_MIN}
+                    max={FUZZINESS_MAX}
+                    step={FUZZINESS_STEP}
+                    value={fuzziness}
+                    onChange={(event) => setFuzziness(Number(event.target.value))}
+                    aria-label="Search fuzziness"
+                    aria-valuetext={`${fuzzinessTier}, ${fuzzinessPercent}%`}
+                  />
+                  <div className={styles.fuzzinessScale} aria-hidden="true">
+                    <span>Strict</span>
+                    <span>Loose</span>
+                  </div>
+                </div>
+              )}
             </section>
           </div>
         </div>
 
         <div className={styles.hint}>
-          <code>tier:exotic damage:solar is:enhanced season:latest cat:"Hand Cannon"</code>
+          <code>(damage:solar or damage:arc) tier:exotic is:enhanced</code>
         </div>
       </div>
     </Popover>

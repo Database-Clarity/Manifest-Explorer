@@ -2,7 +2,9 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
+  type KeyboardEvent,
   type MouseEvent,
   type ReactNode,
 } from 'react';
@@ -97,7 +99,7 @@ function getCollapsedPeek(value: Record<string, unknown>, isArray: boolean): str
   return null;
 }
 
-function highlightText(text: string, needle: string): ReactNode {
+function highlightText(text: string, needle: string, active = false): ReactNode {
   if (!needle) {
     return text;
   }
@@ -109,7 +111,9 @@ function highlightText(text: string, needle: string): ReactNode {
   return (
     <>
       {text.slice(0, idx)}
-      <mark className={styles.match}>{text.slice(idx, idx + needle.length)}</mark>
+      <mark className={active ? `${styles.match} ${styles.matchActive}` : styles.match}>
+        {text.slice(idx, idx + needle.length)}
+      </mark>
       {text.slice(idx + needle.length)}
     </>
   );
@@ -221,6 +225,53 @@ function matchesFilter(key: string, value: unknown, filterLower: string, depth =
   return false;
 }
 
+interface FindMatch {
+  path: string;
+  ancestorPaths: string[];
+}
+
+function collectFindMatches(
+  data: Record<string, unknown>,
+  filterLower: string,
+): FindMatch[] {
+  const matches: FindMatch[] = [];
+
+  const visit = (
+    nodeKey: string,
+    path: string,
+    value: unknown,
+    ancestorPaths: string[],
+  ): void => {
+    const keyMatches = nodeKey.toLowerCase().includes(filterLower);
+    const valueMatches =
+      value === null
+        ? 'null'.includes(filterLower)
+        : typeof value === 'string'
+          ? value.toLowerCase().includes(filterLower)
+          : typeof value === 'number' || typeof value === 'boolean'
+            ? String(value).toLowerCase().includes(filterLower)
+            : false;
+
+    if (keyMatches || valueMatches) {
+      matches.push({ path, ancestorPaths });
+    }
+
+    if (Array.isArray(value)) {
+      value.forEach((childValue, index) => {
+        const childKey = String(index);
+        visit(childKey, `${path}[${childKey}]`, childValue, [...ancestorPaths, path]);
+      });
+    } else if (typeof value === 'object' && value !== null) {
+      Object.entries(value as Record<string, unknown>).forEach(([childKey, childValue]) => {
+        visit(childKey, `${path}.${childKey}`, childValue, [...ancestorPaths, path]);
+      });
+    }
+  };
+
+  Object.entries(data).forEach(([key, value]) => visit(key, key, value, []));
+  return matches;
+}
+
 interface InlineImagePreviewProps {
   path: string;
   imageScaling: ImageScalingMode;
@@ -305,6 +356,10 @@ interface NodeProps {
   value: unknown;
   depth: number;
   filterLower: string;
+  searchMode: 'filter' | 'find';
+  ancestorMatched?: boolean;
+  activeMatchPath: string | null;
+  expandedByFind: ReadonlySet<string>;
   expandGeneration: { mode: 'default' | 'expand' | 'collapse'; seq: number };
   expandedMap: Record<string, boolean>;
   onTogglePath: (path: string, nextOpen: boolean) => void;
@@ -323,6 +378,10 @@ function JsonNode({
   value,
   depth,
   filterLower,
+  searchMode,
+  ancestorMatched = false,
+  activeMatchPath,
+  expandedByFind,
   expandGeneration,
   expandedMap,
   onTogglePath,
@@ -333,33 +392,48 @@ function JsonNode({
   imageScaling,
   isArrayItem = false,
 }: NodeProps): ReactNode {
+  const selfKeyMatches = filterLower.length > 0 && nodeKey.toLowerCase().includes(filterLower);
+  const preserveSubtree =
+    searchMode === 'filter' && filterLower.length > 0 && (ancestorMatched || selfKeyMatches);
+  const isActiveMatch = searchMode === 'find' && path === activeMatchPath;
   const defaultExpanded =
     depth === 0 &&
     (nodeKey === 'displayProperties' || nodeKey === 'inventory' || nodeKey === 'equippingBlock');
 
   const manualOpen = expandedMap[path] ?? null;
 
+  const isObject = typeof value === 'object' && value !== null;
+  const isArray = Array.isArray(value);
+  const hasDescendantMatch =
+    searchMode === 'filter' &&
+    filterLower.length > 0 &&
+    !selfKeyMatches &&
+    !ancestorMatched &&
+    isObject &&
+    matchesFilter(nodeKey, value, filterLower);
+  const isAutoExpandedForSearch =
+    searchMode === 'filter'
+      ? filterLower.length > 0 && (selfKeyMatches || hasDescendantMatch)
+      : searchMode === 'find' && expandedByFind.has(path);
   const isExpanded =
-    filterLower.length > 0
-      ? true
-      : manualOpen !== null
-        ? manualOpen
+    manualOpen !== null
+      ? manualOpen
+      : isAutoExpandedForSearch
+        ? true
         : expandGeneration.mode === 'expand'
           ? depth < 6
           : expandGeneration.mode === 'collapse'
             ? false
             : defaultExpanded;
 
-  const isObject = typeof value === 'object' && value !== null;
-  const isArray = Array.isArray(value);
-
   if (isObject) {
     const entries = isArray
       ? (value as unknown[]).map((v, idx) => [String(idx), v] as const)
       : Object.entries(value as Record<string, unknown>);
-    const filteredEntries = filterLower
-      ? entries.filter(([k, v]) => matchesFilter(k, v, filterLower))
-      : entries;
+    const filteredEntries =
+      searchMode === 'filter' && filterLower.length > 0 && !preserveSubtree
+        ? entries.filter(([k, v]) => matchesFilter(k, v, filterLower))
+        : entries;
 
     const swatch = !isArray ? asColorSwatch(value) : null;
     const objectKeyRef = isArray
@@ -401,7 +475,10 @@ function JsonNode({
 
     return (
       <div className={styles.node}>
-        <div className={styles.row}>
+        <div
+          className={isActiveMatch ? `${styles.row} ${styles.rowActiveMatch}` : styles.row}
+          data-json-path={isActiveMatch ? path : undefined}
+        >
           <button
             type="button"
             className={styles.toggleBtn}
@@ -419,7 +496,7 @@ function JsonNode({
               <span className={styles.emptyToggle} />
             )}
             <span className={isArrayItem ? styles.arrayIndex : styles.key}>
-              {highlightText(nodeKey, filterLower)}
+              {highlightText(nodeKey, filterLower, isActiveMatch && selfKeyMatches)}
             </span>
             <span className={styles.colon}>:</span>
           </button>
@@ -479,6 +556,10 @@ function JsonNode({
                   value={childValue}
                   depth={depth + 1}
                   filterLower={filterLower}
+                  searchMode={searchMode}
+                  ancestorMatched={preserveSubtree}
+                  activeMatchPath={activeMatchPath}
+                  expandedByFind={expandedByFind}
                   expandGeneration={expandGeneration}
                   expandedMap={expandedMap}
                   onTogglePath={onTogglePath}
@@ -557,28 +638,35 @@ function JsonNode({
 
   return (
     <div className={styles.node}>
-      <div className={styles.row}>
+      <div
+        className={isActiveMatch ? `${styles.row} ${styles.rowActiveMatch}` : styles.row}
+        data-json-path={isActiveMatch ? path : undefined}
+      >
         <span className={styles.leafSpacer} />
         <span className={styles.keyPair}>
           <span className={isArrayItem ? styles.arrayIndex : styles.key}>
-            {highlightText(nodeKey, filterLower)}
+            {highlightText(nodeKey, filterLower, isActiveMatch && selfKeyMatches)}
           </span>
           <span className={styles.colon}>:</span>
         </span>
 
         {typeof value === 'string' && (
           <span className={styles.valString}>
-            &quot;{highlightText(escapedString ?? value, filterLower)}&quot;
+            &quot;{highlightText(escapedString ?? value, filterLower, isActiveMatch)}&quot;
           </span>
         )}
         {typeof value === 'number' && (
-          <span className={styles.valNumber}>{highlightText(String(value), filterLower)}</span>
+          <span className={styles.valNumber}>
+            {highlightText(String(value), filterLower, isActiveMatch)}
+          </span>
         )}
         {typeof value === 'boolean' && (
-          <span className={styles.valBoolean}>{String(value)}</span>
+          <span className={styles.valBoolean}>
+            {highlightText(String(value), filterLower, isActiveMatch)}
+          </span>
         )}
         {(value === null || value === undefined) && (
-          <span className={styles.valNull}>null</span>
+          <span className={styles.valNull}>{highlightText('null', filterLower, isActiveMatch)}</span>
         )}
 
         {resolvedRef && (
@@ -658,6 +746,8 @@ export function JsonTree({
   imageScaling = 'sharp',
 }: JsonTreeProps): ReactNode {
   const [filter, setFilter] = useState(initialFilter ?? '');
+  const [searchMode, setSearchMode] = useState<'filter' | 'find'>('filter');
+  const [activeMatchIndex, setActiveMatchIndex] = useState(0);
   const [expandedMap, setExpandedMap] = useState<Record<string, boolean>>(
     () => initialExpanded ?? {},
   );
@@ -666,6 +756,7 @@ export function JsonTree({
     seq: number;
   }>({ mode: 'default', seq: 0 });
   const [lightbox, setLightbox] = useState<{ url: string; path: string } | null>(null);
+  const treeRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setFilter(initialFilter ?? '');
@@ -692,13 +783,76 @@ export function JsonTree({
 
   const filterLower = filter.trim().toLowerCase();
 
+  const findMatches = useMemo(
+    () => (filterLower ? collectFindMatches(data, filterLower) : []),
+    [data, filterLower],
+  );
+  const clampedActiveMatchIndex =
+    findMatches.length === 0
+      ? 0
+      : Math.min(activeMatchIndex, findMatches.length - 1);
+  const activeMatchPath = findMatches[clampedActiveMatchIndex]?.path ?? null;
+  const expandedByFind = useMemo(() => {
+    const paths = new Set<string>();
+    const visibleMatches = findMatches.slice(0, 200);
+    const activeMatch = findMatches[clampedActiveMatchIndex];
+    if (activeMatch && !visibleMatches.includes(activeMatch)) {
+      visibleMatches.push(activeMatch);
+    }
+    visibleMatches.forEach((match) => {
+      match.ancestorPaths.forEach((path) => paths.add(path));
+    });
+    return paths;
+  }, [clampedActiveMatchIndex, findMatches]);
+
+  useEffect(() => {
+    setActiveMatchIndex(0);
+  }, [filterLower, data]);
+
+  useEffect(() => {
+    if (searchMode !== 'find' || activeMatchPath === null) return;
+    const activeRow = Array.from(
+      treeRef.current?.querySelectorAll<HTMLElement>('[data-json-path]') ?? [],
+    ).find((row) => row.dataset.jsonPath === activeMatchPath);
+    activeRow?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+  }, [activeMatchPath, searchMode]);
+
   const rootEntries = useMemo(() => {
     const all = Object.entries(data);
-    if (!filterLower) {
+    if (searchMode === 'find' || !filterLower) {
       return all;
     }
     return all.filter(([key, val]) => matchesFilter(key, val, filterLower));
-  }, [data, filterLower]);
+  }, [data, filterLower, searchMode]);
+
+  const stepMatch = useCallback(
+    (direction: -1 | 1) => {
+      if (findMatches.length === 0) return;
+      setActiveMatchIndex(
+        (clampedActiveMatchIndex + direction + findMatches.length) % findMatches.length,
+      );
+    },
+    [clampedActiveMatchIndex, findMatches.length],
+  );
+
+  const handleSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>): void => {
+    if (event.key === 'Escape') {
+      if (filter.length > 0) {
+        handleFilterChange('');
+      } else {
+        event.currentTarget.blur();
+      }
+      return;
+    }
+    if (
+      searchMode === 'find' &&
+      findMatches.length > 0 &&
+      (event.key === 'Enter' || event.key === 'Tab')
+    ) {
+      event.preventDefault();
+      stepMatch(event.shiftKey ? -1 : 1);
+    }
+  };
 
   const handleOpenLightbox = useCallback((url: string, path: string) => {
     setLightbox({ url, path });
@@ -719,9 +873,59 @@ export function JsonTree({
           className={styles.filterInput}
           value={filter}
           onChange={(e) => handleFilterChange(e.target.value)}
-          placeholder="Filter keys or values…"
-          aria-label="Filter JSON keys or values"
+          onKeyDown={handleSearchKeyDown}
+          placeholder={searchMode === 'filter' ? 'Filter keys or values…' : 'Find in JSON…'}
+          aria-label={searchMode === 'filter' ? 'Filter JSON keys or values' : 'Find in JSON'}
         />
+        <div className={styles.searchModes} role="group" aria-label="JSON search mode">
+          <button
+            type="button"
+            className={styles.searchModeBtn}
+            aria-pressed={searchMode === 'filter'}
+            title="Filter — show only matching fields and matched dropdown sections"
+            onClick={() => setSearchMode('filter')}
+          >
+            Filter
+          </button>
+          <button
+            type="button"
+            className={styles.searchModeBtn}
+            aria-pressed={searchMode === 'find'}
+            title="Find — keep full JSON visible and step through every highlighted match"
+            onClick={() => setSearchMode('find')}
+          >
+            Find
+          </button>
+        </div>
+        {searchMode === 'find' && filterLower.length > 0 && (
+          <div className={styles.findControls} role="group" aria-label="Find matches">
+            <button
+              type="button"
+              className={styles.findStepBtn}
+              onClick={() => stepMatch(-1)}
+              disabled={findMatches.length === 0}
+              title="Previous match (Shift+Enter / Shift+Tab)"
+              aria-label="Previous match"
+            >
+              ↑
+            </button>
+            <span className={styles.matchCount} aria-live="polite">
+              {findMatches.length === 0
+                ? '0 / 0'
+                : `${clampedActiveMatchIndex + 1} / ${findMatches.length}`}
+            </span>
+            <button
+              type="button"
+              className={styles.findStepBtn}
+              onClick={() => stepMatch(1)}
+              disabled={findMatches.length === 0}
+              title="Next match (Enter / Tab)"
+              aria-label="Next match"
+            >
+              ↓
+            </button>
+          </div>
+        )}
         <button
           type="button"
           className={styles.toolBtn}
@@ -748,11 +952,12 @@ export function JsonTree({
 
       <div
         className={styles.tree}
+        ref={treeRef}
         data-inspector-scroll="true"
         role="tree"
         aria-label="Definition JSON"
       >
-        {rootEntries.length === 0 ? (
+        {searchMode === 'filter' && rootEntries.length === 0 ? (
           <div className={styles.empty}>No fields match &quot;{filter}&quot;.</div>
         ) : (
           rootEntries.map(([key, val]) => (
@@ -763,6 +968,9 @@ export function JsonTree({
               value={val}
               depth={0}
               filterLower={filterLower}
+              searchMode={searchMode}
+              activeMatchPath={activeMatchPath}
+              expandedByFind={expandedByFind}
               expandGeneration={expandGeneration}
               expandedMap={expandedMap}
               onTogglePath={handleTogglePath}

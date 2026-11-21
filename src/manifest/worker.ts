@@ -16,6 +16,7 @@ import type {
   DefinitionOverview,
   FilterCatalog,
   FilterOption,
+  FuzzySearchOptions,
   ManifestStatus,
   OverviewLinkedEntity,
   OverviewLore,
@@ -104,6 +105,7 @@ export interface SearchRequest {
   filters: SearchFilters;
   sort: SortMode;
   maxResults?: number;
+  fuzzy?: FuzzySearchOptions;
 }
 
 export interface DeepSearchRequest {
@@ -1302,6 +1304,7 @@ async function search(
   filters: SearchFilters,
   sort: SortMode,
   maxResults?: number,
+  fuzzy?: FuzzySearchOptions,
 ): Promise<SearchResponse> {
   const availableTables = [...Object.keys(state.componentPaths), ARTIFACT_PERKS_TABLE];
   const parsed = parseSearchQuery(query, availableTables);
@@ -1318,6 +1321,7 @@ async function search(
       seasonNameMap: seasonNameByNumber,
       seasonAliases: SEASON_ALIASES,
       sourceAliasToKey: d2ai.sourceAliasToKey,
+      fuzzy,
     },
   );
 }
@@ -2656,7 +2660,7 @@ async function dispatch(message: WorkerRequest): Promise<unknown> {
     case 'init':
       return init(message.locale, message.apiKey, message.forceRefresh);
     case 'search':
-      return search(message.query, message.filters, message.sort, message.maxResults);
+      return search(message.query, message.filters, message.sort, message.maxResults, message.fuzzy);
     case 'deepSearch':
       return deepSearch(message.query, message.filters, message.maxResults);
     case 'getDefinition':

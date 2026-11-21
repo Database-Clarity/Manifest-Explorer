@@ -1,4 +1,5 @@
 import type {
+  FuzzySearchOptions,
   SearchFilters,
   SearchIndexEntry,
   SearchResponse,
@@ -59,7 +60,129 @@ export interface ParsedQuery {
   traitTokens: string[];
   negatedTraitTokens: string[];
   flags: SearchFlags;
+  /**
+   * Boolean-expression AST for the search box query. When present it is the
+   * single source of truth for query matching; the summary arrays above remain
+   * populated for backwards compatibility and convenience.
+   */
+  ast?: QueryNode;
 }
+
+/**
+ * Boolean expression AST produced by `parseSearchQuery`. Atoms are the leaves
+ * (one per filter token); `and`/`or`/`not` combine them with DIM-standard
+ * Boolean precedence (NOT > AND > OR). Evaluation is deferred so the parser can
+ * stay resilient while the user is mid-typing.
+ */
+export interface AndQueryNode {
+  type: 'and';
+  children: QueryNode[];
+}
+
+export interface OrQueryNode {
+  type: 'or';
+  children: QueryNode[];
+}
+
+export interface NotQueryNode {
+  type: 'not';
+  child: QueryNode;
+}
+
+export interface TableQueryAtom {
+  type: 'atom';
+  kind: 'table';
+  table: string;
+}
+export interface TierQueryAtom {
+  type: 'atom';
+  kind: 'tier';
+  value: number;
+}
+export interface DamageQueryAtom {
+  type: 'atom';
+  kind: 'damage';
+  value: number;
+}
+export interface ClassQueryAtom {
+  type: 'atom';
+  kind: 'class';
+  value: number;
+}
+export interface TypeQueryAtom {
+  type: 'atom';
+  kind: 'type';
+  value: number;
+}
+export interface AmmoQueryAtom {
+  type: 'atom';
+  kind: 'ammo';
+  value: number;
+}
+export interface SlotQueryAtom {
+  type: 'atom';
+  kind: 'slot';
+  value: number;
+}
+export interface SubtypeQueryAtom {
+  type: 'atom';
+  kind: 'subtype';
+  value: number;
+}
+export interface SeasonQueryAtom {
+  type: 'atom';
+  kind: 'season';
+  value: string;
+}
+export interface SourceQueryAtom {
+  type: 'atom';
+  kind: 'source';
+  value: string;
+}
+export interface TraitQueryAtom {
+  type: 'atom';
+  kind: 'trait';
+  value: string;
+}
+export interface CategoryQueryAtom {
+  type: 'atom';
+  kind: 'category';
+  value: string;
+}
+export interface FlagQueryAtom {
+  type: 'atom';
+  kind: 'flag';
+  flag: FlagKey;
+}
+export interface HashQueryAtom {
+  type: 'atom';
+  kind: 'hash';
+  value: number;
+}
+export interface TextQueryAtom {
+  type: 'atom';
+  kind: 'text';
+  value: string;
+}
+
+export type QueryAtom =
+  | TableQueryAtom
+  | TierQueryAtom
+  | DamageQueryAtom
+  | ClassQueryAtom
+  | TypeQueryAtom
+  | AmmoQueryAtom
+  | SlotQueryAtom
+  | SubtypeQueryAtom
+  | SeasonQueryAtom
+  | SourceQueryAtom
+  | TraitQueryAtom
+  | CategoryQueryAtom
+  | FlagQueryAtom
+  | HashQueryAtom
+  | TextQueryAtom;
+
+export type QueryNode = AndQueryNode | OrQueryNode | NotQueryNode | QueryAtom;
 
 /** Context resolved at search time that individual entries cannot encode. */
 export interface SearchContext {
@@ -71,6 +194,8 @@ export interface SearchContext {
   seasonAliases?: Readonly<Record<number, { fallbackName: string; aliases: readonly string[] }>>;
   /** normalized source key/alias -> canonical DIM source key, for `source:<name>`. */
   sourceAliasToKey?: Map<string, string>;
+  /** Optional fuzzy-match settings for sitewide typo-tolerant search. */
+  fuzzy?: FuzzySearchOptions;
 }
 
 type FlagKey = keyof SearchFlags;
@@ -272,8 +397,6 @@ const IS_VALUE_ALIASES: Readonly<Record<string, ValueAlias>> = {
   warlock: { kind: 'class', value: 2 },
 };
 
-const TOKEN_RE = /(?:[^\s",;]+|"[^"]*")+/g;
-
 function stripQuotes(value: string): string {
   const trimmed = value.trim();
   if (trimmed.length >= 2 && trimmed.startsWith('"') && trimmed.endsWith('"')) {
@@ -365,243 +488,527 @@ function looksLikeHashToken(value: string): boolean {
   return /^[+-]?0x[0-9a-f]+$/i.test(token) || /^[+-]?\d{6,10}$/.test(token);
 }
 
+/** Known structured-filter operator keys. Any other `key:value` is free text. */
+const OPERATOR_KEYS: ReadonlySet<string> = new Set([
+  't',
+  'table',
+  'tier',
+  'rarity',
+  'damage',
+  'element',
+  'el',
+  'dmg',
+  'class',
+  'type',
+  'ammo',
+  'slot',
+  'subtype',
+  'weapon',
+  'season',
+  's',
+  'source',
+  'trait',
+  'cat',
+  'category',
+  'categories',
+  'is',
+  'has',
+  'hash',
+  'h',
+]);
+
+/* -------------------------------------------------------------------------- */
+/* Tokenizer & recursive-descent Boolean parser                               */
+/* -------------------------------------------------------------------------- */
+
+type QueryToken =
+  | { kind: 'lparen' }
+  | { kind: 'rparen' }
+  | { kind: 'quoted'; value: string }
+  | { kind: 'word'; value: string };
+
+/** Read a `"..."` span starting at the opening quote; tolerant of EOF. */
+function readQuoted(raw: string, start: number): { value: string; end: number } {
+  let index = start + 1;
+  let value = '';
+  while (index < raw.length && raw.charAt(index) !== '"') {
+    value += raw.charAt(index);
+    index += 1;
+  }
+  const end = index < raw.length ? index + 1 : index;
+  return { value, end };
+}
+
 /**
- * Parse a search box query into structured filters. Unsupported prefixes are
- * treated as plain text so nothing typed by the user silently disappears.
+ * Split a raw query into tokens. Parentheses are emitted as their own tokens,
+ * quoted strings stay together (folded into a `key:"value"` word when they
+ * directly follow a colon), and commas/semicolons act as separators so pasted
+ * hash lists keep working.
  */
-export function parseSearchQuery(raw: string, availableTables: string[]): ParsedQuery {
-  const textTokens: string[] = [];
-  const negatedTokens: string[] = [];
-  const hashMatches: number[] = [];
-  const tierFilters: number[] = [];
-  const damageFilters: number[] = [];
-  const classFilters: number[] = [];
-  const typeFilters: number[] = [];
-  const ammoFilters: number[] = [];
-  const slotFilters: number[] = [];
-  const subtypeFilters: number[] = [];
-  const categoryTokens: string[] = [];
-  const seasonFilters: string[] = [];
-  const sourceTokens: string[] = [];
-  const negatedSourceTokens: string[] = [];
-  const traitTokens: string[] = [];
-  const negatedTraitTokens: string[] = [];
-  const flags: SearchFlags = {};
-
-  let tableFilter: string | undefined;
-  const matches = raw.match(TOKEN_RE) ?? [];
-
-  for (const rawToken of matches) {
-    const token = rawToken.trim();
-    if (!token) continue;
-
-    // A negative number can be a signed hash; check that before negation.
-    const directHash = looksLikeHashToken(token) ? parseHashInput(token) : null;
-    if (directHash !== null) {
-      pushUniqueNumber(hashMatches, directHash);
+function tokenizeQuery(raw: string): QueryToken[] {
+  const tokens: QueryToken[] = [];
+  const length = raw.length;
+  let index = 0;
+  while (index < length) {
+    const ch = raw.charAt(index);
+    if (ch === '(') {
+      tokens.push({ kind: 'lparen' });
+      index += 1;
       continue;
     }
-
-    let body = token;
-    let negated = false;
-    if (body.startsWith('-') && body.length > 1) {
-      negated = true;
-      body = body.slice(1);
+    if (ch === ')') {
+      tokens.push({ kind: 'rparen' });
+      index += 1;
+      continue;
     }
-
-    const colon = body.indexOf(':');
-    if (colon > 0) {
-      const key = body.slice(0, colon).trim().toLowerCase();
-      const value = stripQuotes(body.slice(colon + 1)).trim();
-
-      if (!value) continue;
-
-      switch (key) {
-        case 't':
-        case 'table': {
-          if (negated) break;
-          // Before the manifest has loaded, resolve against the known catalog so
-          // the parsed query still carries a canonical table name.
-          const scope = availableTables.length > 0 ? availableTables : Object.keys(TABLE_METADATA);
-          const resolved = resolveTableAlias(value, scope);
-          if (resolved) {
-            tableFilter = resolved;
-          } else if (/^Destiny[A-Za-z0-9]+Definition$/.test(value)) {
-            tableFilter = value;
-          }
-          break;
+    if (/\s/.test(ch) || ch === ',' || ch === ';') {
+      index += 1;
+      continue;
+    }
+    if (ch === '"') {
+      const { value, end } = readQuoted(raw, index);
+      tokens.push({ kind: 'quoted', value });
+      index = end;
+      continue;
+    }
+    let word = '';
+    while (index < length) {
+      const c = raw.charAt(index);
+      if (/\s/.test(c) || c === '(' || c === ')' || c === ',' || c === ';') break;
+      if (c === '"') {
+        if (word.endsWith(':')) {
+          const { value, end } = readQuoted(raw, index);
+          word += `"${value}"`;
+          index = end;
+          continue;
         }
+        break;
+      }
+      word += c;
+      index += 1;
+    }
+    if (word) tokens.push({ kind: 'word', value: word });
+  }
+  return tokens;
+}
 
-        case 'tier':
-        case 'rarity': {
-          if (negated) break;
-          const tier = resolveTier(value);
-          if (tier !== null) pushUniqueNumber(tierFilters, tier);
-          break;
-        }
-
-        case 'damage':
-        case 'element':
-        case 'el':
-        case 'dmg': {
-          if (negated) break;
-          const damage = resolveDamage(value);
-          if (damage !== null) pushUniqueNumber(damageFilters, damage);
-          break;
-        }
-
-        case 'class': {
-          if (negated) break;
-          const classType = resolveClass(value);
-          if (classType !== null) pushUniqueNumber(classFilters, classType);
-          break;
-        }
-
-        case 'type': {
-          if (negated) break;
-          const itemType = resolveItemType(value);
-          if (itemType !== null) pushUniqueNumber(typeFilters, itemType);
-          break;
-        }
-
-        case 'ammo': {
-          if (negated) break;
-          const ammo = resolveAmmo(value);
-          if (ammo !== null) pushUniqueNumber(ammoFilters, ammo);
-          break;
-        }
-
-        case 'slot': {
-          if (negated) break;
-          const slot = resolveSlot(value);
-          if (slot !== null) pushUniqueNumber(slotFilters, slot);
-          break;
-        }
-
-        case 'subtype':
-        case 'weapon': {
-          if (negated) break;
-          const subtype = resolveSubtype(value);
-          if (subtype !== null) pushUniqueNumber(subtypeFilters, subtype);
-          break;
-        }
-
-        case 'season':
-        case 's': {
-          if (negated) break;
-          pushUnique(seasonFilters, normalizePhrase(value));
-          break;
-        }
-
-        case 'source': {
-          const phrase = normalizePhrase(value);
-          if (!phrase) break;
-          if (negated) pushUnique(negatedSourceTokens, phrase);
-          else pushUnique(sourceTokens, phrase);
-          break;
-        }
-
-        case 'trait': {
-          const phrase = normalizePhrase(value);
-          if (!phrase) break;
-          if (negated) pushUnique(negatedTraitTokens, phrase);
-          else pushUnique(traitTokens, phrase);
-          break;
-        }
-
-        case 'cat':
-        case 'category':
-        case 'categories': {
-          if (negated) break;
-          pushUnique(categoryTokens, normalizePhrase(value));
-          break;
-        }
-
-        case 'is':
-        case 'has': {
-          const normalized = value.toLowerCase().replace(/[^a-z]/g, '');
-          const flagKey = FLAG_TOKENS[normalized];
-          if (flagKey) {
-            flags[flagKey] = !negated;
-          } else {
-            const alias = IS_VALUE_ALIASES[normalized];
-            if (alias && !negated) {
-              switch (alias.kind) {
-                case 'tier':
-                  pushUniqueNumber(tierFilters, alias.value);
-                  break;
-                case 'damage':
-                  pushUniqueNumber(damageFilters, alias.value);
-                  break;
-                case 'class':
-                  pushUniqueNumber(classFilters, alias.value);
-                  break;
-                case 'type':
-                  pushUniqueNumber(typeFilters, alias.value);
-                  break;
-                case 'ammo':
-                  pushUniqueNumber(ammoFilters, alias.value);
-                  break;
-              }
-            }
-          }
-          break;
-        }
-
-        case 'hash':
-        case 'h': {
-          if (negated) break;
-          const hash = parseHashInput(value);
-          if (hash !== null) pushUniqueNumber(hashMatches, hash);
-          break;
-        }
-
-        default: {
-          const phrase = normalizePhrase(negated ? body : token);
-          if (!phrase) break;
-          if (negated) pushUnique(negatedTokens, phrase);
-          else pushUnique(textTokens, phrase);
-          break;
+/** Build an operator atom from a known `key` and its already-stripped `value`. */
+function buildOperatorAtom(
+  key: string,
+  value: string,
+  availableTables: string[],
+): QueryAtom | null {
+  switch (key) {
+    case 't':
+    case 'table': {
+      // Before the manifest has loaded, resolve against the known catalog so the
+      // parsed query still carries a canonical table name.
+      const scope = availableTables.length > 0 ? availableTables : Object.keys(TABLE_METADATA);
+      const resolved = resolveTableAlias(value, scope);
+      if (resolved) return { type: 'atom', kind: 'table', table: resolved };
+      if (/^Destiny[A-Za-z0-9]+Definition$/.test(value)) {
+        return { type: 'atom', kind: 'table', table: value };
+      }
+      return null;
+    }
+    case 'tier':
+    case 'rarity': {
+      const tier = resolveTier(value);
+      return tier !== null ? { type: 'atom', kind: 'tier', value: tier } : null;
+    }
+    case 'damage':
+    case 'element':
+    case 'el':
+    case 'dmg': {
+      const damage = resolveDamage(value);
+      return damage !== null ? { type: 'atom', kind: 'damage', value: damage } : null;
+    }
+    case 'class': {
+      const classType = resolveClass(value);
+      return classType !== null ? { type: 'atom', kind: 'class', value: classType } : null;
+    }
+    case 'type': {
+      const itemType = resolveItemType(value);
+      return itemType !== null ? { type: 'atom', kind: 'type', value: itemType } : null;
+    }
+    case 'ammo': {
+      const ammo = resolveAmmo(value);
+      return ammo !== null ? { type: 'atom', kind: 'ammo', value: ammo } : null;
+    }
+    case 'slot': {
+      const slot = resolveSlot(value);
+      return slot !== null ? { type: 'atom', kind: 'slot', value: slot } : null;
+    }
+    case 'subtype':
+    case 'weapon': {
+      const subtype = resolveSubtype(value);
+      return subtype !== null ? { type: 'atom', kind: 'subtype', value: subtype } : null;
+    }
+    case 'season':
+    case 's': {
+      const phrase = normalizePhrase(value);
+      return phrase ? { type: 'atom', kind: 'season', value: phrase } : null;
+    }
+    case 'source': {
+      const phrase = normalizePhrase(value);
+      return phrase ? { type: 'atom', kind: 'source', value: phrase } : null;
+    }
+    case 'trait': {
+      const phrase = normalizePhrase(value);
+      return phrase ? { type: 'atom', kind: 'trait', value: phrase } : null;
+    }
+    case 'cat':
+    case 'category':
+    case 'categories': {
+      const phrase = normalizePhrase(value);
+      return phrase ? { type: 'atom', kind: 'category', value: phrase } : null;
+    }
+    case 'is':
+    case 'has': {
+      const normalized = value.toLowerCase().replace(/[^a-z]/g, '');
+      const flagKey = FLAG_TOKENS[normalized];
+      if (flagKey) return { type: 'atom', kind: 'flag', flag: flagKey };
+      const alias = IS_VALUE_ALIASES[normalized];
+      if (alias) {
+        switch (alias.kind) {
+          case 'tier':
+            return { type: 'atom', kind: 'tier', value: alias.value };
+          case 'damage':
+            return { type: 'atom', kind: 'damage', value: alias.value };
+          case 'class':
+            return { type: 'atom', kind: 'class', value: alias.value };
+          case 'type':
+            return { type: 'atom', kind: 'type', value: alias.value };
+          case 'ammo':
+            return { type: 'atom', kind: 'ammo', value: alias.value };
         }
       }
-      continue;
+      return null;
     }
+    case 'hash':
+    case 'h': {
+      const hash = parseHashInput(value);
+      return hash !== null ? { type: 'atom', kind: 'hash', value: hash } : null;
+    }
+    default:
+      return null;
+  }
+}
 
+/** Turn a single word token (already negation-stripped) into a leaf atom. */
+function buildAtomFromWord(body: string, availableTables: string[]): QueryAtom | null {
+  const colon = body.indexOf(':');
+  if (colon > 0) {
+    const key = body.slice(0, colon).trim().toLowerCase();
+    const value = stripQuotes(body.slice(colon + 1)).trim();
+    if (!value) return null;
+    if (OPERATOR_KEYS.has(key)) {
+      return buildOperatorAtom(key, value, availableTables);
+    }
+    // Unknown prefix: treat the whole token as free text.
     const phrase = normalizePhrase(body);
-    if (!phrase) continue;
+    return phrase ? { type: 'atom', kind: 'text', value: phrase } : null;
+  }
+  const phrase = normalizePhrase(body);
+  if (!phrase) return null;
+  return { type: 'atom', kind: 'text', value: phrase };
+}
 
-    if (looksLikeHashToken(phrase)) {
-      const hash = parseHashInput(phrase);
-      if (hash !== null) {
-        pushUniqueNumber(hashMatches, hash);
+/**
+ * Recursive-descent parser implementing `NOT > AND > OR` precedence (parentheses
+ * highest), with implicit AND by adjacency. Always returns a best-effort AST:
+ * dangling operators, empty groups, stray parens and malformed tokens are
+ * ignored rather than throwing, so typing mid-query never crashes or zeroes out.
+ */
+function parseQueryAst(raw: string, availableTables: string[]): QueryNode | null {
+  const tokens = tokenizeQuery(raw);
+  let pos = 0;
+  let parenDepth = 0;
+
+  const peek = (offset = 0): QueryToken | undefined => tokens[pos + offset];
+  const consume = (): QueryToken | undefined => {
+    const token = tokens[pos];
+    if (token !== undefined) pos += 1;
+    return token;
+  };
+
+  // Skip dangling `and` keywords and stray (unmatched) closing parens.
+  const skipAndAndStrayClose = (): void => {
+    for (;;) {
+      const token = peek();
+      if (token === undefined) return;
+      if (token.kind === 'rparen' && parenDepth === 0) {
+        consume();
         continue;
       }
+      if (token.kind === 'word' && token.value.toLowerCase() === 'and') {
+        consume();
+        continue;
+      }
+      return;
+    }
+  };
+
+  // Skip dangling leading `or` keywords.
+  const skipLeadingOr = (): void => {
+    for (;;) {
+      const token = peek();
+      if (token?.kind === 'word' && token.value.toLowerCase() === 'or') {
+        consume();
+        continue;
+      }
+      return;
+    }
+  };
+
+  const parseOr = (): QueryNode | null => {
+    const children: QueryNode[] = [];
+    for (;;) {
+      skipLeadingOr();
+      const andNode = parseAnd();
+      if (andNode !== null) children.push(andNode);
+      const token = peek();
+      if (token?.kind === 'word' && token.value.toLowerCase() === 'or') {
+        consume();
+        continue;
+      }
+      break;
+    }
+    if (children.length === 0) return null;
+    return children.length === 1 ? children[0]! : { type: 'or', children };
+  };
+
+  const parseAnd = (): QueryNode | null => {
+    const children: QueryNode[] = [];
+    for (;;) {
+      skipAndAndStrayClose();
+      const token = peek();
+      if (token === undefined) break;
+      if (token.kind === 'rparen') break; // matched close; bubble up to the group
+      if (token.kind === 'word' && token.value.toLowerCase() === 'or') break;
+      const unary = parseUnary();
+      if (unary !== null) children.push(unary);
+    }
+    if (children.length === 0) return null;
+    return children.length === 1 ? children[0]! : { type: 'and', children };
+  };
+
+  const parseUnary = (): QueryNode | null => {
+    const token = peek();
+    if (token === undefined) return null;
+
+    if (token.kind === 'lparen') {
+      consume();
+      parenDepth += 1;
+      const inner = parseOr();
+      if (peek()?.kind === 'rparen') {
+        consume();
+        parenDepth -= 1;
+      }
+      return inner;
     }
 
-    if (negated) pushUnique(negatedTokens, phrase);
-    else pushUnique(textTokens, phrase);
+    if (token.kind === 'rparen') return null;
+
+    if (token.kind === 'quoted') {
+      consume();
+      const phrase = normalizePhrase(token.value);
+      if (!phrase) return null;
+      return { type: 'atom', kind: 'text', value: phrase };
+    }
+
+    const raw = token.value;
+    const lower = raw.toLowerCase();
+
+    if (lower === 'or' || lower === 'and') return null;
+
+    if (lower === 'not') {
+      consume();
+      const child = parseUnary();
+      return child === null ? null : { type: 'not', child };
+    }
+
+    if (raw === '-') {
+      consume();
+      const child = parseUnary();
+      return child === null ? null : { type: 'not', child };
+    }
+
+    // A signed 32-bit hash token (e.g. -1368098261) is a positive hash, not a
+    // negation. Check this before interpreting a leading `-` as NOT.
+    if (looksLikeHashToken(raw)) {
+      const hash = parseHashInput(raw);
+      if (hash !== null) {
+        consume();
+        return { type: 'atom', kind: 'hash', value: hash };
+      }
+    }
+
+    let negated = false;
+    let body = raw;
+    if (raw.startsWith('-') && raw.length > 1) {
+      negated = true;
+      body = raw.slice(1);
+    }
+
+    const atom = buildAtomFromWord(body, availableTables);
+    consume();
+    if (atom === null) return null;
+    return negated ? { type: 'not', child: atom } : atom;
+  };
+
+  return parseOr();
+}
+
+/* -------------------------------------------------------------------------- */
+/* Summary derivation (backwards-compatible flat arrays)                      */
+/* -------------------------------------------------------------------------- */
+
+interface SummaryAccumulator {
+  textTokens: string[];
+  negatedTokens: string[];
+  hashMatches: number[];
+  tableFilterCandidates: string[];
+  tierFilters: number[];
+  damageFilters: number[];
+  classFilters: number[];
+  typeFilters: number[];
+  ammoFilters: number[];
+  slotFilters: number[];
+  subtypeFilters: number[];
+  categoryTokens: string[];
+  seasonFilters: string[];
+  sourceTokens: string[];
+  negatedSourceTokens: string[];
+  traitTokens: string[];
+  negatedTraitTokens: string[];
+  flags: SearchFlags;
+  hasOr: boolean;
+}
+
+function walkSummary(node: QueryNode, negated: boolean, acc: SummaryAccumulator): void {
+  switch (node.type) {
+    case 'and':
+      for (const child of node.children) walkSummary(child, negated, acc);
+      return;
+    case 'or':
+      acc.hasOr = true;
+      for (const child of node.children) walkSummary(child, negated, acc);
+      return;
+    case 'not':
+      walkSummary(node.child, !negated, acc);
+      return;
+    case 'atom':
+      walkAtomSummary(node, negated, acc);
+      return;
   }
+}
+
+function walkAtomSummary(atom: QueryAtom, negated: boolean, acc: SummaryAccumulator): void {
+  switch (atom.kind) {
+    case 'text':
+      pushUnique(negated ? acc.negatedTokens : acc.textTokens, atom.value);
+      return;
+    case 'hash':
+      if (!negated) pushUniqueNumber(acc.hashMatches, atom.value);
+      return;
+    case 'table':
+      if (!negated) pushUnique(acc.tableFilterCandidates, atom.table);
+      return;
+    case 'tier':
+      if (!negated) pushUniqueNumber(acc.tierFilters, atom.value);
+      return;
+    case 'damage':
+      if (!negated) pushUniqueNumber(acc.damageFilters, atom.value);
+      return;
+    case 'class':
+      if (!negated) pushUniqueNumber(acc.classFilters, atom.value);
+      return;
+    case 'type':
+      if (!negated) pushUniqueNumber(acc.typeFilters, atom.value);
+      return;
+    case 'ammo':
+      if (!negated) pushUniqueNumber(acc.ammoFilters, atom.value);
+      return;
+    case 'slot':
+      if (!negated) pushUniqueNumber(acc.slotFilters, atom.value);
+      return;
+    case 'subtype':
+      if (!negated) pushUniqueNumber(acc.subtypeFilters, atom.value);
+      return;
+    case 'season':
+      if (!negated) pushUnique(acc.seasonFilters, atom.value);
+      return;
+    case 'source':
+      pushUnique(negated ? acc.negatedSourceTokens : acc.sourceTokens, atom.value);
+      return;
+    case 'trait':
+      pushUnique(negated ? acc.negatedTraitTokens : acc.traitTokens, atom.value);
+      return;
+    case 'category':
+      if (!negated) pushUnique(acc.categoryTokens, atom.value);
+      return;
+    case 'flag':
+      acc.flags[atom.flag] = !negated;
+      return;
+  }
+}
+
+/**
+ * Parse a search box query into structured filters and a Boolean expression
+ * AST. Unsupported prefixes are treated as plain text so nothing typed by the
+ * user silently disappears.
+ */
+export function parseSearchQuery(raw: string, availableTables: string[]): ParsedQuery {
+  const ast = parseQueryAst(raw, availableTables);
+
+  const acc: SummaryAccumulator = {
+    textTokens: [],
+    negatedTokens: [],
+    hashMatches: [],
+    tableFilterCandidates: [],
+    tierFilters: [],
+    damageFilters: [],
+    classFilters: [],
+    typeFilters: [],
+    ammoFilters: [],
+    slotFilters: [],
+    subtypeFilters: [],
+    categoryTokens: [],
+    seasonFilters: [],
+    sourceTokens: [],
+    negatedSourceTokens: [],
+    traitTokens: [],
+    negatedTraitTokens: [],
+    flags: {},
+    hasOr: false,
+  };
+
+  if (ast !== null) walkSummary(ast, false, acc);
 
   const parsed: ParsedQuery = {
-    textTokens,
-    negatedTokens,
-    hashMatches,
-    tierFilters,
-    damageFilters,
-    classFilters,
-    typeFilters,
-    ammoFilters,
-    slotFilters,
-    subtypeFilters,
-    categoryTokens,
-    seasonFilters,
-    sourceTokens,
-    negatedSourceTokens,
-    traitTokens,
-    negatedTraitTokens,
-    flags,
+    textTokens: acc.textTokens,
+    negatedTokens: acc.negatedTokens,
+    hashMatches: acc.hashMatches,
+    tierFilters: acc.tierFilters,
+    damageFilters: acc.damageFilters,
+    classFilters: acc.classFilters,
+    typeFilters: acc.typeFilters,
+    ammoFilters: acc.ammoFilters,
+    slotFilters: acc.slotFilters,
+    subtypeFilters: acc.subtypeFilters,
+    categoryTokens: acc.categoryTokens,
+    seasonFilters: acc.seasonFilters,
+    sourceTokens: acc.sourceTokens,
+    negatedSourceTokens: acc.negatedSourceTokens,
+    traitTokens: acc.traitTokens,
+    negatedTraitTokens: acc.negatedTraitTokens,
+    flags: acc.flags,
   };
-  if (tableFilter) parsed.tableFilter = tableFilter;
+  if (ast !== null) parsed.ast = ast;
+  if (acc.tableFilterCandidates.length === 1 && !acc.hasOr) {
+    parsed.tableFilter = acc.tableFilterCandidates[0];
+  }
   return parsed;
 }
 
@@ -628,7 +1035,177 @@ function hasWordBoundary(haystack: string, needle: string): boolean {
   return false;
 }
 
-function scoreToken(entry: SearchIndexEntry, token: string): number {
+/* -------------------------------------------------------------------------- */
+/* Bounded Optimal String Alignment (Damerau-Levenshtein)                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Small pre-allocated row buffers reused by every edit-distance comparison so
+ * scanning the (277k+) entry index never allocates per-call arrays. Long words
+ * that exceed the buffer fall back to a one-off allocation.
+ */
+const EDIT_BUFFER_COLS = 256;
+const editBufA = new Int32Array(EDIT_BUFFER_COLS);
+const editBufB = new Int32Array(EDIT_BUFFER_COLS);
+const editBufC = new Int32Array(EDIT_BUFFER_COLS);
+
+/**
+ * Bounded Optimal String Alignment distance over `a[aStart..aEnd)` versus `b`.
+ * Supports insertions, deletions, substitutions AND adjacent transpositions
+ * (the last is crucial for real typos like `Sunhsot` -> `Sunshot`).
+ *
+ * Early exits:
+ *  - length delta > maxDist
+ *  - every cell in a row exceeding maxDist
+ * Values above `maxDist` are reported as `maxDist + 1`.
+ */
+function boundedEditDistanceRange(
+  a: string,
+  aStart: number,
+  aEnd: number,
+  b: string,
+  maxDist: number,
+): number {
+  const m = aEnd - aStart;
+  const n = b.length;
+
+  if (Math.abs(m - n) > maxDist) return maxDist + 1;
+  if (maxDist <= 0) {
+    return a.slice(aStart, aEnd) === b ? 0 : maxDist + 1;
+  }
+  if (m === 0) return n <= maxDist ? n : maxDist + 1;
+  if (n === 0) return m <= maxDist ? m : maxDist + 1;
+
+  const cols = n + 1;
+  let p2: Int32Array;
+  let p1: Int32Array;
+  let cur: Int32Array;
+  if (cols <= EDIT_BUFFER_COLS) {
+    p2 = editBufA;
+    p1 = editBufB;
+    cur = editBufC;
+  } else {
+    p2 = new Int32Array(cols);
+    p1 = new Int32Array(cols);
+    cur = new Int32Array(cols);
+  }
+
+  // Row 0: distance from the empty prefix of `a` to each prefix of `b`.
+  for (let j = 0; j <= n; j++) p1[j] = j;
+
+  for (let i = 1; i <= m; i++) {
+    const ai = a.charCodeAt(aStart + i - 1);
+    cur[0] = i;
+    let rowMin = i;
+
+    for (let j = 1; j <= n; j++) {
+      const bj = b.charCodeAt(j - 1);
+      const cost = ai === bj ? 0 : 1;
+
+      let min = p1[j]! + 1; // deletion
+      const ins = cur[j - 1]! + 1; // insertion
+      if (ins < min) min = ins;
+      const sub = p1[j - 1]! + cost; // substitution
+      if (sub < min) min = sub;
+
+      // Adjacent transposition: swapping a[i-2] and a[i-1] to match b[j-2], b[j-1].
+      if (
+        i >= 2 &&
+        j >= 2 &&
+        ai === b.charCodeAt(j - 2) &&
+        a.charCodeAt(aStart + i - 2) === bj
+      ) {
+        const trans = p2[j - 2]! + 1;
+        if (trans < min) min = trans;
+      }
+
+      cur[j] = min;
+      if (min < rowMin) rowMin = min;
+    }
+
+    if (rowMin > maxDist) return maxDist + 1;
+
+    const tmp = p2;
+    p2 = p1;
+    p1 = cur;
+    cur = tmp;
+  }
+
+  return p1[n]!;
+}
+
+/**
+ * Fast, allocation-light bounded Optimal String Alignment (Damerau-Levenshtein)
+ * distance. Returns a value `<= maxDist` on a close match, or `maxDist + 1`
+ * when the strings are farther apart than the tolerance.
+ */
+export function boundedEditDistance(a: string, b: string, maxDist: number): number {
+  return boundedEditDistanceRange(a, 0, a.length, b, maxDist);
+}
+
+/**
+ * Score an entry against a single token using typo-tolerant fuzzy matching.
+ * Returns `0` when no word/name is within tolerance. Any positive score here is
+ * kept strictly below the exact-substring score of `100`, so exact/substring
+ * matches always outrank fuzzy ones.
+ */
+export function fuzzyMatchScore(
+  entry: SearchIndexEntry,
+  token: string,
+  threshold: number,
+): number {
+  if (token.length < 3 || threshold <= 0) return 0;
+  const name = entry.nameLower;
+  if (!name) return 0;
+
+  const maxDist = Math.min(4, Math.max(1, Math.floor(token.length * threshold)));
+  const tokenFirst = token.charCodeAt(0);
+
+  let bestDist = maxDist + 1;
+  let bestFirstMatches = false;
+
+  // 1. Full name (also covers multi-word quoted tokens directly).
+  if (Math.abs(name.length - token.length) <= maxDist) {
+    const d = boundedEditDistanceRange(name, 0, name.length, token, maxDist);
+    if (d < bestDist) {
+      bestDist = d;
+      bestFirstMatches = name.charCodeAt(0) === tokenFirst;
+    }
+  }
+
+  // 2. Individual alphanumeric words in the name. The apostrophe in a
+  //    contraction like `izanagi's` acts as a word boundary, so `burdn` still
+  //    matches the trailing `burden`. Only single-word tokens are scanned this
+  //    way; multi-word tokens are handled by the full-name comparison above.
+  if (token.indexOf(' ') === -1) {
+    let wordStart = 0;
+    for (let i = 0; i <= name.length; i++) {
+      const ch = i < name.length ? name.charCodeAt(i) : -1;
+      const isAlnum = (ch >= 48 && ch <= 57) || (ch >= 97 && ch <= 122);
+      if (isAlnum) continue;
+      if (i > wordStart) {
+        const wordLen = i - wordStart;
+        if (Math.abs(wordLen - token.length) <= maxDist) {
+          const d = boundedEditDistanceRange(name, wordStart, i, token, maxDist);
+          if (d < bestDist) {
+            bestDist = d;
+            bestFirstMatches = name.charCodeAt(wordStart) === tokenFirst;
+          }
+        }
+      }
+      wordStart = i + 1;
+    }
+  }
+
+  if (bestDist > maxDist) return 0;
+
+  let score = Math.round(85 * (1 - bestDist / Math.max(token.length, 1)));
+  if (score < 10) score = 10;
+  if (bestFirstMatches) score += 8;
+  return score;
+}
+
+function scoreToken(entry: SearchIndexEntry, token: string, context?: SearchContext): number {
   if (!token) return 0;
   if (entry.nameLower === token) return 500;
   if (entry.nameLower.startsWith(token)) return 300;
@@ -637,6 +1214,9 @@ function scoreToken(entry: SearchIndexEntry, token: string): number {
   if (entry.subtitleLower.includes(token)) return 50;
   if (entry.parentArtifactName && entry.parentArtifactName.toLowerCase().includes(token)) return 40;
   if (entry.descLower.includes(token)) return 20;
+  if (context?.fuzzy?.enabled) {
+    return fuzzyMatchScore(entry, token, context.fuzzy.threshold);
+  }
   return 0;
 }
 
@@ -813,6 +1393,147 @@ function toResult(entry: SearchIndexEntry): SearchResultItem {
   return item;
 }
 
+/* -------------------------------------------------------------------------- */
+/* AST evaluation                                                             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The virtual ArtifactPerks table matches artifact perk entries regardless of
+ * their underlying InventoryItem table.
+ */
+function matchesTableKey(entry: SearchIndexEntry, key: string): boolean {
+  const artifactPerksKey = tableKey(ARTIFACT_PERKS_TABLE);
+  return key === artifactPerksKey ? entry.isArtifactPerk === true : tableKey(entry.table) === key;
+}
+
+interface EvalContext {
+  context: SearchContext | undefined;
+  categoryNameMap: Map<number, string>;
+  /** season token -> resolved set of season numbers (undefined = unresolvable). */
+  seasonNumbers: Map<string, Set<number> | undefined>;
+}
+
+function evaluateAtom(atom: QueryAtom, entry: SearchIndexEntry, evalCtx: EvalContext): boolean {
+  switch (atom.kind) {
+    case 'table':
+      return matchesTableKey(entry, tableKey(atom.table));
+    case 'tier':
+      return entry.tierType !== undefined && entry.tierType === atom.value;
+    case 'damage':
+      return entry.damageType !== undefined && entry.damageType === atom.value;
+    case 'class':
+      return entry.classType !== undefined && entry.classType === atom.value;
+    case 'type':
+      return matchesTypeValue(entry, atom.value);
+    case 'ammo':
+      return entry.ammoType !== undefined && entry.ammoType === atom.value;
+    case 'slot':
+      return entry.bucketHash !== undefined && entry.bucketHash === atom.value;
+    case 'subtype':
+      return entry.itemSubType !== undefined && entry.itemSubType === atom.value;
+    case 'season': {
+      const numbers = evalCtx.seasonNumbers.get(atom.value);
+      if (numbers === undefined || numbers.size === 0) return false;
+      return entry.seasonNumber !== undefined && numbers.has(entry.seasonNumber);
+    }
+    case 'source':
+      return sourceMatches(entry, atom.value, evalCtx.context);
+    case 'trait':
+      return traitMatches(entry, atom.value);
+    case 'category':
+      return categoryMatches(entry, [atom.value], evalCtx.categoryNameMap);
+    case 'flag':
+      return entryFlag(entry, atom.flag);
+    case 'hash':
+      return entry.hash === atom.value;
+    case 'text':
+      if (textMatches(entry, atom.value)) return true;
+      if (evalCtx.context?.fuzzy?.enabled) {
+        return fuzzyMatchScore(entry, atom.value, evalCtx.context.fuzzy.threshold) > 0;
+      }
+      return false;
+  }
+}
+
+function evaluateNode(node: QueryNode, entry: SearchIndexEntry, evalCtx: EvalContext): boolean {
+  switch (node.type) {
+    case 'and':
+      for (const child of node.children) {
+        if (!evaluateNode(child, entry, evalCtx)) return false;
+      }
+      return true;
+    case 'or':
+      for (const child of node.children) {
+        if (evaluateNode(child, entry, evalCtx)) return true;
+      }
+      return false;
+    case 'not':
+      return !evaluateNode(node.child, entry, evalCtx);
+    case 'atom':
+      return evaluateAtom(node, entry, evalCtx);
+  }
+}
+
+interface ScoringInfo {
+  /** Positive text atoms (ignoring negated subtrees) for relevance scoring. */
+  textTokens: string[];
+  /** Count of positive hash atoms (ignoring negated subtrees). */
+  hashCount: number;
+}
+
+function collectScoring(ast: QueryNode | null): ScoringInfo {
+  const textTokens: string[] = [];
+  let hashCount = 0;
+  const visit = (node: QueryNode, negated: boolean): void => {
+    switch (node.type) {
+      case 'and':
+      case 'or':
+        for (const child of node.children) visit(child, negated);
+        return;
+      case 'not':
+        visit(node.child, !negated);
+        return;
+      case 'atom':
+        if (negated) return;
+        if (node.kind === 'text') {
+          if (!textTokens.includes(node.value)) textTokens.push(node.value);
+        } else if (node.kind === 'hash') {
+          hashCount += 1;
+        }
+        return;
+    }
+  };
+  if (ast !== null) visit(ast, false);
+  return { textTokens, hashCount };
+}
+
+function collectSeasonNumbers(
+  ast: QueryNode | null,
+  context: SearchContext | undefined,
+): Map<string, Set<number> | undefined> {
+  const tokens = new Set<string>();
+  const visit = (node: QueryNode): void => {
+    switch (node.type) {
+      case 'and':
+      case 'or':
+        for (const child of node.children) visit(child);
+        return;
+      case 'not':
+        visit(node.child);
+        return;
+      case 'atom':
+        if (node.kind === 'season') tokens.add(node.value);
+        return;
+    }
+  };
+  if (ast !== null) visit(ast);
+  const result = new Map<string, Set<number> | undefined>();
+  for (const token of tokens) {
+    result.set(token, resolveSeasonNumbers([token], context));
+  }
+  return result;
+}
+
 /**
  * Apply structured text filters plus the UI filter popover, rank the survivors
  * and return a capped response.
@@ -828,29 +1549,24 @@ export function scoreAndFilterEntries(
 ): SearchResponse {
   const startedAt = Date.now();
 
-  const parsedTableKey = parsed.tableFilter ? tableKey(parsed.tableFilter) : undefined;
+  const ast = parsed.ast ?? null;
+  const scoring = collectScoring(ast);
+  const evalCtx: EvalContext = {
+    context,
+    categoryNameMap,
+    seasonNumbers: collectSeasonNumbers(ast, context),
+  };
+
   const uiTableKey =
     uiFilters.table && uiFilters.table !== 'all' && uiFilters.table !== ''
       ? tableKey(uiFilters.table)
       : undefined;
-  const artifactPerksKey = tableKey(ARTIFACT_PERKS_TABLE);
 
-  // The virtual ArtifactPerks table matches artifact perk entries regardless of
-  // their underlying InventoryItem table.
-  const matchesTableKey = (entry: SearchIndexEntry, key: string): boolean =>
-    key === artifactPerksKey ? entry.isArtifactPerk === true : tableKey(entry.table) === key;
-
-  const hasHashFilter = parsed.hashMatches.length > 0;
-  const hashSet = hasHashFilter ? new Set(parsed.hashMatches) : undefined;
   const selectedCategories = uiFilters.itemCategoryHashes.filter((hash) => hash !== 0);
-  const seasonNumbers = resolveSeasonNumbers(parsed.seasonFilters, context);
-
-  const flagKeys = Object.keys(parsed.flags) as FlagKey[];
 
   const scored: ScoredEntry[] = [];
 
   for (const entry of entries) {
-    if (parsedTableKey && !matchesTableKey(entry, parsedTableKey)) continue;
     if (uiTableKey && !matchesTableKey(entry, uiTableKey)) continue;
 
     if (uiFilters.tierTypes.length > 0) {
@@ -873,99 +1589,14 @@ export function scoreAndFilterEntries(
     if (!uiFilters.includeUnnamed && !entry.name) continue;
     if (uiFilters.onlyRedacted && entry.isRedacted !== true) continue;
 
-    if (parsed.tierFilters.length > 0) {
-      if (entry.tierType === undefined || !parsed.tierFilters.includes(entry.tierType)) continue;
-    }
-    if (parsed.damageFilters.length > 0) {
-      if (entry.damageType === undefined || !parsed.damageFilters.includes(entry.damageType)) continue;
-    }
-    if (parsed.classFilters.length > 0) {
-      if (entry.classType === undefined || !parsed.classFilters.includes(entry.classType)) continue;
-    }
-    if (parsed.typeFilters.length > 0 && !matchesAnyType(entry, parsed.typeFilters)) continue;
-    if (parsed.ammoFilters.length > 0) {
-      if (entry.ammoType === undefined || !parsed.ammoFilters.includes(entry.ammoType)) continue;
-    }
-    if (parsed.slotFilters.length > 0) {
-      if (entry.bucketHash === undefined || !parsed.slotFilters.includes(entry.bucketHash)) continue;
-    }
-    if (parsed.subtypeFilters.length > 0) {
-      if (entry.itemSubType === undefined || !parsed.subtypeFilters.includes(entry.itemSubType)) continue;
-    }
-    if (seasonNumbers) {
-      if (entry.seasonNumber === undefined || !seasonNumbers.has(entry.seasonNumber)) continue;
-    }
+    // The search box query AST is the single source of truth for query matching.
+    if (ast !== null && !evaluateNode(ast, entry, evalCtx)) continue;
 
-    let flagMismatch = false;
-    for (const key of flagKeys) {
-      const expected = parsed.flags[key];
-      if (expected === undefined) continue;
-      if (entryFlag(entry, key) !== expected) {
-        flagMismatch = true;
-        break;
-      }
-    }
-    if (flagMismatch) continue;
-
-    if (hashSet) {
-      if (!hashSet.has(entry.hash)) continue;
-    }
-
-    if (!categoryMatches(entry, parsed.categoryTokens, categoryNameMap)) continue;
-
-    let rejected = false;
     let score = 0;
-
-    for (const token of parsed.textTokens) {
-      if (!textMatches(entry, token)) {
-        rejected = true;
-        break;
-      }
-      score += scoreToken(entry, token);
+    for (const token of scoring.textTokens) {
+      score += scoreToken(entry, token, context);
     }
-    if (rejected) continue;
-
-    for (const token of parsed.negatedTokens) {
-      if (textMatches(entry, token)) {
-        rejected = true;
-        break;
-      }
-    }
-    if (rejected) continue;
-
-    for (const token of parsed.sourceTokens) {
-      if (!sourceMatches(entry, token, context)) {
-        rejected = true;
-        break;
-      }
-    }
-    if (rejected) continue;
-
-    for (const token of parsed.negatedSourceTokens) {
-      if (sourceMatches(entry, token, context)) {
-        rejected = true;
-        break;
-      }
-    }
-    if (rejected) continue;
-
-    for (const token of parsed.traitTokens) {
-      if (!traitMatches(entry, token)) {
-        rejected = true;
-        break;
-      }
-    }
-    if (rejected) continue;
-
-    for (const token of parsed.negatedTraitTokens) {
-      if (traitMatches(entry, token)) {
-        rejected = true;
-        break;
-      }
-    }
-    if (rejected) continue;
-
-    if (hashSet) score += 1000;
+    if (scoring.hashCount > 0) score += 1000;
     if (entry.name) score += 10;
     if (entry.isDummy) score -= 10;
     else score += 15;

@@ -6,9 +6,13 @@ import type { CodeFontFamily, ThemeMode, TouchSize } from '../stores/settings';
 import {
   CODE_FONT_SIZE_MAX,
   CODE_FONT_SIZE_MIN,
+  FUZZINESS_MAX,
+  FUZZINESS_MIN,
+  FUZZINESS_STEP,
   UI_SCALE_MAX,
   UI_SCALE_MIN,
   UI_SCALE_STEP,
+  fuzzinessLevel,
   useSettingsStore,
 } from '../stores/settings';
 import { useExplorerStore } from '../stores/explorer';
@@ -109,6 +113,8 @@ export function SettingsPopover({
   const locale = useSettingsStore((state) => state.locale);
   const bungieApiKey = useSettingsStore((state) => state.bungieApiKey);
   const showClarityDescriptions = useSettingsStore((state) => state.showClarityDescriptions);
+  const fuzzySearch = useSettingsStore((state) => state.fuzzySearch);
+  const fuzziness = useSettingsStore((state) => state.fuzziness);
 
   const setTheme = useSettingsStore((state) => state.setTheme);
   const setUiScale = useSettingsStore((state) => state.setUiScale);
@@ -118,6 +124,8 @@ export function SettingsPopover({
   const setImageScaling = useSettingsStore((state) => state.setImageScaling);
   const setBungieApiKey = useSettingsStore((state) => state.setBungieApiKey);
   const setShowClarityDescriptions = useSettingsStore((state) => state.setShowClarityDescriptions);
+  const setFuzzySearch = useSettingsStore((state) => state.setFuzzySearch);
+  const setFuzziness = useSettingsStore((state) => state.setFuzziness);
   const resetSettings = useSettingsStore((state) => state.resetSettings);
 
   const manifestStatus = useExplorerStore((state) => state.manifestStatus);
@@ -129,6 +137,8 @@ export function SettingsPopover({
   }, [open]);
 
   const tableTotal = manifestStatus.totalTableCount > 0 ? manifestStatus.totalTableCount : 98;
+  const fuzzinessPercent = Math.round(fuzziness * 100);
+  const fuzzinessTier = fuzzinessLevel(fuzziness);
 
   function handleClearCache(): void {
     onClearCache();
@@ -215,6 +225,56 @@ export function SettingsPopover({
                   {label}
                 </button>
               ))}
+            </div>
+          </div>
+        </section>
+
+        <section className={styles.section}>
+          <h2 className={styles.sectionTitle}>Search</h2>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={fuzzySearch}
+            className={styles.switchRow}
+            onClick={() => setFuzzySearch(!fuzzySearch)}
+          >
+            <span className={styles.switchLabel}>
+              <span className={styles.rowLabel}>Fuzzy search</span>
+              <span className={styles.rowHint}>
+                Match results through typos across the manifest
+              </span>
+            </span>
+            <span
+              className={`${styles.switch} ${fuzzySearch ? styles.switchOn : ''}`}
+              aria-hidden="true"
+            >
+              <span className={styles.knob} />
+            </span>
+          </button>
+          <div
+            className={`${styles.sliderBlock} ${fuzzySearch ? '' : styles.sliderBlockOff}`}
+          >
+            <div className={styles.sliderHead}>
+              <span className={styles.rowLabel}>Fuzziness</span>
+              <span className={styles.levelBadge}>
+                {fuzzinessTier} ({fuzzinessPercent}%)
+              </span>
+            </div>
+            <input
+              type="range"
+              className={styles.range}
+              min={FUZZINESS_MIN}
+              max={FUZZINESS_MAX}
+              step={FUZZINESS_STEP}
+              value={fuzziness}
+              disabled={!fuzzySearch}
+              onChange={(event) => setFuzziness(Number(event.target.value))}
+              aria-label="Search fuzziness"
+              aria-valuetext={`${fuzzinessTier}, ${fuzzinessPercent}%`}
+            />
+            <div className={styles.sliderScale} aria-hidden="true">
+              <span>Strict</span>
+              <span>Loose</span>
             </div>
           </div>
         </section>

@@ -16,11 +16,19 @@ import { useExplorerStore } from './stores/explorer';
 import { useSettingsStore } from './stores/settings';
 import { Header } from './components/Header';
 import { HelpDialog } from './components/HelpDialog';
+import { ChangelogDialog } from './components/ChangelogDialog';
 import { ResultsPane } from './components/ResultsPane';
 import { StatusBar } from './components/StatusBar';
 import { TableRail } from './components/TableRail';
 import { DefinitionInspector } from './components/inspector/DefinitionInspector';
 import { NoticeStrip } from './ui/NoticeStrip';
+import {
+  CHANGELOG,
+  computeChangelogOpenState,
+  getLatestChangelogVersion,
+  readLastSeenChangelogVersion,
+  writeLastSeenChangelogVersion,
+} from './data/changelog';
 import styles from './App.module.scss';
 
 const TAB_KEYS: readonly InspectorTab[] = [
@@ -78,9 +86,16 @@ export function App(): ReactNode {
   const applyingPopStateRef = useRef(false);
   const lastHandledHashRef = useRef('');
   const lastSearchKeyRef = useRef('');
+  const lastBaseKeyRef = useRef('');
   const maxPushedBySessionRef = useRef(new Map<string, number>());
 
   const [helpOpen, setHelpOpen] = useState(false);
+  const [changelogState, setChangelogState] = useState(() =>
+    computeChangelogOpenState(readLastSeenChangelogVersion()),
+  );
+  const [changelogOpen, setChangelogOpen] = useState(
+    () => changelogState.shouldAutoOpen,
+  );
 
   // Settings
   const locale = useSettingsStore((s) => s.locale);
@@ -90,6 +105,8 @@ export function App(): ReactNode {
   const railCollapsed = useSettingsStore((s) => s.railCollapsed);
   const railWidth = useSettingsStore((s) => s.railWidth);
   const inspectorWidth = useSettingsStore((s) => s.inspectorWidth);
+  const fuzzySearch = useSettingsStore((s) => s.fuzzySearch);
+  const fuzziness = useSettingsStore((s) => s.fuzziness);
   const setLocale = useSettingsStore((s) => s.setLocale);
   const toggleRail = useSettingsStore((s) => s.toggleRail);
   const setRailWidth = useSettingsStore((s) => s.setRailWidth);
@@ -381,13 +398,18 @@ export function App(): ReactNode {
     return () => window.clearTimeout(timer);
   }, [query, deepSearch]);
 
-  // Run search whenever debouncedQuery, deepSearch, filters, sort, or indexed entry count changes
+  // Run search whenever debouncedQuery, deepSearch, filters, sort, fuzzy
+  // settings, or indexed entry count changes
   useEffect(() => {
+    const baseSearchKey = `${debouncedQuery}|${deepSearch ? '1' : '0'}|${sortMode}|${JSON.stringify(filters)}|${fuzzySearch ? '1' : '0'}`;
+    const searchKey = `${baseSearchKey}|${fuzziness}`;
+    const baseChanged = baseSearchKey !== lastBaseKeyRef.current;
+    lastBaseKeyRef.current = baseSearchKey;
+
     if (manifestStatus.indexedEntryCount === 0 && manifestStatus.phase !== 'ready') {
       return;
     }
 
-    const searchKey = `${debouncedQuery}|${deepSearch ? '1' : '0'}|${sortMode}|${JSON.stringify(filters)}`;
     const isBackgroundIndexRefresh = searchKey === lastSearchKeyRef.current;
 
     const trimmed = debouncedQuery.trim();
@@ -398,7 +420,9 @@ export function App(): ReactNode {
       : trimmed;
 
     const seq = ++searchSeqRef.current;
-    const delay = isBackgroundIndexRefresh ? 500 : 0;
+    // Debounce only fuzziness-slider drags (~120ms) so it feels smooth; toggle
+    // and every other change (query/filters/sort) runs immediately.
+    const delay = isBackgroundIndexRefresh ? 500 : baseChanged ? 0 : 120;
 
     const timer = window.setTimeout(() => {
       lastSearchKeyRef.current = searchKey;
@@ -410,7 +434,13 @@ export function App(): ReactNode {
       const promise =
         useDeep && effectiveDeepQuery.length > 0
           ? manifestClient.deepSearch(effectiveDeepQuery, filters, 400)
-          : manifestClient.search(debouncedQuery, filters, sortMode, 2500);
+          : manifestClient.search(
+              debouncedQuery,
+              filters,
+              sortMode,
+              2500,
+              fuzzySearch ? { enabled: true, threshold: fuzziness } : undefined,
+            );
 
       void promise
         .then((res) => {
@@ -437,6 +467,8 @@ export function App(): ReactNode {
     deepSearch,
     filters,
     sortMode,
+    fuzzySearch,
+    fuzziness,
     manifestStatus.indexedEntryCount,
     manifestStatus.phase,
     setSearchResults,
@@ -720,6 +752,25 @@ export function App(): ReactNode {
         });
       });
   }, [bootManifest, bungieApiKey, locale, pushNotice]);
+
+  const handleOpenChangelog = useCallback(() => {
+    const latestVersion = getLatestChangelogVersion();
+    setChangelogState({
+      shouldAutoOpen: false,
+      expandedVersions: latestVersion ? [latestVersion] : [],
+      unseenVersions: [],
+    });
+    setChangelogOpen(true);
+  }, []);
+
+  const handleCloseChangelog = useCallback(() => {
+    const latestVersion = getLatestChangelogVersion();
+    if (latestVersion) {
+      writeLastSeenChangelogVersion(latestVersion);
+    }
+    setChangelogState((state) => ({ ...state, unseenVersions: [] }));
+    setChangelogOpen(false);
+  }, []);
 
   const handleClearCache = useCallback(() => {
     void manifestClient
@@ -1137,9 +1188,18 @@ export function App(): ReactNode {
       <StatusBar
         onCheckUpdates={handleCheckUpdates}
         onOpenHelp={() => setHelpOpen(true)}
+        onOpenChangelog={handleOpenChangelog}
+        hasUnseenChangelog={changelogState.unseenVersions.length > 0}
       />
 
       <HelpDialog open={helpOpen} onClose={() => setHelpOpen(false)} />
+      <ChangelogDialog
+        open={changelogOpen}
+        onClose={handleCloseChangelog}
+        entries={CHANGELOG}
+        expandedVersions={changelogState.expandedVersions}
+        unseenVersions={changelogState.unseenVersions}
+      />
       <NoticeStrip />
     </div>
   );

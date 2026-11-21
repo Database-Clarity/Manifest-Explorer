@@ -11,6 +11,7 @@ import type {
   ClarityDescriptionEntry,
   DefinitionDetailPayload,
   FilterCatalog,
+  FuzzySearchOptions,
   ManifestStatus,
   ResolvedSummaryEntry,
   ReverseReferenceResponse,
@@ -134,6 +135,7 @@ export function search(
   filters: SearchFilters,
   sort: SortMode,
   maxResults?: number,
+  fuzzy?: FuzzySearchOptions,
 ): Promise<SearchResponse> {
   const request: SearchRequest = {
     type: 'search',
@@ -142,6 +144,7 @@ export function search(
     filters,
     sort,
     maxResults,
+    fuzzy,
   };
   return send<SearchRequest, SearchResponse>(request);
 }

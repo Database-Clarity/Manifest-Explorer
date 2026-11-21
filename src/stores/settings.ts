@@ -29,6 +29,8 @@ export interface SettingsValues {
   railCollapsed: boolean;
   railWidth: number;
   inspectorWidth: number;
+  fuzzySearch: boolean;
+  fuzziness: number;
 }
 
 export interface SettingsActions {
@@ -46,10 +48,35 @@ export interface SettingsActions {
   toggleRail: () => void;
   setRailWidth: (width: number) => void;
   setInspectorWidth: (width: number) => void;
+  setFuzzySearch: (enabled: boolean) => void;
+  setFuzziness: (value: number) => void;
   resetSettings: () => void;
 }
 
 export type SettingsState = SettingsValues & SettingsActions;
+
+/**
+ * Normalized edit tolerance for sitewide fuzzy search: `0.15` is strict
+ * (roughly one small typo), `0.35` is balanced, `0.6` is loose.
+ */
+export const FUZZINESS_MIN = 0.15;
+export const FUZZINESS_MAX = 0.6;
+export const FUZZINESS_STEP = 0.05;
+export const FUZZINESS_DEFAULT = 0.35;
+
+export type FuzzinessLevel = 'Strict' | 'Balanced' | 'Loose';
+
+/** Human-readable tier for a normalized fuzziness value, shared by settings UIs. */
+export function fuzzinessLevel(value: number): FuzzinessLevel {
+  const normalized = normalizeFuzziness(value);
+  if (normalized <= 0.25) {
+    return 'Strict';
+  }
+  if (normalized <= 0.45) {
+    return 'Balanced';
+  }
+  return 'Loose';
+}
 
 export const DEFAULT_SETTINGS: SettingsValues = {
   theme: 'system',
@@ -66,6 +93,8 @@ export const DEFAULT_SETTINGS: SettingsValues = {
   railCollapsed: false,
   railWidth: 224,
   inspectorWidth: 620,
+  fuzzySearch: false,
+  fuzziness: FUZZINESS_DEFAULT,
 };
 
 export const UI_SCALE_MIN = 85;
@@ -116,6 +145,10 @@ function normalizeRailWidth(value: number): number {
 
 function normalizeInspectorWidth(value: number): number {
   return Math.round(clamp(value, INSPECTOR_WIDTH_MIN, INSPECTOR_WIDTH_MAX));
+}
+
+function normalizeFuzziness(value: number): number {
+  return Number(snap(value, FUZZINESS_MIN, FUZZINESS_MAX, FUZZINESS_STEP).toFixed(2));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -207,6 +240,8 @@ function mergePersistedSettings(persistedState: unknown, currentState: SettingsS
     inspectorWidth: normalizeInspectorWidth(
       readNumber(persistedState.inspectorWidth, currentState.inspectorWidth),
     ),
+    fuzzySearch: readBoolean(persistedState.fuzzySearch, currentState.fuzzySearch),
+    fuzziness: normalizeFuzziness(readNumber(persistedState.fuzziness, currentState.fuzziness)),
   };
 }
 
@@ -235,6 +270,8 @@ export const useSettingsStore = create<SettingsState>()(
         setRailWidth: (railWidth) => commit({ railWidth: normalizeRailWidth(railWidth) }),
         setInspectorWidth: (inspectorWidth) =>
           commit({ inspectorWidth: normalizeInspectorWidth(inspectorWidth) }),
+        setFuzzySearch: (fuzzySearch) => commit({ fuzzySearch }),
+        setFuzziness: (fuzziness) => commit({ fuzziness: normalizeFuzziness(fuzziness) }),
         resetSettings: () => {
           set(DEFAULT_SETTINGS);
           applySettingsToDom(get());
@@ -260,6 +297,8 @@ export const useSettingsStore = create<SettingsState>()(
         railCollapsed: state.railCollapsed,
         railWidth: state.railWidth,
         inspectorWidth: state.inspectorWidth,
+        fuzzySearch: state.fuzzySearch,
+        fuzziness: state.fuzziness,
       }),
       merge: mergePersistedSettings,
       onRehydrateStorage: () => (state) => {

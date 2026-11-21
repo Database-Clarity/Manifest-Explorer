@@ -7,6 +7,8 @@ import styles from './StatusBar.module.scss';
 export interface StatusBarProps {
   onCheckUpdates: () => void;
   onOpenHelp: () => void;
+  onOpenChangelog?: () => void;
+  hasUnseenChangelog?: boolean;
 }
 
 type StatusTone = 'ok' | 'busy' | 'error';
@@ -32,7 +34,12 @@ function resolveStatus(phase: ManifestStatus['phase']): StatusView {
   return { label: 'Ready', tone: 'ok' };
 }
 
-export function StatusBar({ onCheckUpdates, onOpenHelp }: StatusBarProps): ReactNode {
+export function StatusBar({
+  onCheckUpdates,
+  onOpenHelp,
+  onOpenChangelog,
+  hasUnseenChangelog = false,
+}: StatusBarProps): ReactNode {
   const manifestStatus = useExplorerStore((state) => state.manifestStatus);
 
   const status = resolveStatus(manifestStatus.phase);
@@ -81,6 +88,20 @@ export function StatusBar({ onCheckUpdates, onOpenHelp }: StatusBarProps): React
         <button type="button" className={styles.barBtn} onClick={onCheckUpdates}>
           Check updates
         </button>
+        {onOpenChangelog && (
+          <button
+            type="button"
+            className={styles.barBtn}
+            onClick={onOpenChangelog}
+            aria-label={hasUnseenChangelog ? 'What’s new (unread updates)' : 'What’s new'}
+            title="What’s new"
+          >
+            What’s new
+            {hasUnseenChangelog && (
+              <span className={cx(styles.dot, styles.dotOk)} aria-hidden="true" />
+            )}
+          </button>
+        )}
         <button
           type="button"
           className={styles.barBtn}

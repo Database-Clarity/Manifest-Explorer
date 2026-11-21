@@ -22,7 +22,7 @@ import {
   toSignedHash,
   toUnsignedHash,
 } from '../hash';
-import { parseSearchQuery, scoreAndFilterEntries, type SearchContext } from '../query';
+import { boundedEditDistance, parseSearchQuery, scoreAndFilterEntries, type SearchContext } from '../query';
 import { SEASON_ALIASES, formatShortSeasonName, getD2aiMappings, normalizeSourceLookup } from '../d2ai';
 import {
   ARTIFACT_PERKS_TABLE,
@@ -685,6 +685,70 @@ describe('ranking and filtering', () => {
   });
 });
 
+describe('sitewide fuzzy search', () => {
+  const fuzzyOn = (threshold: number): SearchContext => ({
+    fuzzy: { enabled: true, threshold },
+  });
+
+  it('supports insertions, substitutions and adjacent transpositions', () => {
+    expect(boundedEditDistance('sunhsot', 'sunshot', 2)).toBe(1);
+    expect(boundedEditDistance('spdaes', 'spades', 2)).toBe(1);
+    expect(boundedEditDistance('gjarhorn', 'gjallarhorn', 4)).toBeLessThanOrEqual(4);
+    expect(boundedEditDistance('zzzzzz', 'sunshot', 2)).toBeGreaterThan(2);
+  });
+
+  it('returns zero matches for a typo when fuzzy search is off', () => {
+    const entries = [makeEntry({ hash: 1, name: 'Gjallarhorn' })];
+    expect(rank('gjalahorn', entries).items).toHaveLength(0);
+  });
+
+  it('matches common typos when fuzzy search is on', () => {
+    const entries = [
+      makeEntry({ hash: 1, name: 'Gjallarhorn' }),
+      makeEntry({ hash: 2, name: 'Sunshot' }),
+      makeEntry({ hash: 3, name: 'Ace of Spades' }),
+      makeEntry({ hash: 4, name: "Izanagi's Burden" }),
+    ];
+    const context = fuzzyOn(0.35);
+    expect(rank('gjalahorn', entries, { context }).items.map((i) => i.hash)).toEqual([1]);
+    expect(rank('sunhsot', entries, { context }).items.map((i) => i.hash)).toEqual([2]);
+    expect(rank('ace of spdaes', entries, { context }).items.map((i) => i.hash)).toEqual([3]);
+    expect(rank('izanagi burdn', entries, { context }).items.map((i) => i.hash)).toEqual([4]);
+  });
+
+  it('is threshold-sensitive: a distant typo fails at Strict and matches at Loose', () => {
+    // "sunskat" is "sunshot" with two substitutions → edit distance 2.
+    const entries = [makeEntry({ hash: 1, name: 'Sunshot' })];
+    expect(rank('sunskat', entries, { context: fuzzyOn(0.15) }).items).toHaveLength(0);
+    expect(rank('sunskat', entries, { context: fuzzyOn(0.55) }).items.map((i) => i.hash)).toEqual([
+      1,
+    ]);
+  });
+
+  it('ranks exact/substring matches above fuzzy matches', () => {
+    const exact = makeEntry({ hash: 1, name: 'Gjallarhorn' });
+    const fuzzy = makeEntry({ hash: 2, name: 'Gjalahorn' });
+    const result = rank('gjallarhorn', [fuzzy, exact], { context: fuzzyOn(0.35) });
+    expect(result.items.map((i) => i.hash)).toEqual([1, 2]);
+  });
+
+  it('combines cleanly with Boolean filters', () => {
+    const entries = [
+      makeEntry({ hash: 1, name: 'Gjallarhorn', tierType: 6 }),
+      makeEntry({ hash: 2, name: 'Gjallarhorn', tierType: 5 }),
+      makeEntry({ hash: 3, name: 'Sunshot', tierType: 6 }),
+      makeEntry({ hash: 4, name: 'Sunshot', tierType: 5 }),
+    ];
+    const context = fuzzyOn(0.35);
+    expect(rank('tier:exotic gjalahorn', entries, { context }).items.map((i) => i.hash)).toEqual([
+      1,
+    ]);
+    expect(rank('-tier:legendary sunhsot', entries, { context }).items.map((i) => i.hash)).toEqual([
+      3,
+    ]);
+  });
+});
+
 describe('search index schema version', () => {
   it('exports a schema version so stale caches are rebuilt', () => {
     expect(SEARCH_INDEX_SCHEMA_VERSION).toBe(5);
@@ -890,6 +954,131 @@ describe('DIM-inspired query operators', () => {
     expect(rank('is:exotic', entries, { sort: 'hash-asc' }).items.map((item) => item.hash)).toEqual([1, 3]);
     expect(rank('is:solar', entries, { sort: 'hash-asc' }).items.map((item) => item.hash)).toEqual([1, 2]);
     expect(rank('is:weapon', entries, { sort: 'hash-asc' }).items.map((item) => item.hash)).toEqual([1, 2, 3]);
+  });
+});
+
+describe('Boolean expression parsing (DIM-standard AND/OR/NOT)', () => {
+  const solarExotic = makeEntry({ hash: 1, name: 'Solar Exotic', tierType: 6, damageType: 3 });
+  const solarLegendary = makeEntry({ hash: 2, name: 'Solar Legendary', tierType: 5, damageType: 3 });
+  const arcExotic = makeEntry({ hash: 3, name: 'Arc Exotic', tierType: 6, damageType: 2 });
+
+  it('defaults to AND between filters', () => {
+    const entries = [solarExotic, solarLegendary, arcExotic];
+    // Strict AND: no entry is both exotic and legendary.
+    expect(rank('tier:exotic tier:legendary', entries).items).toHaveLength(0);
+    // AND: exotic AND solar -> only the Solar Exotic.
+    expect(rank('tier:exotic damage:solar', entries).items.map((item) => item.hash)).toEqual([1]);
+  });
+
+  it('supports explicit or / OR between filters', () => {
+    const entries = [solarExotic, solarLegendary, arcExotic];
+    expect(rank('tier:exotic or tier:legendary', entries, { sort: 'hash-asc' }).items.map((item) => item.hash)).toEqual(
+      [1, 2, 3],
+    );
+    expect(rank('damage:solar or damage:arc', entries, { sort: 'hash-asc' }).items.map((item) => item.hash)).toEqual(
+      [1, 2, 3],
+    );
+    expect(rank('damage:solar OR damage:arc', entries, { sort: 'hash-asc' }).items.map((item) => item.hash)).toEqual(
+      [1, 2, 3],
+    );
+  });
+
+  it('applies parentheses and NOT > AND > OR precedence', () => {
+    const entries = [
+      makeEntry({ hash: 1, name: 'Solar Exotic', tierType: 6, damageType: 3 }),
+      makeEntry({ hash: 2, name: 'Solar Legendary', tierType: 5, damageType: 3 }),
+      makeEntry({ hash: 3, name: 'Void Exotic', tierType: 6, damageType: 4 }),
+      makeEntry({ hash: 4, name: 'Void Legendary', tierType: 5, damageType: 4 }),
+    ];
+    // (exotic OR legendary) AND (solar OR void) -> everything.
+    expect(
+      rank('(tier:exotic or tier:legendary) (damage:solar or damage:void)', entries, { sort: 'hash-asc' }).items.map(
+        (item) => item.hash,
+      ),
+    ).toEqual([1, 2, 3, 4]);
+    // solar OR (void AND exotic): solar items plus the Void Exotic (not void legendary).
+    expect(
+      rank('damage:solar or damage:void tier:exotic', entries, { sort: 'hash-asc' }).items.map((item) => item.hash),
+    ).toEqual([1, 2, 3]);
+  });
+
+  it('negates single filters with - and not', () => {
+    const entries = [solarExotic, solarLegendary, arcExotic];
+    expect(rank('-damage:solar', entries, { sort: 'hash-asc' }).items.map((item) => item.hash)).toEqual([3]);
+    expect(rank('not damage:solar', entries, { sort: 'hash-asc' }).items.map((item) => item.hash)).toEqual([3]);
+    expect(rank('not is:enhanced', entries, { sort: 'hash-asc' }).items.map((item) => item.hash)).toEqual([1, 2, 3]);
+  });
+
+  it('negates a whole parenthesized group', () => {
+    const entries = [
+      makeEntry({ hash: 10, name: 'Common', tierType: 2 }),
+      makeEntry({ hash: 11, name: 'Uncommon', tierType: 3 }),
+      makeEntry({ hash: 12, name: 'Rare', tierType: 4 }),
+      makeEntry({ hash: 13, name: 'Legendary', tierType: 5 }),
+    ];
+    expect(rank('-(tier:common or tier:uncommon)', entries, { sort: 'hash-asc' }).items.map((item) => item.hash)).toEqual(
+      [12, 13],
+    );
+    expect(rank('not (tier:common or tier:uncommon)', entries, { sort: 'hash-asc' }).items.map((item) => item.hash)).toEqual(
+      [12, 13],
+    );
+  });
+
+  it('treats a signed negative hash as a hash match, not negation', () => {
+    const unsigned = toUnsignedHash(-1368098261);
+    const entries = [makeEntry({ hash: unsigned, name: 'Signed Hash Item' }), makeEntry({ hash: 999, name: 'Other' })];
+    const result = rank('-1368098261', entries);
+    expect(result.items.map((item) => item.hash)).toEqual([unsigned]);
+  });
+
+  it('stays resilient to partial and malformed typing', () => {
+    const entries = [solarExotic, arcExotic];
+    expect(rank('(damage:solar or ', entries).items.map((item) => item.hash)).toEqual([1]);
+    expect(rank('damage:solar or', entries).items.map((item) => item.hash)).toEqual([1]);
+    expect(rank('((tier:exotic))', entries, { sort: 'hash-asc' }).items.map((item) => item.hash)).toEqual([1, 3]);
+    expect(rank(')tier:exotic', entries, { sort: 'hash-asc' }).items.map((item) => item.hash)).toEqual([1, 3]);
+  });
+
+  it('matches entries in either table with table:perk or table:item', () => {
+    const entries = [
+      makeEntry({ hash: 21, name: 'A Perk', table: 'DestinySandboxPerkDefinition' }),
+      makeEntry({ hash: 22, name: 'An Item', table: ITEM_TABLE }),
+      makeEntry({ hash: 23, name: 'A Record', table: 'DestinyRecordDefinition' }),
+    ];
+    expect(rank('table:perk or table:item', entries, { sort: 'hash-asc' }).items.map((item) => item.hash)).toEqual([
+      21, 22,
+    ]);
+  });
+
+  it('negates and ORs category, season and source operators', () => {
+    const entries = [
+      makeEntry({ hash: 1, name: 'Raid Hand Cannon', itemCategoryHashes: [5], seasonNumber: 26, sourceTags: ['raid'] }),
+      makeEntry({ hash: 2, name: 'Dungeon Sidearm', itemCategoryHashes: [7], seasonNumber: 27, sourceTags: ['dungeon'] }),
+      makeEntry({ hash: 3, name: 'Raid Sword', itemCategoryHashes: [8], seasonNumber: 28, sourceTags: ['raid'] }),
+    ];
+    const categories = new Map([
+      [5, 'Hand Cannon'],
+      [7, 'Sidearm'],
+      [8, 'Sword'],
+    ]);
+    const context: SearchContext = {
+      latestSeason: 28,
+      sourceAliasToKey: getD2aiMappings().sourceAliasToKey,
+    };
+
+    expect(rank('cat:"Hand Cannon"', entries, { categories }).items.map((item) => item.hash)).toEqual([1]);
+    expect(rank('-cat:"Hand Cannon"', entries, { categories, sort: 'hash-asc' }).items.map((item) => item.hash)).toEqual([2, 3]);
+    expect(rank('season:26 or season:27', entries, { context, sort: 'hash-asc' }).items.map((item) => item.hash)).toEqual([1, 2]);
+    expect(rank('source:raid or source:dungeon', entries, { context, sort: 'hash-asc' }).items.map((item) => item.hash)).toEqual([1, 2, 3]);
+  });
+
+  it('exposes a Boolean AST and leaves it empty for a blank query', () => {
+    const tables = [ITEM_TABLE, 'DestinySandboxPerkDefinition', 'DestinyRecordDefinition'];
+    expect(parseSearchQuery('', tables).ast).toBeUndefined();
+    expect(parseSearchQuery('tier:exotic or tier:legendary', tables).ast?.type).toBe('or');
+    expect(parseSearchQuery('tier:exotic damage:solar', tables).ast?.type).toBe('and');
+    expect(parseSearchQuery('-is:ornament', tables).ast?.type).toBe('not');
+    expect(parseSearchQuery('table:perk or table:item', tables).tableFilter).toBeUndefined();
   });
 });
 

@@ -1,5 +1,5 @@
 /// <reference types="vite/client" />
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useLayoutEffect, useRef, type ReactNode } from 'react';
 import type { FilterOption, TableStatus } from '../types/manifest';
 import styles from './SearchAutocomplete.module.scss';
 
@@ -61,7 +61,6 @@ export interface SearchSuggestionResult {
   caret: number;
 }
 
-const MAX_SUGGESTIONS = 10;
 const NUMBER_FORMAT = new Intl.NumberFormat('en-US');
 
 interface ValueOption {
@@ -290,9 +289,11 @@ interface ScoredCandidate {
 }
 
 /**
- * Splits a query into token spans while keeping quoted segments together, so
- * `cat:"Hand Cannon"` stays one token. Quotes that are still open swallow the
- * rest of the query, which is exactly how the parser reads a partial phrase.
+ * Splits a query into token spans while keeping quoted segments together and
+ * treating parentheses as group delimiters. `(damage:so` therefore completes
+ * only `damage:so`, leaving both parentheses untouched. Quotes that are still
+ * open swallow the rest of the query, which is exactly how the parser reads a
+ * partial phrase.
  */
 function tokenSpans(query: string): Array<{ start: number; end: number }> {
   const spans: Array<{ start: number; end: number }> = [];
@@ -305,6 +306,16 @@ function tokenSpans(query: string): Array<{ start: number; end: number }> {
     if (char === '"') {
       if (start < 0) start = index;
       inQuotes = !inQuotes;
+      continue;
+    }
+
+    // Parentheses delimit tokens but are not part of them, so accepting a
+    // suggestion inside a group can never replace the surrounding brackets.
+    if (!inQuotes && (char === '(' || char === ')')) {
+      if (start >= 0) {
+        spans.push({ start, end: index });
+        start = -1;
+      }
       continue;
     }
 
@@ -375,7 +386,7 @@ function rankSuggestions(candidates: readonly RankedCandidate[], term: string): 
   });
 
   scored.sort((a, b) => a.score - b.score || a.order - b.order);
-  return scored.slice(0, MAX_SUGGESTIONS).map((entry) => entry.suggestion);
+  return scored.map((entry) => entry.suggestion);
 }
 
 /** Quotes values that contain whitespace so a multi-word token survives parsing. */
@@ -672,8 +683,8 @@ export function buildSearchSuggestions(
 /**
  * Replaces only the active token with the suggestion, preserving everything
  * before and after it. Completed `key:value` tokens get one trailing space
- * unless whitespace already follows, and the returned caret sits after the
- * inserted text so the user can keep typing.
+ * unless whitespace or a closing group paren already follows, and the returned
+ * caret sits after the inserted text so the user can keep typing.
  */
 export function applySearchSuggestion(
   query: string,
@@ -687,7 +698,7 @@ export function applySearchSuggestion(
 
   const before = query.slice(0, start);
   const after = query.slice(end);
-  const needsSpace = suggestion.completesValue && !/^\s/.test(after);
+  const needsSpace = suggestion.completesValue && !/^[\s)]/.test(after);
   const insert = needsSpace ? `${suggestion.insert} ` : suggestion.insert;
 
   return {
@@ -714,13 +725,40 @@ export function SearchAutocomplete({
 }: SearchAutocompleteProps): ReactNode {
   const listRef = useRef<HTMLDivElement>(null);
 
-  // Keep the keyboard-highlighted row inside the capped, scrollable panel.
-  useEffect(() => {
+  // Keep the highlighted row AND its neighbours fully inside the scroll port.
+  // The footer is a sibling below this scroller, never an overlay, so the last
+  // row can never be clipped or covered. Scrolling is instant (not smooth) so
+  // the target is already in view on the next keydown.
+  useLayoutEffect(() => {
     if (highlightIndex < 0) return;
+
     const list = listRef.current;
-    const option = list?.children.item(highlightIndex);
-    if (option instanceof HTMLElement) {
-      option.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    if (!list) return;
+
+    const options = list.children;
+    const activeEl = options.item(highlightIndex);
+    if (!(activeEl instanceof HTMLElement)) return;
+
+    const prevEl = options.item(highlightIndex - 1);
+    const nextEl = options.item(highlightIndex + 1);
+    const topAnchor = prevEl instanceof HTMLElement ? prevEl : activeEl;
+    const bottomAnchor = nextEl instanceof HTMLElement ? nextEl : activeEl;
+
+    const listRect = list.getBoundingClientRect();
+    const computed = window.getComputedStyle(list);
+    const paddingTop = Number.parseFloat(computed.paddingTop) || 0;
+    const paddingBottom = Number.parseFloat(computed.paddingBottom) || 0;
+    const scrollTop = list.scrollTop;
+
+    const desiredTop =
+      topAnchor.getBoundingClientRect().top - listRect.top + scrollTop - paddingTop;
+    const desiredBottom =
+      bottomAnchor.getBoundingClientRect().bottom - listRect.top + scrollTop + paddingBottom;
+
+    if (desiredTop < scrollTop) {
+      list.scrollTop = Math.max(0, desiredTop);
+    } else if (desiredBottom > scrollTop + list.clientHeight) {
+      list.scrollTop = desiredBottom - list.clientHeight;
     }
   }, [highlightIndex, suggestions]);
 

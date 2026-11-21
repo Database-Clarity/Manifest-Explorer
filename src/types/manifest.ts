@@ -116,6 +116,12 @@ export interface SearchResultItem {
   parentArtifactIcon?: string;
 }
 
+export interface FuzzySearchOptions {
+  enabled: boolean;
+  /** Normalized max edit distance tolerance in [0.15, 0.6]. */
+  threshold: number;
+}
+
 export interface SearchFilters {
   /** Single selected table or 'all' */
   table: string;

@@ -23,6 +23,10 @@ import { TableRail } from './components/TableRail';
 import { DefinitionInspector } from './components/inspector/DefinitionInspector';
 import { NoticeStrip } from './ui/NoticeStrip';
 import {
+  checkForAppUpdate,
+  startAppUpdateWatcher,
+} from './utils/appUpdate';
+import {
   CHANGELOG,
   computeChangelogOpenState,
   getLatestChangelogVersion,
@@ -96,6 +100,13 @@ export function App(): ReactNode {
   const [changelogOpen, setChangelogOpen] = useState(
     () => changelogState.shouldAutoOpen,
   );
+  const [appUpdateAvailable, setAppUpdateAvailable] = useState(false);
+  const [appUpdateDismissed, setAppUpdateDismissed] = useState(false);
+
+  const markAppUpdateAvailable = useCallback((_latestBuildId: string) => {
+    setAppUpdateAvailable(true);
+    setAppUpdateDismissed(false);
+  }, []);
 
   // Settings
   const locale = useSettingsStore((s) => s.locale);
@@ -335,6 +346,11 @@ export function App(): ReactNode {
   useEffect(() => {
     bootManifest(locale, bungieApiKey, false);
   }, [locale, bungieApiKey, bootManifest]);
+
+  useEffect(
+    () => startAppUpdateWatcher(markAppUpdateAvailable),
+    [markAppUpdateAvailable],
+  );
 
   const manifestReady =
     manifestStatus.indexedEntryCount > 0 || manifestStatus.phase === 'ready';
@@ -728,6 +744,12 @@ export function App(): ReactNode {
   }, [pushNotice]);
 
   const handleCheckUpdates = useCallback(() => {
+    void checkForAppUpdate().then((result) => {
+      if (result.updateAvailable && result.latestBuildId) {
+        markAppUpdateAvailable(result.latestBuildId);
+      }
+    });
+
     void manifestClient
       .checkForUpdates()
       .then((res) => {
@@ -754,7 +776,12 @@ export function App(): ReactNode {
           message: err instanceof Error ? err.message : 'Update check failed.',
         });
       });
-  }, [bootManifest, bungieApiKey, locale, pushNotice]);
+  }, [bootManifest, bungieApiKey, locale, markAppUpdateAvailable, pushNotice]);
+
+  const handleReloadApp = useCallback(() => {
+    // Reloading the current document naturally retains its URL hash.
+    window.location.reload();
+  }, []);
 
   const handleOpenChangelog = useCallback(() => {
     const latestVersion = getLatestChangelogVersion();
@@ -1138,6 +1165,29 @@ export function App(): ReactNode {
         onSelectTable={handleSelectTable}
       />
 
+      {appUpdateAvailable && !appUpdateDismissed && (
+        <section className={styles.updateNotice} role="status" aria-live="polite">
+          <p className={styles.updateNoticeMessage}>
+            A new version of Manifest Explorer is available.
+          </p>
+          <button
+            type="button"
+            className={styles.updateReload}
+            onClick={handleReloadApp}
+          >
+            Reload now
+          </button>
+          <button
+            type="button"
+            className={styles.updateDismiss}
+            onClick={() => setAppUpdateDismissed(true)}
+            aria-label="Dismiss update notice"
+          >
+            Dismiss
+          </button>
+        </section>
+      )}
+
       <main className={styles.workspace}>
         <TableRail
           width={railWidth}
@@ -1191,6 +1241,8 @@ export function App(): ReactNode {
       <StatusBar
         onCheckUpdates={handleCheckUpdates}
         onOpenHelp={() => setHelpOpen(true)}
+        appUpdateAvailable={appUpdateAvailable}
+        onReloadApp={handleReloadApp}
         onOpenChangelog={handleOpenChangelog}
         hasUnseenChangelog={changelogState.unseenVersions.length > 0}
       />

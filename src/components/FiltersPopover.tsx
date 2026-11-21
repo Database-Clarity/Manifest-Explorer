@@ -43,9 +43,12 @@ interface TokenOption {
  * `is:holofoil`/`is:redacted` (stripped from Lite), `is:featured` (no matches
  * anywhere), `has:watermark` (half the manifest) — and `is:artifact` is
  * superseded by the dedicated Artifact Perks table in the Tables rail.
+ * `is:artifactperk` stays: the table scopes the view, while this chip matches
+ * perk records directly and ORs with `season:`/other flags in the search bar.
  */
 const HIGHLIGHT_OPTIONS: readonly TokenOption[] = [
   { token: 'is:enhanced', label: 'Enhanced' },
+  { token: 'is:artifactperk', label: 'Artifact Perk' },
   { token: 'is:adept', label: 'Adept' },
   { token: 'is:craftable', label: 'Craftable' },
   { token: 'is:catalyst', label: 'Catalyst' },
@@ -342,10 +345,53 @@ export function FiltersPopover({
             Reset filters
           </button>
         </div>
-        <p className={styles.lede}>
-          Chips in one section or together; sections and together — every chip writes its
-          exact syntax into the search bar to edit, combine, and share.
-        </p>
+
+        <section className={styles.optionsTop} aria-label="Search options">
+          <div className={styles.optionsRow}>
+            <h3 className={styles.optionsTitle}>Search options</h3>
+            <label className={styles.checkRow}>
+              <input
+                type="checkbox"
+                checked={includeUnnamed}
+                onChange={(event) => setFilters({ includeUnnamed: event.target.checked })}
+              />
+              <span>Include unnamed definitions</span>
+            </label>
+            <label className={styles.checkRow}>
+              <input
+                type="checkbox"
+                checked={fuzzySearch}
+                onChange={(event) => setFuzzySearch(event.target.checked)}
+              />
+              <span>Fuzzy search (match typos)</span>
+            </label>
+          </div>
+          {fuzzySearch && (
+            <div className={styles.fuzzinessRow}>
+              <div className={styles.fuzzinessHead}>
+                <span className={styles.fuzzinessLabel}>Fuzziness</span>
+                <span className={styles.fuzzinessReadout}>
+                  {fuzzinessPercent}% · {fuzzinessTier}
+                </span>
+              </div>
+              <input
+                type="range"
+                className={styles.range}
+                min={FUZZINESS_MIN}
+                max={FUZZINESS_MAX}
+                step={FUZZINESS_STEP}
+                value={fuzziness}
+                onChange={(event) => setFuzziness(Number(event.target.value))}
+                aria-label="Search fuzziness"
+                aria-valuetext={`${fuzzinessTier}, ${fuzzinessPercent}%`}
+              />
+              <div className={styles.fuzzinessScale} aria-hidden="true">
+                <span>Strict</span>
+                <span>Loose</span>
+              </div>
+            </div>
+          )}
+        </section>
 
         <div className={styles.columns}>
           <div className={styles.col}>
@@ -481,56 +527,7 @@ export function FiltersPopover({
                 <p className={styles.emptyOptions}>No categories match that search.</p>
               )}
             </section>
-
-            <section className={styles.group}>
-              <h3 className={styles.groupTitle}>Options</h3>
-              <label className={styles.checkRow}>
-                <input
-                  type="checkbox"
-                  checked={includeUnnamed}
-                  onChange={(event) => setFilters({ includeUnnamed: event.target.checked })}
-                />
-                <span>Include unnamed definitions</span>
-              </label>
-              <label className={styles.checkRow}>
-                <input
-                  type="checkbox"
-                  checked={fuzzySearch}
-                  onChange={(event) => setFuzzySearch(event.target.checked)}
-                />
-                <span>Fuzzy search (match typos)</span>
-              </label>
-              {fuzzySearch && (
-                <div className={styles.fuzzinessRow}>
-                  <div className={styles.fuzzinessHead}>
-                    <span className={styles.fuzzinessLabel}>Fuzziness</span>
-                    <span className={styles.fuzzinessReadout}>
-                      {fuzzinessPercent}% · {fuzzinessTier}
-                    </span>
-                  </div>
-                  <input
-                    type="range"
-                    className={styles.range}
-                    min={FUZZINESS_MIN}
-                    max={FUZZINESS_MAX}
-                    step={FUZZINESS_STEP}
-                    value={fuzziness}
-                    onChange={(event) => setFuzziness(Number(event.target.value))}
-                    aria-label="Search fuzziness"
-                    aria-valuetext={`${fuzzinessTier}, ${fuzzinessPercent}%`}
-                  />
-                  <div className={styles.fuzzinessScale} aria-hidden="true">
-                    <span>Strict</span>
-                    <span>Loose</span>
-                  </div>
-                </div>
-              )}
-            </section>
           </div>
-        </div>
-
-        <div className={styles.hint}>
-          <code>(damage:solar or damage:arc) tier:exotic is:enhanced</code>
         </div>
       </div>
     </Popover>

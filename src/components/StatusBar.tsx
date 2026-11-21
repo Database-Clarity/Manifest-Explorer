@@ -7,6 +7,8 @@ import styles from './StatusBar.module.scss';
 export interface StatusBarProps {
   onCheckUpdates: () => void;
   onOpenHelp: () => void;
+  appUpdateAvailable: boolean;
+  onReloadApp: () => void;
   onOpenChangelog?: () => void;
   hasUnseenChangelog?: boolean;
 }
@@ -37,6 +39,8 @@ function resolveStatus(phase: ManifestStatus['phase']): StatusView {
 export function StatusBar({
   onCheckUpdates,
   onOpenHelp,
+  appUpdateAvailable,
+  onReloadApp,
   onOpenChangelog,
   hasUnseenChangelog = false,
 }: StatusBarProps): ReactNode {
@@ -84,7 +88,23 @@ export function StatusBar({
         {manifestStatus.loadedTableCount}/{manifestStatus.totalTableCount} tables
       </span>
 
-      <div className={styles.actions}>
+      {appUpdateAvailable && (
+        <button
+          type="button"
+          className={styles.updateButton}
+          onClick={onReloadApp}
+          aria-label="Reload to update Manifest Explorer"
+        >
+          Update available · Reload
+        </button>
+      )}
+
+      <div
+        className={cx(
+          styles.actions,
+          appUpdateAvailable && styles.actionsWithUpdate,
+        )}
+      >
         <button type="button" className={styles.barBtn} onClick={onCheckUpdates}>
           Check updates
         </button>

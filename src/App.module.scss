@@ -1,3 +1,5 @@
+@use './styles/controls' as ctl;
+
 .shell {
   display: flex;
   flex-direction: column;
@@ -14,4 +16,48 @@
   display: flex;
   overflow: hidden;
   position: relative;
+}
+
+.updateNotice {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.625rem;
+  flex: 0 0 auto;
+  min-height: 2.5rem;
+  padding: 0.375rem 0.75rem;
+  border-bottom: 1px solid var(--accent-ink);
+  background: var(--pri-hover);
+  color: var(--text);
+  font-size: 0.8125rem;
+}
+
+.updateNoticeMessage {
+  margin: 0;
+}
+
+.updateReload {
+  @include ctl.primary-button;
+}
+
+.updateDismiss {
+  @include ctl.quiet-button;
+  min-height: 1.75rem;
+}
+
+@media (max-width: 36rem) {
+  .updateNotice {
+    justify-content: flex-start;
+    gap: 0.375rem;
+    font-size: 0.75rem;
+  }
+
+  .updateNoticeMessage {
+    flex: 1;
+  }
+
+  .updateReload,
+  .updateDismiss {
+    padding: 0 0.375rem;
+  }
 }

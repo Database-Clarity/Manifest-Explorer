@@ -185,6 +185,7 @@ interface ResultRowProps {
   onActivate: (item: SearchResultItem, index: number) => void;
   onToggleCollect: (item: SearchResultItem) => void;
   onCopyHash: (hash: number) => void;
+  artifactPerksCategory: boolean;
 }
 
 const ListRow = memo(function ListRow({
@@ -197,14 +198,20 @@ const ListRow = memo(function ListRow({
   collected,
   collectMode,
   showTableColumn,
+  artifactPerksCategory,
   onActivate,
   onToggleCollect,
   onCopyHash,
 }: ResultRowProps): ReactNode {
   const tierColor = getTierColorVar(item.tierType);
-  const parentArtifactName = (
-    item as SearchResultItem & { parentArtifactName?: string }
-  ).parentArtifactName;
+  const parentArtifactName = item.parentArtifactName;
+  const isArtifactPerk = item.isArtifactPerk === true || parentArtifactName !== undefined;
+  const parentArtifactTitle = parentArtifactName
+    ? `Legendary Artifact Perk · ${parentArtifactName}`
+    : undefined;
+  const showArtifactOnlySubtitle =
+    parentArtifactName !== undefined &&
+    (artifactPerksCategory || (isArtifactPerk && showTableColumn));
 
   return (
     <div
@@ -236,21 +243,46 @@ const ListRow = memo(function ListRow({
       />
       <span className={styles.rowText}>
         <span className={styles.rowName}>{itemLabel(item)}</span>
-        <span className={styles.rowSubLine}>
-          <span
-            className={styles.rowSub}
-            style={tierColor ? { color: tierColor } : undefined}
-          >
-            {itemSubtitle(item)}
-          </span>
-          {parentArtifactName ? (
+        <span className={styles.rowSubLine} title={parentArtifactTitle}>
+          {isArtifactPerk ? (
+            parentArtifactName ? (
+              <>
+                {showArtifactOnlySubtitle ? null : (
+                  <>
+                    <span className={styles.artifactPerkPrefix}>Artifact Perk</span>
+                    <span className={styles.artifactPerkSeparator} aria-hidden="true">
+                      ·
+                    </span>
+                  </>
+                )}
+                {item.parentArtifactIcon ? (
+                  <BungieIcon
+                    icon={item.parentArtifactIcon}
+                    size={showArtifactOnlySubtitle ? 14 : 13}
+                    className={styles.artifactParentIcon}
+                  />
+                ) : null}
+                <span
+                  className={joinClasses(
+                    styles.artifactParentName,
+                    showArtifactOnlySubtitle ? styles.artifactParentNameLegendary : '',
+                  )}
+                  title={parentArtifactTitle}
+                >
+                  {parentArtifactName}
+                </span>
+              </>
+            ) : artifactPerksCategory ? null : (
+              <span className={styles.artifactPerkPrefix}>Artifact Perk</span>
+            )
+          ) : (
             <span
-              className={styles.rowArtifact}
-              title={`Artifact: ${parentArtifactName}`}
+              className={styles.rowSub}
+              style={tierColor ? { color: tierColor } : undefined}
             >
-              {parentArtifactName}
+              {itemSubtitle(item)}
             </span>
-          ) : null}
+          )}
         </span>
         {item.deepMatch && (
           <span
@@ -263,7 +295,9 @@ const ListRow = memo(function ListRow({
         )}
       </span>
       {showTableColumn && (
-        <span className={styles.rowTable}>{getShortTableName(item.table)}</span>
+        <span className={styles.rowTable}>
+          {isArtifactPerk ? 'Artifact Perk' : getShortTableName(item.table)}
+        </span>
       )}
       <button
         type="button"
@@ -295,13 +329,16 @@ const GridCell = memo(function GridCell({
   cursor,
   collected,
   collectMode,
+  artifactPerksCategory,
   onActivate,
   onToggleCollect,
 }: ResultRowProps): ReactNode {
   const tierColor = getTierColorVar(item.tierType);
-  const parentArtifactName = (
-    item as SearchResultItem & { parentArtifactName?: string }
-  ).parentArtifactName;
+  const parentArtifactName = item.parentArtifactName;
+  const isArtifactPerk = item.isArtifactPerk === true || parentArtifactName !== undefined;
+  const parentArtifactTitle = parentArtifactName
+    ? `Legendary Artifact Perk · ${parentArtifactName}`
+    : undefined;
 
   return (
     <div
@@ -332,21 +369,34 @@ const GridCell = memo(function GridCell({
       />
       <span className={styles.gridText}>
         <span className={styles.gridName}>{itemLabel(item)}</span>
-        <span className={styles.gridSubLine}>
-          <span
-            className={styles.gridSub}
-            style={tierColor ? { color: tierColor } : undefined}
-          >
-            {itemSubtitle(item)}
-          </span>
-          {parentArtifactName ? (
+        <span className={styles.gridSubLine} title={parentArtifactTitle}>
+          {parentArtifactName && isArtifactPerk ? (
+            <>
+              {item.parentArtifactIcon ? (
+                <BungieIcon
+                  icon={item.parentArtifactIcon}
+                  size={14}
+                  className={styles.artifactParentIcon}
+                />
+              ) : null}
+              <span
+                className={joinClasses(
+                  styles.artifactParentName,
+                  styles.artifactParentNameLegendary,
+                )}
+                title={parentArtifactTitle}
+              >
+                {parentArtifactName}
+              </span>
+            </>
+          ) : isArtifactPerk && artifactPerksCategory ? null : (
             <span
-              className={styles.rowArtifact}
-              title={`Artifact: ${parentArtifactName}`}
+              className={styles.gridSub}
+              style={tierColor ? { color: tierColor } : undefined}
             >
-              {parentArtifactName}
+              {itemSubtitle(item)}
             </span>
-          ) : null}
+          )}
         </span>
         {item.deepMatch ? (
           <span
@@ -705,6 +755,7 @@ export function ResultsPane({ onOpenItem, onRetryBoot }: ResultsPaneProps): Reac
             collected={collectedKeys.has(resultKey(item))}
             collectMode={collectMode}
             showTableColumn={filters.table === 'all' && viewportWidth >= 520}
+            artifactPerksCategory={filters.table === 'ArtifactPerks'}
             onActivate={handleActivate}
             onToggleCollect={handleToggleCollect}
             onCopyHash={handleCopyHash}
@@ -736,6 +787,7 @@ export function ResultsPane({ onOpenItem, onRetryBoot }: ResultsPaneProps): Reac
               collected={collectedKeys.has(resultKey(item))}
               collectMode={collectMode}
               showTableColumn={false}
+              artifactPerksCategory={filters.table === 'ArtifactPerks'}
               onActivate={handleActivate}
               onToggleCollect={handleToggleCollect}
               onCopyHash={handleCopyHash}

@@ -405,7 +405,7 @@ export function Header({
                 placeholder={
                   deepSearch
                     ? 'Deep search inside JSON keys & values…'
-                    : 'Search name, hash, tier:exotic, table:perk…'
+                    : 'Search name, hash, or (damage:solar or damage:arc) tier:exotic…'
                 }
                 aria-label={deepSearch ? 'Deep search inside manifest JSON' : 'Search the manifest'}
                 role="combobox"

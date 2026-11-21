@@ -165,13 +165,29 @@
   color: var(--syn-null);
 }
 
-.comment {
-  color: var(--syn-comment);
+.annotation {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.375rem;
   margin-left: 0.375rem;
+  color: var(--editor-text);
+}
+
+.annotationSep {
+  color: var(--text3);
+  user-select: none;
 }
 
 .enumType {
   color: var(--syn-type);
+}
+
+.enumDot {
+  color: var(--text3);
+}
+
+.enumLabel {
+  color: var(--editor-text);
 }
 
 .refLink {
@@ -193,7 +209,7 @@
 }
 
 .refLinkLazy {
-  color: var(--syn-comment);
+  color: var(--text2);
   text-decoration-style: dotted;
 
   @media (hover: hover) {

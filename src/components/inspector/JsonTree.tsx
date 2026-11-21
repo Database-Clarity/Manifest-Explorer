@@ -425,8 +425,10 @@ function JsonNode({
           </button>
           <span className={styles.containerMeta}>{summary}</span>
           {objectKeyRef && (
-            <span className={styles.comment}>
-              {'// '}
+            <span className={styles.annotation}>
+              <span className={styles.annotationSep} aria-hidden="true">
+                →
+              </span>
               <button
                 type="button"
                 className={styles.refLink}
@@ -584,8 +586,10 @@ function JsonNode({
         )}
 
         {resolvedRef && (
-          <span className={styles.comment}>
-            {'// '}
+          <span className={styles.annotation}>
+            <span className={styles.annotationSep} aria-hidden="true">
+              →
+            </span>
             <button
               type="button"
               className={styles.refLink}
@@ -599,17 +603,23 @@ function JsonNode({
         )}
 
         {!resolvedRef && enumInfo && (
-          <span className={styles.comment}>
-            {'// '}
-            <span className={styles.enumType}>{enumInfo.enumName}</span>
-            {enumInfo.isBitmask ? ': ' : '.'}
-            {enumInfo.label}
+          <span className={styles.annotation}>
+            <span className={styles.annotationSep} aria-hidden="true">
+              →
+            </span>
+            <span className={styles.enumValue}>
+              <span className={styles.enumType}>{enumInfo.enumName}</span>
+              <span className={styles.enumDot}>{enumInfo.isBitmask ? ': ' : '.'}</span>
+              <span className={styles.enumLabel}>{enumInfo.label}</span>
+            </span>
           </span>
         )}
 
         {!resolvedRef && !enumInfo && lazyTargetTable && lazyHash !== null && (
-          <span className={styles.comment}>
-            {'// '}
+          <span className={styles.annotation}>
+            <span className={styles.annotationSep} aria-hidden="true">
+              →
+            </span>
             <button
               type="button"
               className={`${styles.refLink} ${styles.refLinkLazy}`}

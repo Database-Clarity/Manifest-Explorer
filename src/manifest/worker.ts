@@ -1,0 +1,1815 @@
+/**
+ * Manifest Engine Web Worker.
+ *
+ * Implements a three-stage boot (instant IndexedDB cache → core tables →
+ * background secondary tables), Bungie manifest fetching with retry and cache
+ * busting, an in-memory search index, on-demand table loading with streaming
+ * full-item buckets, a definition inspector with reference resolution, and
+ * cache management. Communicates with the main thread over a small typed RPC.
+ */
+
+import type {
+  BungieLocale,
+  ClarityDescriptionEntry,
+  DefinitionDetailPayload,
+  DefinitionOverview,
+  FilterCatalog,
+  FilterOption,
+  ManifestStatus,
+  OverviewLinkedEntity,
+  OverviewLore,
+  OverviewPerk,
+  OverviewSocket,
+  OverviewSocketCategory,
+  OverviewSocketPlug,
+  OverviewStat,
+  ResolvedHashSummary,
+  ReverseReference,
+  ReverseReferenceResponse,
+  SearchFilters,
+  SearchIndexEntry,
+  SearchResponse,
+  SortMode,
+  TableStatus,
+  VariantItem,
+} from '../types/manifest';
+import {
+  CORE_BOOT_TABLES,
+  REVERSE_REF_PRIORITY_TABLES,
+  SECONDARY_INDEX_TABLES,
+  extractTableEntrySummary,
+  getFriendlyTableName,
+  getShortTableName,
+  getTableGroup,
+} from './tables';
+import { bungieAssetUrl, getTargetTablesForField, toUnsignedHash } from './hash';
+import { annotateEnumField } from './enums';
+import { parseSearchQuery, scoreAndFilterEntries } from './query';
+import { streamTopLevelJsonObject } from './streamJson';
+import {
+  clearAllCache,
+  getCacheStats as getCacheStatsFromIdb,
+  getFullItemRaw,
+  getMeta,
+  getSearchIndex,
+  getTableData,
+  hasFullItemsCached,
+  iterateFullItems,
+  purgeOldVersions,
+  putFullItemEntries,
+  putMeta,
+  putSearchIndex,
+  putTableData,
+  type ManifestMeta,
+  type SearchIndexCache,
+} from './idb';
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const INVENTORY_ITEM_TABLE = 'DestinyInventoryItemDefinition';
+const FULL_ITEM_LRU_LIMIT = 256;
+const STREAM_FLUSH_ENTRIES = 2500;
+const STREAM_FLUSH_BYTES = 10_000_000;
+const fullItemWaiters = new Map<number, Array<(parsed: Record<string, unknown>) => void>>();
+const BUNGIE_MANIFEST_URL = 'https://www.bungie.net/Platform/Destiny2/Manifest/';
+const CLARITY_URL =
+  'https://database-clarity.github.io/Live-Clarity-Database/descriptions/clarity.json';
+const CATEGORY_TABLE = 'DestinyItemCategoryDefinition';
+
+// ---------------------------------------------------------------------------
+// RPC protocol types (shared with client.ts)
+// ---------------------------------------------------------------------------
+
+export interface InitRequest {
+  type: 'init';
+  id: number;
+  locale: string;
+  apiKey?: string;
+  forceRefresh?: boolean;
+}
+
+export interface SearchRequest {
+  type: 'search';
+  id: number;
+  query: string;
+  filters: SearchFilters;
+  sort: SortMode;
+  maxResults?: number;
+}
+
+export interface GetDefinitionRequest {
+  type: 'getDefinition';
+  id: number;
+  table: string;
+  hash: number;
+  preferFull?: boolean;
+}
+
+export interface LoadTableRequest {
+  type: 'loadTable';
+  id: number;
+  table: string;
+}
+
+export interface LoadAllTablesRequest {
+  type: 'loadAllTables';
+  id: number;
+}
+
+export interface GetVariantsRequest {
+  type: 'getVariants';
+  id: number;
+  table: string;
+  hash: number;
+}
+
+export interface GetReverseReferencesRequest {
+  type: 'getReverseReferences';
+  id: number;
+  targetHash: number;
+  tablesToScan?: string[];
+}
+
+export interface GetClarityDescriptionRequest {
+  type: 'getClarityDescription';
+  id: number;
+  hash: number;
+}
+
+export interface CheckForUpdatesRequest {
+  type: 'checkForUpdates';
+  id: number;
+}
+
+export interface ClearCacheRequest {
+  type: 'clearCache';
+  id: number;
+}
+
+export interface GetCacheStatsRequest {
+  type: 'getCacheStats';
+  id: number;
+}
+
+export interface GetFilterCatalogRequest {
+  type: 'getFilterCatalog';
+  id: number;
+}
+
+export type WorkerRequest =
+  | InitRequest
+  | SearchRequest
+  | GetDefinitionRequest
+  | LoadTableRequest
+  | LoadAllTablesRequest
+  | GetVariantsRequest
+  | GetReverseReferencesRequest
+  | GetClarityDescriptionRequest
+  | CheckForUpdatesRequest
+  | ClearCacheRequest
+  | GetCacheStatsRequest
+  | GetFilterCatalogRequest;
+
+export interface WorkerSuccessResponse {
+  id: number;
+  ok: true;
+  result: unknown;
+}
+
+export interface WorkerErrorResponse {
+  id: number;
+  ok: false;
+  error: string;
+}
+
+export type WorkerResponse = WorkerSuccessResponse | WorkerErrorResponse;
+
+export interface StatusEvent {
+  type: 'status';
+  status: ManifestStatus;
+}
+
+export interface TablesEvent {
+  type: 'tables';
+  tables: TableStatus[];
+}
+
+export interface CatalogEvent {
+  type: 'catalog';
+  catalog: FilterCatalog;
+}
+
+export type WorkerEvent = StatusEvent | TablesEvent | CatalogEvent;
+
+export interface UpdateCheckResult {
+  hasUpdate: boolean;
+  versionSignature?: string;
+  error?: string;
+}
+
+export interface CacheStatsResult {
+  available: boolean;
+  tableCount: number;
+  fullItemBucketCount: number;
+  searchIndexCount: number;
+  metaCount: number;
+  indexedEntries: number;
+  loadedTables: number;
+  fullItemsInLru: number;
+}
+
+// ---------------------------------------------------------------------------
+// Engine state
+// ---------------------------------------------------------------------------
+
+interface EngineState {
+  locale: BungieLocale;
+  version: string;
+  versionSignature: string;
+  componentPaths: Record<string, string>;
+  apiKey: string | undefined;
+  fromCache: boolean;
+  phase: ManifestStatus['phase'];
+  currentTable: string | undefined;
+  error: string | undefined;
+  lastCheckedAt: number | undefined;
+  initialized: boolean;
+}
+
+const state: EngineState = {
+  locale: 'en',
+  version: '',
+  versionSignature: '',
+  componentPaths: {},
+  apiKey: undefined,
+  fromCache: false,
+  phase: 'idle',
+  currentTable: undefined,
+  error: undefined,
+  lastCheckedAt: undefined,
+  initialized: false,
+};
+
+let entries: SearchIndexEntry[] = [];
+const indexedTables = new Set<string>();
+const entriesByTableAndHash = new Map<string, SearchIndexEntry>();
+const entryByHash = new Map<number, SearchIndexEntry>();
+const tablesByHash = new Map<number, Set<string>>();
+const tableStatuses = new Map<string, TableStatus>();
+const tableDataMap = new Map<string, Record<string, Record<string, unknown>>>();
+const fullItemLru = new Map<number, Record<string, unknown>>();
+const categoryNameMap = new Map<number, string>();
+const loadingPromises = new Map<string, Promise<void>>();
+let fullItemCount = 0;
+let clarityPromise: Promise<Map<number, ClarityDescriptionEntry>> | undefined;
+
+type WorkerScope = {
+  postMessage(message: unknown): void;
+  onmessage: ((event: MessageEvent) => void) | null;
+};
+
+const scope = globalThis as unknown as WorkerScope;
+
+// ---------------------------------------------------------------------------
+// Small type guards
+// ---------------------------------------------------------------------------
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function asNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function asUnsigned(value: unknown): number | undefined {
+  const n = asNumber(value);
+  if (n === undefined || !Number.isInteger(n)) return undefined;
+  return toUnsignedHash(n);
+}
+
+function asNumberArray(value: unknown): number[] {
+  if (!Array.isArray(value)) return [];
+  const out: number[] = [];
+  for (const item of value) {
+    if (typeof item === 'number' && Number.isFinite(item)) out.push(toUnsignedHash(item));
+  }
+  return out;
+}
+
+function asRecordArray(value: unknown): Record<string, unknown>[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: Record<string, unknown>[] = [];
+  for (const item of value) {
+    const rec = asRecord(item);
+    if (rec) out.push(rec);
+  }
+  return out;
+}
+
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+// ---------------------------------------------------------------------------
+// Fetching
+// ---------------------------------------------------------------------------
+
+interface ManifestIndexResponse {
+  Response: {
+    version: string;
+    jsonWorldComponentContentPaths: Record<string, Record<string, string>>;
+  };
+}
+
+function componentSuffix(path: string | undefined): string {
+  if (!path) return '';
+  const idx = path.lastIndexOf('/');
+  return idx >= 0 ? path.slice(idx + 1) : path;
+}
+
+function computeVersionSignature(paths: Record<string, string>): string {
+  return [
+    componentSuffix(paths[INVENTORY_ITEM_TABLE]),
+    componentSuffix(paths['DestinySandboxPerkDefinition']),
+    componentSuffix(paths['DestinyRecordDefinition']),
+  ].join('|');
+}
+
+async function fetchManifestIndex(
+  _locale: string,
+  apiKey?: string,
+): Promise<ManifestIndexResponse> {
+  const headers: Record<string, string> = {};
+  if (apiKey) headers['X-API-Key'] = apiKey;
+  const res = await fetch(BUNGIE_MANIFEST_URL, { headers });
+  if (!res.ok) throw new Error(`Manifest index HTTP ${res.status}`);
+  return (await res.json()) as ManifestIndexResponse;
+}
+
+function componentUrls(path: string): string[] {
+  const base = path.startsWith('http') ? path : `https://www.bungie.net${path}`;
+  return [base, `${base}?cb=1`, `${base}?cb=${Date.now()}`];
+}
+
+async function fetchComponentJson(
+  path: string,
+): Promise<Record<string, Record<string, unknown>>> {
+  let lastError: unknown = new Error('Unknown fetch error');
+  for (const url of componentUrls(path)) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) {
+        lastError = new Error(`HTTP ${res.status} for ${url}`);
+        continue;
+      }
+      try {
+        return (await res.json()) as Record<string, Record<string, unknown>>;
+      } catch (error) {
+        lastError = error;
+        continue;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw toError(lastError);
+}
+
+async function fetchComponentResponse(path: string): Promise<Response> {
+  let lastError: unknown = new Error('Unknown fetch error');
+  for (const url of componentUrls(path)) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) {
+        lastError = new Error(`HTTP ${res.status} for ${url}`);
+        continue;
+      }
+      return res;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw toError(lastError);
+}
+
+// ---------------------------------------------------------------------------
+// Events
+// ---------------------------------------------------------------------------
+
+function post(message: WorkerEvent): void {
+  scope.postMessage(message);
+}
+
+function currentStatus(): ManifestStatus {
+  let loaded = 0;
+  for (const status of tableStatuses.values()) {
+    if (status.loaded) loaded += 1;
+  }
+  return {
+    phase: state.phase,
+    version: state.version,
+    versionSignature: state.versionSignature,
+    locale: state.locale,
+    fromCache: state.fromCache,
+    loadedTableCount: loaded,
+    totalTableCount: Object.keys(state.componentPaths).length,
+    indexedEntryCount: entries.length,
+    currentTable: state.currentTable,
+    error: state.error,
+    lastCheckedAt: state.lastCheckedAt,
+  };
+}
+
+function emitStatus(): void {
+  post({ type: 'status', status: currentStatus() });
+}
+
+function emitTables(): void {
+  post({ type: 'tables', tables: [...tableStatuses.values()] });
+}
+
+function currentCatalog(): FilterCatalog {
+  const categories: FilterOption[] = [...categoryNameMap.entries()]
+    .map(([value, label]) => ({ value, label }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+  return { categories };
+}
+
+function emitCatalog(): void {
+  post({ type: 'catalog', catalog: currentCatalog() });
+}
+
+// ---------------------------------------------------------------------------
+// Index bookkeeping
+// ---------------------------------------------------------------------------
+
+function rebuildEntryLookups(): void {
+  entriesByTableAndHash.clear();
+  entryByHash.clear();
+  tablesByHash.clear();
+  categoryNameMap.clear();
+  for (const entry of entries) {
+    indexOneEntry(entry);
+  }
+}
+
+function indexOneEntry(entry: SearchIndexEntry): void {
+  entriesByTableAndHash.set(`${entry.table}:${entry.hash}`, entry);
+  const existing = entryByHash.get(entry.hash);
+  if (
+    !existing ||
+    (entry.table === INVENTORY_ITEM_TABLE && existing.table !== INVENTORY_ITEM_TABLE)
+  ) {
+    entryByHash.set(entry.hash, entry);
+  }
+  let tables = tablesByHash.get(entry.hash);
+  if (!tables) {
+    tables = new Set<string>();
+    tablesByHash.set(entry.hash, tables);
+  }
+  tables.add(entry.table);
+  if (entry.table === CATEGORY_TABLE && entry.name) {
+    categoryNameMap.set(entry.hash, entry.name);
+  }
+}
+
+function appendEntries(newEntries: SearchIndexEntry[]): void {
+  for (const entry of newEntries) {
+    entries.push(entry);
+    indexOneEntry(entry);
+  }
+}
+
+async function persistSearchIndex(): Promise<void> {
+  await putSearchIndex(state.locale, state.versionSignature, {
+    entries,
+    indexedTables: [...indexedTables],
+  });
+}
+
+function getOrCreateTableStatus(table: string): TableStatus {
+  let status = tableStatuses.get(table);
+  if (!status) {
+    status = {
+      name: table,
+      shortName: getShortTableName(table),
+      group: getTableGroup(table),
+      count: 0,
+      loaded: false,
+      loading: false,
+      indexed: false,
+      hasFullData: false,
+    };
+    tableStatuses.set(table, status);
+  }
+  return status;
+}
+
+function resetEngineState(): void {
+  entries = [];
+  indexedTables.clear();
+  entriesByTableAndHash.clear();
+  entryByHash.clear();
+  tablesByHash.clear();
+  tableStatuses.clear();
+  tableDataMap.clear();
+  fullItemLru.clear();
+  categoryNameMap.clear();
+  loadingPromises.clear();
+  fullItemCount = 0;
+}
+
+function applyCachedState(
+  meta: ManifestMeta,
+  cached: SearchIndexCache,
+): void {
+  state.version = meta.version;
+  state.versionSignature = meta.versionSignature;
+  state.componentPaths = meta.componentPaths;
+  state.fromCache = true;
+  state.initialized = true;
+  entries = cached.entries;
+  indexedTables.clear();
+  for (const table of cached.indexedTables) indexedTables.add(table);
+  rebuildEntryLookups();
+  for (const table of Object.keys(meta.componentPaths)) getOrCreateTableStatus(table);
+  for (const table of indexedTables) {
+    const status = getOrCreateTableStatus(table);
+    status.indexed = true;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Init / loading
+// ---------------------------------------------------------------------------
+
+async function init(
+  localeInput: string,
+  apiKey?: string,
+  forceRefresh = false,
+): Promise<ManifestStatus> {
+  const locale = localeInput as BungieLocale;
+  state.locale = locale;
+  state.apiKey = apiKey;
+  state.error = undefined;
+
+  // Stage 1: boot instantly from cache if available.
+  if (!forceRefresh) {
+    const meta = await getMeta(locale);
+    const cached = meta ? await getSearchIndex(locale, meta.versionSignature) : undefined;
+    if (meta && cached) {
+      applyCachedState(meta, cached);
+      state.phase = 'ready';
+      emitStatus();
+      emitTables();
+      emitCatalog();
+      void backgroundUpdateCheck();
+      return currentStatus();
+    }
+  }
+
+  // Stage 2: cold boot / forced refresh.
+  resetEngineState();
+  state.phase = 'fetching-index';
+  state.currentTable = undefined;
+  emitStatus();
+
+  const index = await fetchManifestIndex(locale, apiKey);
+  const paths = index.Response.jsonWorldComponentContentPaths[locale] ?? {};
+  const version = index.Response.version;
+  const versionSignature = computeVersionSignature(paths);
+
+  await putMeta(locale, {
+    version,
+    versionSignature,
+    componentPaths: paths,
+    fetchedAt: Date.now(),
+  });
+  await purgeOldVersions(locale, versionSignature);
+
+  state.version = version;
+  state.versionSignature = versionSignature;
+  state.componentPaths = paths;
+  state.fromCache = false;
+  state.initialized = true;
+
+  for (const table of Object.keys(paths)) getOrCreateTableStatus(table);
+
+  state.phase = 'loading-core';
+  emitStatus();
+  emitTables();
+
+  // Item categories are required for search filtering, so load them up front.
+  const coreTables = [...CORE_BOOT_TABLES];
+  if (!coreTables.includes(CATEGORY_TABLE)) coreTables.push(CATEGORY_TABLE);
+  await loadTablesInParallel(coreTables, 4);
+
+  state.phase = 'ready';
+  emitStatus();
+  emitTables();
+  emitCatalog();
+  await persistSearchIndex();
+
+  // Stage 3: background secondary indexing.
+  state.phase = 'indexing-secondary';
+  emitStatus();
+  void (async () => {
+    try {
+      await loadTablesInParallel(SECONDARY_INDEX_TABLES, 4);
+      await persistSearchIndex();
+    } finally {
+      state.phase = 'ready';
+      state.currentTable = undefined;
+      emitStatus();
+      emitTables();
+    }
+  })();
+
+  return currentStatus();
+}
+
+async function backgroundUpdateCheck(): Promise<void> {
+  const result = await checkForUpdates();
+  if (result.hasUpdate) {
+    // Seamlessly rebuild with the newer manifest in the background.
+    void init(state.locale, state.apiKey, true);
+  }
+}
+
+async function loadTablesInParallel(
+  tables: readonly string[],
+  concurrency: number,
+): Promise<void> {
+  const queue = [...tables];
+  const workerCount = Math.max(1, Math.min(concurrency, queue.length));
+  const workers: Promise<void>[] = [];
+  for (let i = 0; i < workerCount; i++) {
+    workers.push(
+      (async () => {
+        for (;;) {
+          const next = queue.shift();
+          if (next === undefined) return;
+          try {
+            await loadTable(next);
+          } catch (error) {
+            console.error(`Failed to load ${next}:`, error);
+          }
+        }
+      })(),
+    );
+  }
+  await Promise.all(workers);
+}
+
+async function loadTable(table: string): Promise<void> {
+  const status = getOrCreateTableStatus(table);
+  if (status.hasFullData) return;
+  const inFlight = loadingPromises.get(table);
+  if (inFlight) {
+    await inFlight;
+    return;
+  }
+  status.loading = true;
+  emitTables();
+  const promise = doLoadTable(table);
+  loadingPromises.set(table, promise);
+  try {
+    await promise;
+  } finally {
+    loadingPromises.delete(table);
+    status.loading = false;
+    emitTables();
+  }
+}
+
+async function doLoadTable(table: string): Promise<void> {
+  const status = getOrCreateTableStatus(table);
+  const path = state.componentPaths[table];
+  if (!path) throw new Error(`No component path for table ${table}`);
+
+  if (table === INVENTORY_ITEM_TABLE) {
+    state.currentTable = table;
+    emitStatus();
+    const res = await fetchComponentResponse(path);
+    if (!res.body) throw new Error(`No response body for ${table}`);
+    await streamIntoBuckets(res.body);
+    status.loaded = true;
+    status.hasFullData = true;
+    status.count = fullItemCount;
+    status.indexed = indexedTables.has(table);
+    state.currentTable = undefined;
+  } else {
+    state.currentTable = table;
+    emitStatus();
+    const data = await fetchComponentJson(path);
+    await putTableData(state.locale, state.versionSignature, table, data);
+    tableDataMap.set(table, data);
+    status.loaded = true;
+    status.hasFullData = true;
+    status.count = Object.keys(data).length;
+    state.currentTable = undefined;
+
+    if (!indexedTables.has(table)) {
+      appendEntries(buildEntries(table, data));
+      indexedTables.add(table);
+      status.indexed = true;
+      await persistSearchIndex();
+    } else {
+      status.indexed = true;
+    }
+  }
+  emitTables();
+  emitStatus();
+}
+
+function buildEntries(
+  table: string,
+  data: Record<string, Record<string, unknown>>,
+): SearchIndexEntry[] {
+  const out: SearchIndexEntry[] = [];
+  for (const [hashKey, raw] of Object.entries(data)) {
+    out.push(extractTableEntrySummary(table, hashKey, raw));
+  }
+  return out;
+}
+
+async function streamIntoBuckets(body: ReadableStream<Uint8Array>): Promise<void> {
+  const locale = state.locale;
+  const signature = state.versionSignature;
+  let pending: Array<readonly [number, string]> = [];
+  let pendingBytes = 0;
+
+  const flush = async (): Promise<void> => {
+    if (pending.length === 0) return;
+    const batch = pending;
+    pending = [];
+    pendingBytes = 0;
+    await putFullItemEntries(locale, signature, batch);
+  };
+
+  const count = await streamTopLevelJsonObject(
+    body,
+    async (batch) => {
+      for (const [key, raw] of batch) {
+        const parsedKey = Number(key);
+        if (!Number.isFinite(parsedKey)) continue;
+        const hash = toUnsignedHash(parsedKey);
+        const waiters = fullItemWaiters.get(hash);
+        if (waiters && waiters.length > 0) {
+          fullItemWaiters.delete(hash);
+          try {
+            const parsed = JSON.parse(raw) as Record<string, unknown>;
+            setLru(hash, parsed);
+            for (const resolve of waiters) resolve(parsed);
+          } catch {
+            // Ignore malformed entry.
+          }
+        }
+        pending.push([hash, raw]);
+        pendingBytes += raw.length;
+      }
+      if (pending.length >= STREAM_FLUSH_ENTRIES || pendingBytes >= STREAM_FLUSH_BYTES) {
+        await flush();
+      }
+    },
+    500,
+  );
+
+  await flush();
+  fullItemCount = count;
+}
+
+async function loadAllTables(): Promise<void> {
+  const all = Object.keys(state.componentPaths);
+  const remaining = all.filter((table) => !getOrCreateTableStatus(table).loaded);
+  await loadTablesInParallel(remaining, 4);
+}
+
+// ---------------------------------------------------------------------------
+// Search
+// ---------------------------------------------------------------------------
+
+async function search(
+  query: string,
+  filters: SearchFilters,
+  sort: SortMode,
+  maxResults?: number,
+): Promise<SearchResponse> {
+  const availableTables = Object.keys(state.componentPaths);
+  const parsed = parseSearchQuery(query, availableTables);
+  return scoreAndFilterEntries(
+    entries,
+    parsed,
+    filters,
+    sort,
+    categoryNameMap,
+    maxResults,
+  );
+}
+
+async function getFilterCatalog(): Promise<FilterCatalog> {
+  return currentCatalog();
+}
+
+// ---------------------------------------------------------------------------
+// Definition inspector
+// ---------------------------------------------------------------------------
+
+function touchLru(hash: number): void {
+  const value = fullItemLru.get(hash);
+  if (value !== undefined) {
+    fullItemLru.delete(hash);
+    fullItemLru.set(hash, value);
+  }
+}
+
+function setLru(hash: number, value: Record<string, unknown>): void {
+  fullItemLru.delete(hash);
+  fullItemLru.set(hash, value);
+  while (fullItemLru.size > FULL_ITEM_LRU_LIMIT) {
+    const oldest = fullItemLru.keys().next().value;
+    if (oldest === undefined) break;
+    fullItemLru.delete(oldest);
+  }
+}
+
+async function tryReadFullItem(hash: number): Promise<Record<string, unknown> | undefined> {
+  const cached = fullItemLru.get(hash);
+  if (cached) {
+    touchLru(hash);
+    return cached;
+  }
+  const raw = await getFullItemRaw(state.locale, state.versionSignature, hash);
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    setLru(hash, parsed);
+    return parsed;
+  } catch {
+    return undefined;
+  }
+}
+
+async function ensureFullItem(hash: number): Promise<void> {
+  const existing = await tryReadFullItem(hash);
+  if (existing) return;
+
+  const earlyHit = new Promise<void>((resolve) => {
+    const list = fullItemWaiters.get(hash) ?? [];
+    list.push(() => resolve());
+    fullItemWaiters.set(hash, list);
+  });
+
+  const streamPromise = loadTable(INVENTORY_ITEM_TABLE);
+  const recheck = await tryReadFullItem(hash);
+  if (recheck) {
+    fullItemWaiters.delete(hash);
+    return;
+  }
+
+  await Promise.race([earlyHit, streamPromise]);
+}
+
+function maybeLoadFullTableInBackground(): void {
+  const status = getOrCreateTableStatus(INVENTORY_ITEM_TABLE);
+  if (status.hasFullData || status.loading) return;
+  void loadTable(INVENTORY_ITEM_TABLE).catch(() => undefined);
+}
+
+function buildLiteData(entry: SearchIndexEntry): Record<string, unknown> {
+  const rawLite = tableDataMap.get('DestinyInventoryItemLiteDefinition')?.[String(entry.hash)];
+  if (rawLite) {
+    return { hash: entry.hash, ...rawLite };
+  }
+  const displayProperties: Record<string, unknown> = {
+    name: entry.name,
+    description: '',
+    hasIcon: Boolean(entry.icon),
+  };
+  if (entry.icon) displayProperties.icon = entry.icon;
+
+  const data: Record<string, unknown> = {
+    hash: entry.hash,
+    displayProperties,
+    itemTypeAndTierDisplayName: entry.subtitle,
+  };
+  if (entry.iconWatermark) data.iconWatermark = entry.iconWatermark;
+  if (entry.index !== undefined) data.index = entry.index;
+  if (entry.tierType !== undefined) data.inventory = { tierType: entry.tierType };
+  if (entry.itemType !== undefined) data.itemType = entry.itemType;
+  if (entry.itemSubType !== undefined) data.itemSubType = entry.itemSubType;
+  if (entry.classType !== undefined) data.classType = entry.classType;
+  if (entry.damageType !== undefined) data.defaultDamageType = entry.damageType;
+  if (entry.itemCategoryHashes) data.itemCategoryHashes = entry.itemCategoryHashes;
+  if (entry.isRedacted !== undefined) data.redacted = entry.isRedacted;
+  if (entry.isAdept !== undefined) data.isAdept = entry.isAdept;
+  return data;
+}
+
+async function getDefinition(
+  table: string,
+  hashInput: number,
+  preferFull = false,
+): Promise<DefinitionDetailPayload> {
+  const hash = toUnsignedHash(hashInput);
+
+  if (table === INVENTORY_ITEM_TABLE) {
+    const full = await tryReadFullItem(hash);
+    if (full) return buildDetail(table, hash, full, false);
+
+    if (preferFull) {
+      await ensureFullItem(hash);
+      const reloaded = await tryReadFullItem(hash);
+      if (reloaded) return buildDetail(table, hash, reloaded, false);
+    }
+
+    const entry =
+      entriesByTableAndHash.get(`${INVENTORY_ITEM_TABLE}:${hash}`) ?? entryByHash.get(hash);
+    if (!entry) throw new Error(`Unknown item hash ${hash}`);
+    maybeLoadFullTableInBackground();
+    return buildDetail(table, hash, buildLiteData(entry), true);
+  }
+
+  let data = tableDataMap.get(table)?.[String(hash)];
+  if (!data) {
+    const idb = await getTableData(state.locale, state.versionSignature, table);
+    if (idb) {
+      tableDataMap.set(table, idb);
+      data = idb[String(hash)];
+    }
+  }
+  if (!data) {
+    await loadTable(table);
+    data = tableDataMap.get(table)?.[String(hash)];
+  }
+  if (!data) throw new Error(`Definition ${hash} not found in ${table}`);
+  return buildDetail(table, hash, data, false);
+}
+
+async function buildDetail(
+  table: string,
+  hash: number,
+  data: Record<string, unknown>,
+  isLite: boolean,
+): Promise<DefinitionDetailPayload> {
+  const payload: DefinitionDetailPayload = {
+    table,
+    hash,
+    data,
+    coTables: computeCoTables(hash, table),
+    resolvedRefs: collectResolvedRefs(data),
+  };
+  if (isLite) {
+    payload.isLite = true;
+  } else if (table === INVENTORY_ITEM_TABLE) {
+    payload.overview = await buildInventoryItemOverview(data);
+  }
+  return payload;
+}
+
+function computeCoTables(hash: number, currentTable: string): string[] {
+  const tables = tablesByHash.get(hash);
+  if (!tables) return [];
+  return [...tables].filter((table) => table !== currentTable);
+}
+
+function toSummary(entry: SearchIndexEntry): ResolvedHashSummary {
+  const summary: ResolvedHashSummary = {
+    table: entry.table,
+    hash: entry.hash,
+    name: entry.name,
+    subtitle: entry.subtitle,
+  };
+  if (entry.icon) summary.icon = entry.icon;
+  if (entry.tierType !== undefined) summary.tierType = entry.tierType;
+  return summary;
+}
+
+function resolveHash(hash: number, targetTables: string[]): ResolvedHashSummary | undefined {
+  for (const table of targetTables) {
+    const entry = entriesByTableAndHash.get(`${table}:${hash}`);
+    if (entry) return toSummary(entry);
+  }
+  const fallback = entryByHash.get(hash);
+  if (fallback) return toSummary(fallback);
+  return undefined;
+}
+
+function recordRef(
+  refs: Record<string, ResolvedHashSummary>,
+  fieldName: string,
+  parentKey: string | undefined,
+  hash: number,
+): void {
+  const targetTables = getTargetTablesForField(fieldName, parentKey);
+  const summary = resolveHash(hash, targetTables);
+  if (summary) refs[`${summary.table}:${hash}`] = summary;
+}
+
+function walkForRefs(
+  value: unknown,
+  fieldName: string | undefined,
+  parentKey: string | undefined,
+  refs: Record<string, ResolvedHashSummary>,
+  depth: number,
+): void {
+  if (depth > 24 || value === null || value === undefined) return;
+  if (Array.isArray(value)) {
+    for (const item of value) walkForRefs(item, fieldName, parentKey, refs, depth + 1);
+    return;
+  }
+  if (typeof value !== 'object') return;
+  const record = value as Record<string, unknown>;
+  for (const [key, child] of Object.entries(record)) {
+    if (key.endsWith('Hash')) {
+      const hash = asUnsigned(child);
+      if (hash !== undefined) recordRef(refs, key, parentKey, hash);
+    } else if (key.endsWith('Hashes') && Array.isArray(child)) {
+      for (const item of child) {
+        const hash = asUnsigned(item);
+        if (hash !== undefined) recordRef(refs, key, parentKey, hash);
+      }
+    } else if (typeof child === 'object' && child !== null) {
+      walkForRefs(child, key, key, refs, depth + 1);
+    }
+  }
+}
+
+function collectResolvedRefs(data: Record<string, unknown>): Record<string, ResolvedHashSummary> {
+  const refs: Record<string, ResolvedHashSummary> = {};
+  walkForRefs(data, undefined, undefined, refs, 0);
+  return refs;
+}
+
+/** Read a definition from memory or IndexedDB without triggering a load. */
+async function readDefinitionData(
+  table: string,
+  hash: number,
+): Promise<Record<string, unknown> | undefined> {
+  if (table === INVENTORY_ITEM_TABLE) {
+    const cached = fullItemLru.get(hash);
+    if (cached) return cached;
+    const raw = await getFullItemRaw(state.locale, state.versionSignature, hash);
+    if (!raw) return undefined;
+    try {
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      setLru(hash, parsed);
+      return parsed;
+    } catch {
+      return undefined;
+    }
+  }
+  const mem = tableDataMap.get(table)?.[String(hash)];
+  if (mem) return mem;
+  const idb = await getTableData(state.locale, state.versionSignature, table);
+  if (idb) {
+    tableDataMap.set(table, idb);
+    return idb[String(hash)];
+  }
+  return undefined;
+}
+
+function displayName(definition: Record<string, unknown> | undefined, fallback: string): string {
+  return asString(asRecord(definition?.displayProperties)?.name) ?? fallback;
+}
+
+// ---------------------------------------------------------------------------
+// Overview builders
+// ---------------------------------------------------------------------------
+
+async function buildInventoryItemOverview(
+  data: Record<string, unknown>,
+): Promise<DefinitionOverview> {
+  const overview: DefinitionOverview = {};
+
+  const flavorText = asString(data.flavorText);
+  if (flavorText) overview.flavorText = flavorText;
+  const displaySource = asString(data.displaySource);
+  if (displaySource) overview.displaySource = displaySource;
+  const screenshot = asString(data.screenshot);
+  if (screenshot) overview.screenshot = screenshot;
+
+  // Damage type.
+  const damageType = asUnsigned(data.defaultDamageTypeHash ?? data.defaultDamageType);
+  if (damageType !== undefined) {
+    const damageDef = await readDefinitionData('DestinyDamageTypeDefinition', damageType);
+    const damageIcon = asString(asRecord(damageDef?.displayProperties)?.icon);
+    overview.damageType = {
+      hash: damageType,
+      name: displayName(damageDef, String(damageType)),
+      enumValue: asNumber(data.defaultDamageType) ?? asNumber(data.defaultDamageTypeHash) ?? 0,
+      icon: damageIcon ? bungieAssetUrl(damageIcon) : undefined,
+    };
+  }
+
+  const tierName = asString(data.itemTypeAndTierDisplayName);
+  if (tierName) overview.tierName = tierName;
+
+  // Class name (3 = Unknown / any class — omit for universal items).
+  const classType = asNumber(data.classType);
+  if (classType !== undefined && classType !== 3) {
+    const classDef = await readDefinitionData('DestinyClassDefinition', classType);
+    const className = asString(asRecord(classDef?.displayProperties)?.name);
+    overview.className = className ?? annotate('classType', classType);
+  }
+
+  // Ammo type.
+  const ammoType = asNumber(asRecord(data.equippingBlock)?.ammoType);
+  if (ammoType !== undefined) {
+    overview.ammoType = annotate('ammoType', ammoType);
+  }
+
+  // Categories.
+  const categoryHashes = asNumberArray(data.itemCategoryHashes);
+  if (categoryHashes.length > 0) {
+    overview.categories = categoryHashes.map((hash) => ({
+      hash,
+      name: categoryNameMap.get(hash) ?? String(hash),
+    }));
+  }
+
+  overview.stats = await buildStats(data);
+  overview.socketCategories = await buildSocketCategories(data);
+  overview.perks = await buildPerks(data);
+  overview.lore = await buildLore(data);
+
+  const collectibleHash = asUnsigned(data.collectibleHash);
+  if (collectibleHash !== undefined) {
+    const collectible = await readDefinitionData('DestinyCollectibleDefinition', collectibleHash);
+    if (collectible) {
+      overview.collectible = {
+        hash: collectibleHash,
+        name: displayName(collectible, String(collectibleHash)),
+        sourceString: asString(collectible.sourceString) ?? '',
+      };
+    }
+  }
+
+  overview.linkedEntities = await buildLinkedEntities(data);
+  return overview;
+}
+
+function annotate(field: string, value: number): string | undefined {
+  return annotateEnumField(field, value)?.label;
+}
+
+async function buildStats(
+  data: Record<string, unknown>,
+): Promise<OverviewStat[] | undefined> {
+  const stats = asRecord(asRecord(data.stats)?.stats);
+  if (!stats) return undefined;
+  const out: OverviewStat[] = [];
+  for (const [key, raw] of Object.entries(stats)) {
+    const stat = asRecord(raw);
+    const hash = toUnsignedHash(Number(key));
+    const value = asNumber(stat?.value) ?? 0;
+    const rawMax = asNumber(stat?.maximumValue) ?? 0;
+    const statDef = await readDefinitionData('DestinyStatDefinition', hash);
+    const name = asString(asRecord(statDef?.displayProperties)?.name)?.trim();
+    if (!name) continue;
+    const description = asString(asRecord(statDef?.displayProperties)?.description);
+    const effectiveMax = rawMax > 0 ? rawMax : 100;
+    const isBar = value > 0 && value <= effectiveMax && effectiveMax <= 100;
+    const item: OverviewStat = {
+      statHash: hash,
+      name,
+      value,
+      maximumValue: effectiveMax,
+      isBar,
+    };
+    if (description) item.description = description;
+    out.push(item);
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+async function buildSocketCategories(
+  data: Record<string, unknown>,
+): Promise<OverviewSocketCategory[] | undefined> {
+  const sockets = asRecord(data.sockets);
+  const socketEntries = asRecordArray(sockets?.socketEntries);
+  const socketCategories = asRecordArray(sockets?.socketCategories);
+  if (!socketEntries || socketEntries.length === 0) return undefined;
+
+  const out: OverviewSocketCategory[] = [];
+  const categorySource = socketCategories ?? [];
+  for (const category of categorySource) {
+    const categoryHash = asUnsigned(category.socketCategoryHash) ?? 0;
+    const indexes = asNumberArray(category.socketIndexes);
+    const categoryDef =
+      categoryHash !== 0
+        ? await readDefinitionData('DestinySocketCategoryDefinition', categoryHash)
+        : undefined;
+    const item: OverviewSocketCategory = {
+      categoryHash,
+      name: displayName(categoryDef, String(categoryHash)),
+      sockets: [],
+    };
+    const description = asString(asRecord(categoryDef?.displayProperties)?.description);
+    if (description) item.description = description;
+
+    for (const index of indexes) {
+      const entry = socketEntries[index];
+      if (!entry) continue;
+      item.sockets.push(await buildSocket(entry, index));
+    }
+    out.push(item);
+  }
+
+  // Include any sockets that were not captured by an explicit category.
+  const covered = new Set<number>();
+  for (const category of categorySource) {
+    for (const index of asNumberArray(category.socketIndexes)) covered.add(index);
+  }
+  const uncategorized = socketEntries
+    .map((_, index) => index)
+    .filter((index) => !covered.has(index));
+  if (uncategorized.length > 0) {
+    const others: OverviewSocketCategory = {
+      categoryHash: 0,
+      name: 'Other Sockets',
+      sockets: [],
+    };
+    for (const index of uncategorized) {
+      const entry = socketEntries[index];
+      if (!entry) continue;
+      others.sockets.push(await buildSocket(entry, index));
+    }
+    out.push(others);
+  }
+
+  return out.length > 0 ? out : undefined;
+}
+
+async function buildSocket(
+  entry: Record<string, unknown>,
+  socketIndex: number,
+): Promise<OverviewSocket> {
+  const socketTypeHash = asUnsigned(entry.socketTypeHash);
+  const socketTypeDef =
+    socketTypeHash !== undefined
+      ? await readDefinitionData('DestinySocketTypeDefinition', socketTypeHash)
+      : undefined;
+  const socketTypeName =
+    displayName(socketTypeDef, socketTypeHash !== undefined ? String(socketTypeHash) : '') ||
+    `Socket ${socketIndex}`;
+
+  const plugs: OverviewSocketPlug[] = [];
+  let singleInitialPlug: OverviewSocketPlug | undefined;
+
+  const reusablePlugSetHash = asUnsigned(entry.reusablePlugSetHash);
+  const randomizedPlugSetHash = asUnsigned(entry.randomizedPlugSetHash);
+  const plugSetHashes: number[] = [];
+  if (reusablePlugSetHash !== undefined) plugSetHashes.push(reusablePlugSetHash);
+  if (randomizedPlugSetHash !== undefined) plugSetHashes.push(randomizedPlugSetHash);
+
+  for (const plugSetHash of plugSetHashes) {
+    const plugSet = await readDefinitionData('DestinyPlugSetDefinition', plugSetHash);
+    const items = asRecordArray(plugSet?.reusablePlugItems);
+    if (!items) continue;
+    for (const item of items) {
+      const plug = await buildPlug(item.plugItemHash, {
+        currentlyCanRoll: plugSetHash === randomizedPlugSetHash,
+      });
+      if (plug) plugs.push(plug);
+    }
+  }
+
+  const singleHash = asUnsigned(entry.singleInitialItemHash);
+  if (singleHash !== undefined) {
+    singleInitialPlug = await buildPlug(singleHash, { isDefault: true });
+  }
+
+  const inlineItems = asRecordArray(entry.reusablePlugItems);
+  if (inlineItems) {
+    for (const item of inlineItems) {
+      const plug = await buildPlug(item.plugItemHash, { currentlyCanRoll: true });
+      if (plug) plugs.push(plug);
+    }
+  }
+
+  const socket: OverviewSocket = { socketIndex, socketTypeName, plugs };
+  if (singleInitialPlug) socket.singleInitialPlug = singleInitialPlug;
+  if (reusablePlugSetHash !== undefined) socket.plugSetHash = reusablePlugSetHash;
+  if (randomizedPlugSetHash !== undefined) socket.isRandomized = true;
+  return socket;
+}
+
+async function buildPlug(
+  plugItemHash: unknown,
+  options: { isDefault?: boolean; currentlyCanRoll?: boolean } = {},
+): Promise<OverviewSocketPlug | undefined> {
+  const hash = asUnsigned(plugItemHash);
+  if (hash === undefined) return undefined;
+  const definition = await readDefinitionData(INVENTORY_ITEM_TABLE, hash);
+  const entry = entriesByTableAndHash.get(`${INVENTORY_ITEM_TABLE}:${hash}`);
+  const displayProperties = asRecord(definition?.displayProperties);
+  const icon = asString(displayProperties?.icon);
+  const plug: OverviewSocketPlug = {
+    hash,
+    name: displayName(definition, entry?.name ?? String(hash)),
+    itemTypeDisplayName:
+      asString(definition?.itemTypeDisplayName) ?? entry?.subtitle ?? '',
+    description: asString(displayProperties?.description) ?? '',
+  };
+  if (icon) plug.icon = bungieAssetUrl(icon);
+  else if (entry?.icon) plug.icon = entry.icon;
+  const tierType = asNumber(asRecord(definition?.inventory)?.tierType) ?? entry?.tierType;
+  if (tierType !== undefined) plug.tierType = tierType;
+  if (options.isDefault !== undefined) plug.isDefault = options.isDefault;
+  if (options.currentlyCanRoll !== undefined) plug.currentlyCanRoll = options.currentlyCanRoll;
+  return plug;
+}
+
+async function collectReferencedPlugHashes(
+  data: Record<string, unknown>,
+): Promise<number[]> {
+  const sockets = asRecord(data.sockets);
+  const socketEntries = asRecordArray(sockets?.socketEntries);
+  if (!socketEntries) return [];
+  const result = new Set<number>();
+  for (const entry of socketEntries) {
+    const single = asUnsigned(entry.singleInitialItemHash);
+    if (single !== undefined) result.add(single);
+
+    const inlineItems = asRecordArray(entry.reusablePlugItems);
+    if (inlineItems) {
+      for (const item of inlineItems) {
+        const hash = asUnsigned(item.plugItemHash);
+        if (hash !== undefined) result.add(hash);
+      }
+    }
+
+    const reusablePlugSetHash = asUnsigned(entry.reusablePlugSetHash);
+    const randomizedPlugSetHash = asUnsigned(entry.randomizedPlugSetHash);
+    for (const plugSetHash of [reusablePlugSetHash, randomizedPlugSetHash]) {
+      if (plugSetHash === undefined) continue;
+      const plugSet = await readDefinitionData('DestinyPlugSetDefinition', plugSetHash);
+      const items = asRecordArray(plugSet?.reusablePlugItems);
+      if (!items) continue;
+      for (const item of items) {
+        const hash = asUnsigned(item.plugItemHash);
+        if (hash !== undefined) result.add(hash);
+      }
+    }
+  }
+  return [...result];
+}
+
+async function buildPerks(data: Record<string, unknown>): Promise<OverviewPerk[] | undefined> {
+  const plugHashes = await collectReferencedPlugHashes(data);
+  const perks: OverviewPerk[] = [];
+  const seen = new Set<number>();
+  for (const plugHash of plugHashes) {
+    const plug = await readDefinitionData(INVENTORY_ITEM_TABLE, plugHash);
+    const perkEntries = asRecordArray(plug?.perks);
+    if (!perkEntries) continue;
+    for (const perkEntry of perkEntries) {
+      const perkHash = asUnsigned(perkEntry.perkHash);
+      if (perkHash === undefined || seen.has(perkHash)) continue;
+      seen.add(perkHash);
+      const perkDef = await readDefinitionData('DestinySandboxPerkDefinition', perkHash);
+      const displayProperties = asRecord(perkDef?.displayProperties);
+      const perk: OverviewPerk = {
+        perkHash,
+        name: displayName(perkDef, String(perkHash)),
+        description: asString(displayProperties?.description) ?? '',
+      };
+      const icon = asString(displayProperties?.icon);
+      if (icon) perk.icon = bungieAssetUrl(icon);
+      perks.push(perk);
+      if (perks.length >= 64) break;
+    }
+    if (perks.length >= 64) break;
+  }
+  return perks.length > 0 ? perks : undefined;
+}
+
+async function buildLore(data: Record<string, unknown>): Promise<OverviewLore | undefined> {
+  const loreHash = asUnsigned(data.loreHash);
+  if (loreHash === undefined) return undefined;
+  const lore = await readDefinitionData('DestinyLoreDefinition', loreHash);
+  if (!lore) return undefined;
+  const displayProperties = asRecord(lore.displayProperties);
+  return {
+    loreHash,
+    name: displayName(lore, String(loreHash)),
+    subtitle: asString(lore.subtitle) ?? '',
+    description: asString(displayProperties?.description) ?? '',
+  };
+}
+
+async function buildLinkedEntities(
+  data: Record<string, unknown>,
+): Promise<OverviewLinkedEntity[] | undefined> {
+  const links: Array<[table: string, relation: string, raw: unknown]> = [
+    ['DestinyPlugSetDefinition', 'plugSet', data.plugSetHash],
+    ['DestinyCollectibleDefinition', 'collectible', data.collectibleHash],
+    ['DestinyRecordDefinition', 'record', data.recordHash],
+    ['DestinyPresentationNodeDefinition', 'presentationNode', data.presentationNodeHash],
+    ['DestinyActivityDefinition', 'activity', data.activityHash],
+    ['DestinyVendorDefinition', 'vendor', data.vendorHash],
+    ['DestinyInventoryItemDefinition', 'item', data.itemHash],
+    ['DestinySeasonDefinition', 'season', data.seasonHash],
+  ];
+  const linked: OverviewLinkedEntity[] = [];
+  for (const [table, relation, raw] of links) {
+    const hash = asUnsigned(raw);
+    if (hash === undefined) continue;
+    const definition = await readDefinitionData(table, hash);
+    const entry = entriesByTableAndHash.get(`${table}:${hash}`);
+    const icon = asString(asRecord(definition?.displayProperties)?.icon);
+    linked.push({
+      table,
+      hash,
+      name: displayName(definition, entry?.name ?? String(hash)),
+      subtitle: entry?.subtitle ?? getFriendlyTableName(table),
+      icon: icon ? bungieAssetUrl(icon) : entry?.icon,
+      relation,
+    });
+  }
+  return linked.length > 0 ? linked : undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Variants
+// ---------------------------------------------------------------------------
+
+const VARIANT_SUFFIXES = ['(Adept)', '(Timelost)', '(Harrowed)', '(Brave)', '(Enhanced)'];
+
+function normalizeBaseName(name: string): string {
+  let out = name.trim();
+  const lower = out.toLowerCase();
+  for (const suffix of VARIANT_SUFFIXES) {
+    if (lower.endsWith(suffix.toLowerCase())) {
+      out = out.slice(0, out.length - suffix.length).trim();
+      break;
+    }
+  }
+  return out.toLowerCase();
+}
+
+function toVariantItem(entry: SearchIndexEntry): VariantItem {
+  const item: VariantItem = {
+    hash: entry.hash,
+    table: entry.table,
+    name: entry.name,
+    subtitle: entry.subtitle,
+  };
+  if (entry.icon) item.icon = entry.icon;
+  if (entry.iconWatermark) item.iconWatermark = entry.iconWatermark;
+  if (entry.tierType !== undefined) item.tierType = entry.tierType;
+  if (entry.damageType !== undefined) item.damageType = entry.damageType;
+  if (entry.isAdept !== undefined) item.isAdept = entry.isAdept;
+  if (entry.isHolofoil !== undefined) item.isHolofoil = entry.isHolofoil;
+  if (entry.isRedacted !== undefined) item.isRedacted = entry.isRedacted;
+  if (entry.index !== undefined) item.index = entry.index;
+  return item;
+}
+
+async function getVariants(table: string, hashInput: number): Promise<VariantItem[]> {
+  const hash = toUnsignedHash(hashInput);
+  const target =
+    entriesByTableAndHash.get(`${table}:${hash}`) ?? entryByHash.get(hash);
+  const baseName = target?.name ? normalizeBaseName(target.name) : undefined;
+  if (!baseName) return [];
+
+  const variants: VariantItem[] = [];
+  for (const entry of entries) {
+    if (entry.table !== table || !entry.name) continue;
+    if (normalizeBaseName(entry.name) === baseName) {
+      variants.push(toVariantItem(entry));
+    }
+  }
+  variants.sort((a, b) => {
+    if (a.hash === hash) return -1;
+    if (b.hash === hash) return 1;
+    return a.name.localeCompare(b.name);
+  });
+  return variants;
+}
+
+// ---------------------------------------------------------------------------
+// Reverse references
+// ---------------------------------------------------------------------------
+
+function scanForHash(
+  value: unknown,
+  target: number,
+  path: string,
+  paths: string[],
+): void {
+  if (value === null || value === undefined) return;
+  if (typeof value === 'number') {
+    if (toUnsignedHash(value) === target) paths.push(path);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      scanForHash(value[i], target, `${path}[${i}]`, paths);
+    }
+    return;
+  }
+  if (typeof value === 'object') {
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      scanForHash(child, target, path ? `${path}.${key}` : key, paths);
+    }
+  }
+}
+
+function groupReference(
+  groups: Map<string, ReverseReference>,
+  sourceTable: string,
+  sourceHash: number,
+  paths: string[],
+): void {
+  const key = `${sourceTable}:${sourceHash}`;
+  let group = groups.get(key);
+  if (!group) {
+    const entry = entriesByTableAndHash.get(key) ?? entryByHash.get(sourceHash);
+    group = {
+      sourceTable,
+      sourceHash,
+      sourceName: entry?.name ?? String(sourceHash),
+      sourceSubtitle: entry?.subtitle ?? '',
+      sourceIcon: entry?.icon,
+      paths: [],
+    };
+    groups.set(key, group);
+  }
+  group.paths.push(...paths);
+}
+
+async function getReverseReferences(
+  targetHashInput: number,
+  tablesToScan?: string[],
+): Promise<ReverseReferenceResponse> {
+  const start = performance.now();
+  const target = toUnsignedHash(targetHashInput);
+  const scannedTables: string[] = [];
+  const unloadedPriorityTables: string[] = [];
+  const groups = new Map<string, ReverseReference>();
+
+  const scanTableData = (
+    table: string,
+    data: Record<string, Record<string, unknown>>,
+  ): void => {
+    scannedTables.push(table);
+    for (const [hashKey, raw] of Object.entries(data)) {
+      const sourceHash = toUnsignedHash(Number(hashKey));
+      const paths: string[] = [];
+      scanForHash(raw, target, '', paths);
+      if (paths.length > 0) groupReference(groups, table, sourceHash, paths);
+    }
+  };
+
+  const scanFullItemBuckets = async (): Promise<void> => {
+    scannedTables.push(INVENTORY_ITEM_TABLE);
+    const targetNeedle = String(target);
+    await iterateFullItems(state.locale, state.versionSignature, (sourceHash, rawJson) => {
+      if (!rawJson.includes(targetNeedle)) return;
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(rawJson) as Record<string, unknown>;
+      } catch {
+        return;
+      }
+      const paths: string[] = [];
+      scanForHash(parsed, target, '', paths);
+      if (paths.length > 0) {
+        groupReference(groups, INVENTORY_ITEM_TABLE, sourceHash, paths);
+      }
+    });
+  };
+
+  if (tablesToScan && tablesToScan.length > 0) {
+    for (const table of tablesToScan) {
+      if (table === INVENTORY_ITEM_TABLE) {
+        if (await hasFullItemsCached(state.locale, state.versionSignature)) {
+          await scanFullItemBuckets();
+        } else {
+          unloadedPriorityTables.push(table);
+        }
+        continue;
+      }
+      const mem = tableDataMap.get(table);
+      if (mem) {
+        scanTableData(table, mem);
+      } else {
+        const idb = await getTableData(state.locale, state.versionSignature, table);
+        if (idb) {
+          tableDataMap.set(table, idb);
+          scanTableData(table, idb);
+        } else {
+          unloadedPriorityTables.push(table);
+        }
+      }
+    }
+  } else {
+    for (const [table, data] of tableDataMap) {
+      scanTableData(table, data);
+    }
+    for (const table of REVERSE_REF_PRIORITY_TABLES) {
+      if (table === INVENTORY_ITEM_TABLE) continue;
+      if (scannedTables.includes(table)) continue;
+      const mem = tableDataMap.get(table);
+      if (mem) {
+        scanTableData(table, mem);
+        continue;
+      }
+      const idb = await getTableData(state.locale, state.versionSignature, table);
+      if (idb) {
+        tableDataMap.set(table, idb);
+        scanTableData(table, idb);
+      } else {
+        unloadedPriorityTables.push(table);
+      }
+    }
+    if (await hasFullItemsCached(state.locale, state.versionSignature)) {
+      await scanFullItemBuckets();
+    } else {
+      unloadedPriorityTables.push(INVENTORY_ITEM_TABLE);
+    }
+  }
+
+  return {
+    references: [...groups.values()],
+    scannedTables,
+    unloadedPriorityTables,
+    durationMs: performance.now() - start,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Clarity community descriptions
+// ---------------------------------------------------------------------------
+
+function extractClarityLines(entry: Record<string, unknown>): string[] {
+  const lines: string[] = [];
+  const descriptions = entry.descriptions;
+  if (!Array.isArray(descriptions)) return lines;
+  for (const description of descriptions) {
+    const record = asRecord(description);
+    if (!record) continue;
+    const title = asString(record.title);
+    const body = asString(record.simpleDescription) ?? asString(record.description);
+    if (title) lines.push(title);
+    if (body) {
+      for (const line of body.split('\n')) {
+        const trimmed = line.trim();
+        if (trimmed) lines.push(trimmed);
+      }
+    }
+  }
+  return lines;
+}
+
+async function loadClarityMap(): Promise<Map<number, ClarityDescriptionEntry>> {
+  if (!clarityPromise) {
+    clarityPromise = (async () => {
+      try {
+        const res = await fetch(CLARITY_URL);
+        if (!res.ok) return new Map<number, ClarityDescriptionEntry>();
+        const json = (await res.json()) as Record<string, unknown>;
+        const map = new Map<number, ClarityDescriptionEntry>();
+        for (const [key, value] of Object.entries(json)) {
+          const record = asRecord(value);
+          if (!record) continue;
+          const hash = toUnsignedHash(Number(key));
+          map.set(hash, {
+            hash,
+            name: asString(record.name),
+            type: asString(record.type),
+            lastUpload: asNumber(record.lastUpload),
+            uploadedBy: asString(record.uploadedBy),
+            lines: extractClarityLines(record),
+          });
+        }
+        return map;
+      } catch {
+        return new Map<number, ClarityDescriptionEntry>();
+      }
+    })();
+  }
+  return clarityPromise;
+}
+
+async function getClarityDescription(
+  hashInput: number,
+): Promise<ClarityDescriptionEntry | undefined> {
+  const hash = toUnsignedHash(hashInput);
+  const map = await loadClarityMap();
+  return map.get(hash);
+}
+
+// ---------------------------------------------------------------------------
+// Cache management
+// ---------------------------------------------------------------------------
+
+async function checkForUpdates(): Promise<UpdateCheckResult> {
+  try {
+    const index = await fetchManifestIndex(state.locale, state.apiKey);
+    const paths = index.Response.jsonWorldComponentContentPaths[state.locale] ?? {};
+    const newSignature = computeVersionSignature(paths);
+    state.lastCheckedAt = Date.now();
+    emitStatus();
+    if (newSignature && newSignature !== state.versionSignature) {
+      return { hasUpdate: true, versionSignature: newSignature };
+    }
+    return { hasUpdate: false };
+  } catch (error) {
+    return { hasUpdate: false, error: toError(error).message };
+  }
+}
+
+async function clearCache(): Promise<void> {
+  await clearAllCache();
+  resetEngineState();
+  state.version = '';
+  state.versionSignature = '';
+  state.componentPaths = {};
+  state.fromCache = false;
+  state.phase = 'idle';
+  state.initialized = false;
+  emitStatus();
+  emitTables();
+}
+
+async function getCacheStats(): Promise<CacheStatsResult> {
+  const idb = await getCacheStatsFromIdb();
+  let loaded = 0;
+  for (const status of tableStatuses.values()) {
+    if (status.loaded) loaded += 1;
+  }
+  return {
+    available: idb.available,
+    tableCount: idb.tableCount,
+    fullItemBucketCount: idb.fullItemBucketCount,
+    searchIndexCount: idb.searchIndexCount,
+    metaCount: idb.metaCount,
+    indexedEntries: entries.length,
+    loadedTables: loaded,
+    fullItemsInLru: fullItemLru.size,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// RPC dispatch
+// ---------------------------------------------------------------------------
+
+async function dispatch(message: WorkerRequest): Promise<unknown> {
+  switch (message.type) {
+    case 'init':
+      return init(message.locale, message.apiKey, message.forceRefresh);
+    case 'search':
+      return search(message.query, message.filters, message.sort, message.maxResults);
+    case 'getDefinition':
+      return getDefinition(message.table, message.hash, message.preferFull);
+    case 'loadTable':
+      return loadTable(message.table);
+    case 'loadAllTables':
+      return loadAllTables();
+    case 'getVariants':
+      return getVariants(message.table, message.hash);
+    case 'getReverseReferences':
+      return getReverseReferences(message.targetHash, message.tablesToScan);
+    case 'getClarityDescription':
+      return getClarityDescription(message.hash);
+    case 'checkForUpdates':
+      return checkForUpdates();
+    case 'clearCache':
+      return clearCache();
+    case 'getCacheStats':
+      return getCacheStats();
+    case 'getFilterCatalog':
+      return getFilterCatalog();
+  }
+}
+
+function respond(message: WorkerResponse): void {
+  scope.postMessage(message);
+}
+
+async function handleRequest(message: WorkerRequest): Promise<void> {
+  try {
+    const result = await dispatch(message);
+    respond({ id: message.id, ok: true, result });
+  } catch (error) {
+    respond({ id: message.id, ok: false, error: toError(error).message });
+  }
+}
+
+scope.onmessage = (event: MessageEvent): void => {
+  const message = event.data as WorkerRequest | undefined;
+  if (!message || typeof message !== 'object' || typeof message.type !== 'string') return;
+  void handleRequest(message);
+};

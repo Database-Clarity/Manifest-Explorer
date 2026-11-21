@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Manifest Explorer — Clarity</title>
+    <meta
+      name="description"
+      content="Fast, desktop-grade Destiny 2 Manifest explorer with full mobile support, live cross-references, reverse lookups, enum annotations, and JSON diffing."
+    />
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="./favicon-dark.svg"
+      media="(prefers-color-scheme: dark)"
+    />
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="./favicon-light.svg"
+      media="(prefers-color-scheme: light)"
+    />
+    <link rel="icon" type="image/svg+xml" href="./favicon-dark.svg" />
+    <script>
+      (function () {
+        try {
+          var raw = localStorage.getItem('clarity-manifest-settings');
+          if (!raw) return;
+          var parsed = JSON.parse(raw);
+          var state = parsed && parsed.state ? parsed.state : parsed;
+          var root = document.documentElement;
+          if (state.theme === 'dark' || state.theme === 'light') {
+            root.setAttribute('data-theme', state.theme);
+          }
+          if (typeof state.uiScale === 'number' && state.uiScale >= 85 && state.uiScale <= 150) {
+            root.style.fontSize = (state.uiScale / 100) * 16 + 'px';
+          }
+          if (state.touchSize === 'large') {
+            root.setAttribute('data-touch', 'large');
+          }
+          if (typeof state.codeFontSize === 'number') {
+            root.style.setProperty('--code-font-size', state.codeFontSize + 'px');
+          }
+        } catch (_e) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

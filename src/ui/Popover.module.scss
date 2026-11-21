@@ -1,0 +1,30 @@
+@use '../styles/controls' as ctl;
+
+.panel {
+  @include ctl.overlay-surface;
+  position: fixed;
+  z-index: 80;
+  min-width: 12rem;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
+  padding: 0.5rem;
+  overflow: auto;
+  overscroll-behavior: contain;
+  animation: popover-in 120ms ease-out;
+
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+  }
+}
+
+@keyframes popover-in {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

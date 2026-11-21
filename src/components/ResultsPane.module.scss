@@ -1,0 +1,595 @@
+@use '../styles/controls' as ctl;
+@use '../styles/variables' as theme;
+
+.pane {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--col);
+  color: var(--text);
+}
+
+.header {
+  @include ctl.contain-focus-rings;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.5rem;
+  flex-shrink: 0;
+  min-height: 1.75rem;
+  padding: 0.1875rem 0.5rem;
+  background: var(--col);
+  border-bottom: 1px solid var(--hair);
+
+  @include theme.mobile {
+    flex-wrap: nowrap;
+    padding: 0.25rem var(--page-x);
+  }
+}
+
+.headerInfo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.5rem;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.summary {
+  flex-shrink: 0;
+  color: var(--text2);
+  font-size: 0.75rem;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem;
+  min-width: 0;
+
+  @include theme.mobile {
+    display: none;
+  }
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.125rem;
+  max-width: 11rem;
+  min-height: 1.25rem;
+  padding: 0 0.125rem 0 0.375rem;
+  background: var(--strip);
+  border: 1px solid var(--line);
+  border-radius: 0.1875rem;
+  color: var(--text2);
+  font-size: 0.6875rem;
+  line-height: 1.2;
+}
+
+.chipLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chipClear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 1.125rem;
+  min-height: 1.125rem;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 0.125rem;
+  background: transparent;
+  color: var(--text3);
+  cursor: pointer;
+
+  &:focus-visible {
+    @include ctl.focus-ring;
+  }
+
+  @media (hover: hover) {
+    &:hover {
+      color: var(--text);
+      background: var(--hover);
+    }
+  }
+
+  @include theme.mobile-or-coarse {
+    width: 1.5rem;
+    min-height: 1.5rem;
+  }
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.sort {
+  @include ctl.field;
+  flex-shrink: 0;
+  max-width: 8.5rem;
+  padding: 0 0.25rem;
+}
+
+.segmented {
+  @include ctl.contain-focus-rings;
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  overflow: hidden;
+  background: var(--ctl);
+  border: 1px solid var(--ctl-edge);
+  border-radius: 0.25rem;
+}
+
+.segment {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  min-height: 1.75rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--glyph);
+  cursor: pointer;
+
+  & + & {
+    border-left: 1px solid var(--ctl-edge);
+  }
+
+  &:focus-visible {
+    @include ctl.focus-ring;
+  }
+
+  @media (hover: hover) {
+    &:hover:not(:disabled) {
+      color: var(--text);
+      background: var(--hover);
+    }
+  }
+
+  &:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+
+  @include theme.mobile-or-coarse {
+    width: var(--tap);
+    min-height: var(--tap);
+  }
+}
+
+.segment.segmentActive,
+.segment.segmentActive:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--raised);
+}
+
+.body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.collectBanner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.375rem 0.75rem;
+  flex-shrink: 0;
+  padding: 0.375rem 0.5rem;
+  background: var(--strip);
+  border-bottom: 1px solid var(--hair);
+  color: var(--text2);
+  font-size: 0.75rem;
+  line-height: 1.3;
+}
+
+.bannerText {
+  flex: 1 1 12rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.bannerDone {
+  @include ctl.button;
+  padding: 0 0.5rem;
+}
+
+.scroller {
+  @include ctl.contain-focus-rings;
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--col);
+
+  &:focus-visible {
+    @include ctl.focus-ring;
+  }
+}
+
+.virtualSpace {
+  position: relative;
+  width: 100%;
+}
+
+.virtualWindow {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+}
+
+.listRow {
+  @include ctl.contain-focus-rings;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0 0.5rem;
+  background: transparent;
+  border-left: 2px solid transparent;
+  border-bottom: 1px solid var(--hair);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  user-select: none;
+
+  @media (hover: hover) {
+    &:hover {
+      background: var(--hover);
+    }
+  }
+
+  &:focus-within {
+    background: var(--hover);
+  }
+}
+
+.rowText {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.0625rem;
+  min-width: 0;
+  line-height: 1.15;
+}
+
+.rowName {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rowSub {
+  overflow: hidden;
+  color: var(--text2);
+  font-size: 0.6875rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rowTable {
+  flex-shrink: 0;
+  color: var(--text3);
+  font-size: 0.6875rem;
+  font-family: var(--code-font-family);
+  padding: 0.0625rem 0.375rem;
+  border: 1px solid var(--hair);
+  border-radius: 0.1875rem;
+  background: var(--page);
+
+  @media (max-width: 560px) {
+    display: none;
+  }
+}
+
+.rowHashBtn {
+  flex-shrink: 0;
+  padding: 0.125rem 0.3125rem;
+  border: 1px solid transparent;
+  border-radius: 0.1875rem;
+  background: transparent;
+  color: var(--text3);
+  font-family: var(--code-font-family);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+
+  @media (hover: hover) {
+    &:hover {
+      color: var(--text);
+      background: var(--ctl);
+      border-color: var(--ghost-edge);
+    }
+  }
+
+  &:focus-visible {
+    @include ctl.focus-ring;
+  }
+}
+
+.rowHash {
+  flex-shrink: 0;
+  color: var(--text3);
+  font-family: var(--code-font-family);
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.gridRow {
+  display: grid;
+  align-items: stretch;
+  column-gap: 0.5rem;
+  padding: 0 0.5rem 0.5rem;
+}
+
+.gridCell {
+  @include ctl.contain-focus-rings;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 0.375rem 0.5rem;
+  background: var(--col);
+  border: 1px solid var(--hair);
+  border-left: 2px solid transparent;
+  border-radius: 0.1875rem;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  user-select: none;
+
+  @media (hover: hover) {
+    &:hover {
+      background: var(--hover);
+    }
+  }
+
+  &:focus-within {
+    background: var(--hover);
+  }
+}
+
+.gridText {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.0625rem;
+  min-width: 0;
+  line-height: 1.15;
+}
+
+.gridName {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gridSub {
+  overflow: hidden;
+  color: var(--text2);
+  font-size: 0.6875rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gridHash {
+  overflow: hidden;
+  color: var(--text3);
+  font-family: var(--code-font-family);
+  font-size: 0.625rem;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.listRow.isCursor,
+.gridCell.isCursor {
+  background: var(--hover);
+}
+
+.listRow.isActive,
+.gridCell.isActive {
+  background: var(--sel);
+  border-left-color: var(--accent-ink);
+}
+
+.listRow.isActive .rowName,
+.gridCell.isActive .gridName {
+  font-weight: 700;
+}
+
+.collectToggle {
+  @include ctl.contain-focus-rings;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 1.5rem;
+  min-height: 1.5rem;
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 0.1875rem;
+  color: var(--text3);
+  cursor: pointer;
+
+  &:focus-visible {
+    @include ctl.focus-ring;
+  }
+
+  @media (hover: hover) {
+    &:hover:not(:disabled) {
+      color: var(--text);
+      background: var(--raised);
+      border-color: var(--hair);
+    }
+  }
+
+  @media (hover: none) {
+    color: var(--text2);
+  }
+
+  @include theme.mobile-or-coarse {
+    width: 1.75rem;
+    min-height: 1.75rem;
+  }
+}
+
+.collectedToggle {
+  color: var(--accent-ink);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .collectToggle {
+    opacity: 0;
+  }
+
+  .listRow:hover .collectToggle,
+  .listRow:focus-within .collectToggle,
+  .gridCell:hover .collectToggle,
+  .gridCell:focus-within .collectToggle {
+    opacity: 1;
+  }
+}
+
+.listRow .collectToggle.alwaysOn,
+.gridCell .collectToggle.alwaysOn {
+  opacity: 1;
+}
+
+.stateBody {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+  padding: 0.75rem 0.5rem;
+}
+
+.stateStatus {
+  margin: 0;
+  color: var(--text2);
+  font-size: 0.75rem;
+  line-height: 1.3;
+}
+
+.skeletonList {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--hair);
+}
+
+.skeletonRow {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  height: 3rem;
+  padding: 0 0.5rem;
+  border-bottom: 1px solid var(--hair);
+
+  @include theme.mobile-or-coarse {
+    height: 3.375rem;
+  }
+}
+
+.skeletonText {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.375rem;
+  min-width: 0;
+}
+
+.stateBlock {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+  max-width: 42rem;
+  padding: 1rem 0.75rem;
+}
+
+.stateTitle {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.stateText {
+  margin: 0;
+  color: var(--text2);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.stateActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  margin-top: 0.125rem;
+}
+
+.secondaryBtn {
+  @include ctl.button;
+}
+
+.primaryBtn {
+  @include ctl.primary-button;
+}
+
+@include theme.mobile {
+  .header {
+    padding: 0.25rem 0.5rem;
+  }
+
+  .headerInfo {
+    flex-basis: 100%;
+  }
+
+  .controls {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  // The mobile header toolbar already exposes the same sort control.
+  .sort {
+    display: none;
+  }
+}

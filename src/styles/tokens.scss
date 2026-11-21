@@ -1,0 +1,244 @@
+// Semantic colour tokens matching Clarity Control (Dark base + Europa Ice Light).
+// Every component consumes these tokens — never raw hex values.
+// Control/field edges hold >= 3:1 against their surface (WCAG 1.4.11); text holds >= 4.5:1.
+@use './variables' as theme;
+
+@mixin dark-tokens {
+  // Surfaces
+  --page: #16181c;
+  --chrome: #1d2024;
+  --col: #191c20;
+  --raised: #22262c;
+  --strip: #1a1e24;
+  --hover: #20252d;
+  --raised-hover: #353a41;
+  --sel: #232a36;
+
+  // Text & glyphs
+  --text: #e6edf3;
+  --text2: #a3adb8;
+  --text3: #8b95a0;
+  --tab: #c8d0d8;
+  --glyph: #b9c2cc;
+  --link: #7fdcf0;
+
+  // Borders & hairlines
+  --line: #333941;
+  --hair: #2a2f36;
+  --pop-edge: #58606a;
+  --ghost-edge: #454b53;
+  --skel: var(--hair);
+  --skel-shine: var(--ghost-edge);
+
+  // Controls & fields (3:1+ edges)
+  --ctl: #2b2f35;
+  --ctl-edge: #6c7480;
+  --ctl-hover: #353a41;
+  --ctl-hover-edge: #7d8591;
+  --ctl-pressed: #1a1d21;
+  --fld: #15181c;
+  --fld-edge: #6c7480;
+
+  // Brand & focus
+  --accent: #24ec54;
+  --accent-ink: #24ec54;
+  --on-accent: #0b1a0f;
+  --pri-text: #bff7cd;
+  --pri-hover: #16301c;
+  --cyan: #1cdcfc;
+  --cyan-edge: #1cdcfc;
+  --enhanced: #eade8b;
+
+  // Status families
+  --warn: #f2ce7e;
+  --warn-bg: #2a2416;
+  --warn-edge: #5a4a2a;
+  --danger: #ff9a9a;
+  --alert-bg: #2e1a1a;
+  --alert-edge: #7a3535;
+  --stasis: #1b2230;
+  --stasis-text: #cfe0ff;
+  --stasis-edge: #35507a;
+  --found-bg: #684f16;
+  --found-text: #ffffff;
+
+  // Diff
+  --del-text: #ffb4b4;
+  --del-bg: #652929;
+  --ins: #b8efc6;
+  --ins-bg: #1d5030;
+
+  // JSON / Code inspector
+  --editor: #14171b;
+  --editor-edge: #333941;
+  --editor-text: #e6edf3;
+  --editor-text2: #9ba5b0;
+  --syn-key: #9cdcfe;
+  --syn-string: #ce9178;
+  --syn-number: #dcdcaa;
+  --syn-boolean: #569cd6;
+  --syn-null: #c586c0;
+  --syn-comment: #6a9955;
+  --syn-type: #4fc1ff;
+
+  // Game artwork tile backdrop (always dark so white-on-transparent Bungie PNGs stay legible)
+  --icon-bg: #15181c;
+  --icon-fg: #8b95a0;
+
+  // Destiny elements (from Clarity tokens)
+  --el-kinetic: #c9d1da;
+  --el-arc: #7fd0ec;
+  --el-solar: #f0702c;
+  --el-void: #b78bd0;
+  --el-stasis: #8577ff;
+  --el-strand: #35e366;
+  --el-prismatic: #f075c3;
+
+  // Destiny item tier strips (encode tier without neon clutter)
+  --tier-exotic: #ceae33;
+  --tier-legendary: #9c6ade;
+  --tier-rare: #5076a3;
+  --tier-uncommon: #366f42;
+  --tier-common: #9aa2ac;
+
+  // Overlays (the ONLY shadow in the entire app)
+  --shadow: 0 12px 32px rgb(0 0 0 / 0.5);
+  --scrim: rgb(0 0 0 / 0.6);
+}
+
+@mixin light-tokens {
+  // Surfaces ("Europa ice")
+  --page: #d7e1ea;
+  --chrome: #c3d3df;
+  --col: #e2eaf0;
+  --raised: #f6f9fc;
+  --strip: #cfe3da;
+  --hover: #c9d9e5;
+  --raised-hover: #c9d9e5;
+  --sel: #a9d3e6;
+
+  // Text & glyphs
+  --text: #0f151b;
+  --text2: #3e4c5a;
+  --text3: #4b5a68;
+  --tab: #2b3845;
+  --glyph: #3e4c5a;
+  --link: #085b70;
+
+  // Borders & hairlines
+  --line: #8fa6b8;
+  --hair: #b4c6d3;
+  --pop-edge: #6f8799;
+  --ghost-edge: #8fa6b8;
+  --skel: var(--hair);
+  --skel-shine: color-mix(in srgb, var(--hair), var(--raised) 65%);
+
+  // Controls & fields
+  --ctl: #f6f9fc;
+  --ctl-edge: #5c7488;
+  --ctl-hover: #e2eaf0;
+  --ctl-hover-edge: #46617a;
+  --ctl-pressed: #c9d9e5;
+  --fld: #ffffff;
+  --fld-edge: #5c7488;
+
+  // Brand & focus
+  --accent: #24ec54;
+  --accent-ink: #086025;
+  --on-accent: #0b1a0f;
+  --pri-text: #0a6b2a;
+  --pri-hover: #cdebd6;
+  --cyan: #1cdcfc;
+  --cyan-edge: #09647a;
+  --enhanced: #6e5a00;
+
+  // Status families
+  --warn: #6e4a00;
+  --warn-bg: #f6e3a8;
+  --warn-edge: #cfae4e;
+  --danger: #a32020;
+  --alert-bg: #f6cfcf;
+  --alert-edge: #d98a8a;
+  --stasis: #c6daf5;
+  --stasis-text: #1b3a66;
+  --stasis-edge: #6f9ad8;
+  --found-bg: #f6e3a8;
+  --found-text: #0f151b;
+
+  // Diff
+  --del-text: #7a1f1f;
+  --del-bg: #f3cfd0;
+  --ins: #114d2a;
+  --ins-bg: #c9ecd6;
+
+  // JSON / Code inspector
+  --editor: #fbfdfe;
+  --editor-edge: #8fa6b8;
+  --editor-text: #0f151b;
+  --editor-text2: #4b5a68;
+  --syn-key: #0b5f99;
+  --syn-string: #9a3d14;
+  --syn-number: #7a5c00;
+  --syn-boolean: #164ea6;
+  --syn-null: #8f3f93;
+  --syn-comment: #2f6c21;
+  --syn-type: #09647a;
+
+  // Game artwork tile backdrop stays dark on Europa Ice light so white Bungie PNGs stay crisp
+  --icon-bg: #1c222a;
+  --icon-fg: #9ba5b0;
+
+  // Destiny elements (AA darkened on Europa Ice)
+  --el-kinetic: #4f5b68;
+  --el-arc: #00708c;
+  --el-solar: #b54300;
+  --el-void: #8a4aab;
+  --el-stasis: #5b4ff0;
+  --el-strand: #147a33;
+  --el-prismatic: #a32766;
+
+  // Destiny item tier strips
+  --tier-exotic: #997400;
+  --tier-legendary: #6d3fa6;
+  --tier-rare: #2c5b8f;
+  --tier-uncommon: #1e6b34;
+  --tier-common: #5b6672;
+
+  // Overlays
+  --shadow: 0 8px 24px rgb(15 21 27 / 0.22);
+  --scrim: rgb(15 21 27 / 0.4);
+}
+
+:root {
+  @include dark-tokens;
+  color-scheme: dark;
+  --code-font-size: 13px;
+  --code-font-family: ui-monospace, 'Cascadia Code', Consolas, 'Liberation Mono', monospace;
+}
+
+:root[data-theme='light'] {
+  @include light-tokens;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    @include light-tokens;
+    color-scheme: light;
+  }
+}
+
+@include theme.mobile-or-coarse {
+  :root {
+    --tap: 2.25rem;
+    --tap-sm: 1.75rem;
+    --bar: calc(var(--tap) + 0.5rem);
+    --page-x: 0.5rem;
+    --ctl-text: 0.875rem;
+  }
+
+  :root[data-touch='large'] {
+    --tap: max(44px, 2.75rem);
+    --tap-sm: max(44px, 2.75rem);
+  }
+}

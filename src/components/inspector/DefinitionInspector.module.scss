@@ -1,0 +1,559 @@
+@use '../../styles/controls' as ctl;
+@use '../../styles/variables' as theme;
+
+.pane {
+  position: relative;
+  width: var(--inspector-w, 620px);
+  max-width: 75vw;
+  min-width: 24rem;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--page);
+  border-left: 1px solid var(--line);
+
+  @media (max-width: 900px) {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+    border-left: 0;
+  }
+}
+
+.paneMaximized {
+  flex: 1 1 auto;
+  width: auto;
+  max-width: none;
+  min-width: 0;
+  border-left: 0;
+}
+
+.sessionBar {
+  @include ctl.contain-focus-rings;
+  display: flex;
+  align-items: stretch;
+  background: var(--col);
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+  flex-shrink: 0;
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+.sessionTab {
+  display: inline-flex;
+  align-items: center;
+  max-width: 13rem;
+  min-height: 1.75rem;
+  border-right: 1px solid var(--hair);
+  border-top: 2px solid transparent;
+  background: transparent;
+  flex-shrink: 0;
+
+  @media (hover: hover) {
+    &:hover {
+      background: var(--hover);
+    }
+  }
+}
+
+.sessionTabActive {
+  background: var(--chrome);
+  border-top-color: var(--accent-ink);
+}
+
+.sessionTabBtn {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  height: 100%;
+  padding: 0 0.375rem 0 0.625rem;
+  border: 0;
+  background: transparent;
+  color: var(--tab);
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+
+  .sessionTabActive & {
+    color: var(--text);
+    font-weight: 600;
+  }
+
+  &:focus-visible {
+    @include ctl.focus-ring;
+  }
+}
+
+.sessionTabLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sessionCloseBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.375rem;
+  height: 1.375rem;
+  margin-right: 0.25rem;
+  padding: 0;
+  border: 0;
+  border-radius: 0.1875rem;
+  background: transparent;
+  color: var(--text3);
+  cursor: pointer;
+  flex-shrink: 0;
+
+  @media (hover: hover) {
+    &:hover {
+      color: var(--text);
+      background: var(--ctl-hover);
+    }
+  }
+
+  &:focus-visible {
+    @include ctl.focus-ring;
+  }
+}
+
+.resizeHandle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  width: 8px;
+  cursor: col-resize;
+  z-index: 5;
+
+  &:hover::after,
+  &:focus-visible::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 3px;
+    width: 2px;
+    background: var(--accent-ink);
+  }
+
+  &:focus-visible {
+    outline: none;
+  }
+
+  @include theme.mobile {
+    display: none;
+  }
+}
+
+.navBar {
+  @include ctl.contain-focus-rings;
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  min-height: 2rem;
+  padding: 0.1875rem 0.5rem;
+  background: var(--chrome);
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+
+  @include theme.mobile {
+    min-height: var(--bar);
+    padding: 0.25rem var(--page-x);
+  }
+}
+
+.navButtons {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-shrink: 0;
+}
+
+.mobileBackBtn {
+  @include ctl.button;
+  display: none;
+
+  @media (max-width: 900px) {
+    display: inline-flex;
+  }
+}
+
+.desktopCloseBtn {
+  @media (max-width: 900px) {
+    display: none;
+  }
+}
+
+.iconBtn {
+  @include ctl.quiet-button;
+  min-width: 1.75rem;
+  padding: 0 0.375rem;
+
+  @include theme.mobile-or-coarse {
+    min-width: var(--tap);
+  }
+}
+
+.breadcrumbs {
+  display: flex;
+  align-items: center;
+  gap: 0.125rem;
+  min-width: 0;
+  flex: 1;
+  overflow-x: auto;
+  white-space: nowrap;
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+.crumbItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.125rem;
+}
+
+.crumbSep {
+  color: var(--text3);
+  font-size: 0.75rem;
+}
+
+.crumbBtn {
+  padding: 0.125rem 0.25rem;
+  border: 0;
+  border-radius: 0.1875rem;
+  background: transparent;
+  color: var(--text2);
+  font-family: var(--code-font-family);
+  font-size: 0.75rem;
+  cursor: pointer;
+
+  @media (hover: hover) {
+    &:hover {
+      background: var(--hover);
+      color: var(--text);
+    }
+  }
+
+  &:focus-visible {
+    @include ctl.focus-ring;
+  }
+}
+
+.crumbCurrent {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.entityHeader {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.625rem 0.75rem;
+  background: var(--col);
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+
+  @include theme.mobile {
+    padding: 0.5rem var(--page-x);
+  }
+}
+
+.entityIdentity {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.625rem;
+  min-width: 0;
+}
+
+.entityTitleGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1875rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.entityNameRow {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.entityTitle {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.liteTag {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  padding: 0.0625rem 0.375rem;
+  background: var(--warn-bg);
+  color: var(--warn);
+  border: 1px solid var(--warn-edge);
+  border-radius: 0.1875rem;
+  flex-shrink: 0;
+}
+
+.entityMetaRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.5rem;
+  font-size: 0.75rem;
+}
+
+.tableLabel {
+  color: var(--text2);
+  font-family: var(--code-font-family);
+}
+
+.subLabel {
+  color: var(--text3);
+}
+
+.hashRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+}
+
+.hashBtn,
+.hashBtnMuted {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.0625rem 0.375rem;
+  font-size: 0.75rem;
+  border: 1px solid var(--ghost-edge);
+  border-radius: 0.1875rem;
+  background: var(--ctl);
+  color: var(--text);
+  cursor: pointer;
+
+  @media (hover: hover) {
+    &:hover {
+      background: var(--ctl-hover);
+      border-color: var(--ctl-hover-edge);
+    }
+  }
+
+  &:focus-visible {
+    @include ctl.focus-ring;
+  }
+}
+
+.hashBtnMuted {
+  background: transparent;
+  color: var(--text2);
+}
+
+.headerActions {
+  @include ctl.contain-focus-rings;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+}
+
+.actionBtn {
+  @include ctl.button;
+}
+
+.actionActive {
+  color: var(--pri-text);
+  background: var(--pri-hover);
+  border-color: var(--accent-ink);
+}
+
+.coTableStrip {
+  @include ctl.contain-focus-rings;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-wrap: wrap;
+  font-size: 0.75rem;
+  padding-top: 0.25rem;
+  border-top: 1px solid var(--hair);
+}
+
+.coTableLabel {
+  color: var(--text2);
+  margin-right: 0.125rem;
+}
+
+.coTableBtn {
+  padding: 0.125rem 0.375rem;
+  border: 1px solid var(--ghost-edge);
+  border-radius: 0.1875rem;
+  background: transparent;
+  color: var(--text2);
+  font: inherit;
+  cursor: pointer;
+
+  @media (hover: hover) {
+    &:hover {
+      background: var(--hover);
+      color: var(--text);
+    }
+  }
+
+  &:focus-visible {
+    @include ctl.focus-ring;
+  }
+}
+
+.coTableActive {
+  background: var(--sel);
+  color: var(--text);
+  border-color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.tabBar {
+  @include ctl.contain-focus-rings;
+  display: flex;
+  align-items: stretch;
+  background: var(--chrome);
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+.tabBtn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2rem;
+  padding: 0 0.6875rem;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--tab);
+  font: inherit;
+  font-size: 0.8125rem;
+  white-space: nowrap;
+  cursor: pointer;
+
+  @media (hover: hover) {
+    &:hover {
+      background: var(--hover);
+      color: var(--text);
+    }
+  }
+
+  &:focus-visible {
+    @include ctl.focus-ring;
+  }
+
+  @include theme.mobile {
+    flex: 1 1 0;
+    min-height: var(--tap);
+    padding: 0 0.25rem;
+    font-size: 0.75rem;
+    text-align: center;
+  }
+}
+
+.tabActive {
+  color: var(--text);
+  font-weight: 700;
+  border-bottom-color: var(--accent-ink);
+}
+
+.tabLabelShort {
+  display: none;
+
+  @include theme.mobile {
+    display: inline;
+  }
+}
+
+.tabLabelFull {
+  @include theme.mobile {
+    display: none;
+  }
+}
+
+.tabPanel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.loadingState,
+.errorState {
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.errorMsg {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--danger);
+}
+
+.rawWrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.rawToolbar {
+  @include ctl.contain-focus-rings;
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.375rem 0.625rem;
+  background: var(--col);
+  border-bottom: 1px solid var(--hair);
+  flex-shrink: 0;
+}
+
+.rawPre {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 0.625rem 0.75rem 1.5rem;
+  overflow: auto;
+  background: var(--editor);
+  color: var(--editor-text);
+  font-family: var(--code-font-family);
+  font-size: var(--code-font-size);
+  line-height: 1.5;
+  tab-size: 2;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

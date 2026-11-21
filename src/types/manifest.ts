@@ -76,6 +76,8 @@ export interface SearchIndexEntry {
   hasCollectible?: boolean;
   /** Normalized displaySource / sourceString snippet for `source:` search */
   sourceLower?: string;
+  /** Canonical DIM D2Source keys this entry belongs to (e.g. `vowofthedisciple`). */
+  sourceTags?: string[];
   /** Lowercased trait id strings for `trait:` search */
   traitIds?: string[];
   plugCategoryIdentifier?: string;
@@ -322,10 +324,20 @@ export interface FilterOption {
   count?: number;
 }
 
+/** A canonical DIM source key surfaced as a searchable filter option. */
+export interface SourceFilterOption {
+  key: string;
+  label: string;
+  count: number;
+  aliases?: string[];
+}
+
 export interface FilterCatalog {
   categories: FilterOption[];
   /** Season/episode filter options (value = seasonNumber), newest first. */
   seasons?: FilterOption[];
+  /** DIM source filter options, sorted by count descending. */
+  sources?: SourceFilterOption[];
 }
 
 export type ImageScalingMode = 'sharp' | 'integer' | 'smooth';

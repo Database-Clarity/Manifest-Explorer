@@ -165,55 +165,107 @@
   color: var(--syn-null);
 }
 
+// Inline context badges — crisp elevated chips that visually separate enriched
+// context (enums, resolved refs, lazy refs) from the raw JSON beside them.
 .annotation {
   display: inline-flex;
-  align-items: baseline;
-  gap: 0.375rem;
-  margin-left: 0.375rem;
+  align-items: center;
+  align-self: center;
+  gap: 0.3rem;
+  max-width: 100%;
+  margin-left: 0.625rem;
+  padding: 0 0.4375rem;
+  border: 1px solid var(--line);
+  border-radius: 0.25rem;
+  background: var(--raised);
   color: var(--editor-text);
+  font-family: var(--code-font-family);
+  font-size: 0.9em;
+  line-height: 1.4;
+  overflow: hidden;
 }
 
-.annotationSep {
-  color: var(--text3);
-  user-select: none;
+// Resolved enum context — cyan type bar.
+.annotationEnum {
+  border-left: 2px solid var(--syn-type);
+}
+
+// Clickable resolved definition reference — link-coloured bar.
+.annotationRef {
+  border-left: 2px solid var(--link);
+}
+
+// Lazy/unloaded definition reference — muted bar until the table resolves.
+.annotationLazy {
+  border-left: 2px solid var(--ghost-edge);
+}
+
+// Shared behaviour for the reference pills that are buttons.
+.refBadge {
+  text-align: left;
+  cursor: pointer;
+
+  &:active {
+    background: var(--sel);
+  }
+
+  @media (hover: hover) {
+    &:hover {
+      background: var(--hover);
+      border-color: var(--ctl-hover-edge);
+    }
+  }
+
+  &:focus-visible {
+    @include ctl.focus-ring;
+  }
 }
 
 .enumType {
   color: var(--syn-type);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .enumDot {
   color: var(--text3);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .enumLabel {
   color: var(--editor-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
-.refLink {
-  padding: 0;
-  margin: 0;
-  border: 0;
-  background: transparent;
-  font: inherit;
+.refTable {
+  color: var(--text2);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.refName {
   color: var(--link);
-  cursor: pointer;
-  text-decoration: underline;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.lazyLabel,
+.lazyHash {
+  color: var(--text2);
+  text-decoration: underline dotted;
   text-decoration-thickness: 1px;
   text-underline-offset: 2px;
-
-  &:focus-visible {
-    @include ctl.focus-ring;
-    border-radius: 0.1875rem;
-  }
-}
-
-.refLinkLazy {
-  color: var(--text2);
-  text-decoration-style: dotted;
+  white-space: nowrap;
+  flex-shrink: 0;
 
   @media (hover: hover) {
-    &:hover {
+    .annotationLazy:hover & {
       color: var(--link);
     }
   }

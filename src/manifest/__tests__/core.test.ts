@@ -23,7 +23,7 @@ import {
   toUnsignedHash,
 } from '../hash';
 import { parseSearchQuery, scoreAndFilterEntries, type SearchContext } from '../query';
-import { SEASON_ALIASES, getD2aiMappings } from '../d2ai';
+import { SEASON_ALIASES, formatShortSeasonName, getD2aiMappings, normalizeSourceLookup } from '../d2ai';
 import {
   ARTIFACT_PERKS_TABLE,
   CORE_BOOT_TABLES,
@@ -687,7 +687,7 @@ describe('ranking and filtering', () => {
 
 describe('search index schema version', () => {
   it('exports a schema version so stale caches are rebuilt', () => {
-    expect(SEARCH_INDEX_SCHEMA_VERSION).toBe(4);
+    expect(SEARCH_INDEX_SCHEMA_VERSION).toBe(5);
   });
 });
 
@@ -914,6 +914,68 @@ describe('d2ai bundled mappings', () => {
     expect(SEASON_ALIASES[28]?.aliases).toContain('renegades');
     expect(SEASON_ALIASES[28]?.aliases).toContain('lawless');
     expect(SEASON_ALIASES[28]?.aliases).toContain('monument of triumph');
+  });
+});
+
+describe('formatShortSeasonName', () => {
+  it('drops Season of the / Season of / Episode: / Season: prefixes', () => {
+    expect(formatShortSeasonName('Season of the Wish')).toBe('Wish');
+    expect(formatShortSeasonName('Season of Opulence')).toBe('Opulence');
+    expect(formatShortSeasonName('Episode: Heresy')).toBe('Heresy');
+    expect(formatShortSeasonName('Season: Reclamation')).toBe('Reclamation');
+    expect(formatShortSeasonName('  Season of the Deep  ')).toBe('Deep');
+  });
+});
+
+describe('source-info-v2 mappings', () => {
+  it('loads 100+ source keys with canonical labels and aliases', () => {
+    const mappings = getD2aiMappings();
+    expect(Object.keys(mappings.sourceLabels).length).toBeGreaterThan(100);
+    expect(mappings.sourceLabels['ironbanner']).toBe('Iron Banner');
+    expect(mappings.sourceLabels['salvationsedge']).toBe("Salvation's Edge");
+    expect(mappings.sourceLabels['legendaryengram']).toBe('World Drops');
+
+    expect(mappings.sourceAliasToKey.get('vow')).toBe('vowofthedisciple');
+    expect(mappings.sourceAliasToKey.get('votd')).toBe('vowofthedisciple');
+    expect(mappings.sourceAliasToKey.get('ib')).toBe('ironbanner');
+    expect(mappings.sourceAliasToKey.get(normalizeSourceLookup('iron banner'))).toBe('ironbanner');
+    expect(mappings.sourceAliasToKey.get('vog')).toBe('vaultofglass');
+    expect(mappings.sourceAliasToKey.get('dsc')).toBe('deepstonecrypt');
+    expect(mappings.sourceAliasToKey.get('kf')).toBe('kingsfall');
+    expect(mappings.sourceAliasToKey.get('lw')).toBe('lastwish');
+    expect(mappings.sourceAliasToKey.get('ron')).toBe('rootofnightmares');
+    expect(mappings.sourceAliasToKey.get('se')).toBe('salvationsedge');
+    expect(mappings.sourceAliasToKey.get('exoticmission')).toBe('exoticquest');
+    expect(mappings.sourceAliasToKey.get('vanguard')).toBe('strikes');
+    expect(mappings.sourceAliasToKey.get('world')).toBe('legendaryengram');
+    expect(mappings.sourceAliasToKey.get('worlddrop')).toBe('legendaryengram');
+    expect(mappings.sourceAliasToKey.get('trialsofosiris')).toBe('trials');
+
+    expect(mappings.sourceAliasesByKey['vowofthedisciple']).toContain('vow');
+    expect(mappings.sourceAliasesByKey['deepstonecrypt']).toContain('dsc');
+  });
+});
+
+describe('source: query matching via sourceTags', () => {
+  const sourceAliasToKey = getD2aiMappings().sourceAliasToKey;
+  const context: SearchContext = { sourceAliasToKey };
+
+  it('matches canonical keys and aliases, with negation', () => {
+    const entries = [
+      makeEntry({ hash: 1, name: 'Vow Weapon', sourceTags: ['vowofthedisciple'] }),
+      makeEntry({ hash: 2, name: 'Iron Banner Weapon', sourceTags: ['ironbanner'] }),
+      makeEntry({ hash: 3, name: 'Raid Weapon', sourceTags: ['raid'] }),
+      makeEntry({ hash: 4, name: 'Eververse Item', sourceTags: ['eververse'] }),
+    ];
+
+    expect(rank('source:vow', entries, { context }).items.map((item) => item.hash)).toEqual([1]);
+    expect(rank('source:"iron banner"', entries, { context }).items.map((item) => item.hash)).toEqual(
+      [2],
+    );
+    expect(rank('source:raid', entries, { context }).items.map((item) => item.hash)).toEqual([3]);
+    expect(
+      rank('-source:eververse', entries, { context, sort: 'hash-asc' }).items.map((item) => item.hash),
+    ).toEqual([1, 2, 3]);
   });
 });
 

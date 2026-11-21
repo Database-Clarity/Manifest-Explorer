@@ -11,6 +11,7 @@ import {
   TIER_FILTER_OPTIONS,
 } from './enums';
 import { parseHashInput } from './hash';
+import { normalizeSourceLookup } from './d2ai';
 import { ARTIFACT_PERKS_TABLE, TABLE_METADATA, getShortTableName, resolveTableAlias } from './tables';
 
 export interface SearchFlags {
@@ -68,6 +69,8 @@ export interface SearchContext {
   seasonNameMap?: Map<number, string>;
   /** Fallback names and aliases per season number, for `season:<name>`. */
   seasonAliases?: Readonly<Record<number, { fallbackName: string; aliases: readonly string[] }>>;
+  /** normalized source key/alias -> canonical DIM source key, for `source:<name>`. */
+  sourceAliasToKey?: Map<string, string>;
 }
 
 type FlagKey = keyof SearchFlags;
@@ -687,8 +690,17 @@ function entryFlag(entry: SearchIndexEntry, key: FlagKey): boolean {
   }
 }
 
-function sourceMatches(entry: SearchIndexEntry, token: string): boolean {
+function sourceMatches(entry: SearchIndexEntry, token: string, context?: SearchContext): boolean {
   if (!token) return false;
+  const norm = normalizeSourceLookup(token);
+  const canonical = context?.sourceAliasToKey?.get(norm);
+  if (canonical && entry.sourceTags?.includes(canonical) === true) return true;
+  if (
+    norm.length >= 3 &&
+    entry.sourceTags?.some((tag) => tag === norm || tag.includes(norm)) === true
+  ) {
+    return true;
+  }
   if (entry.sourceLower?.includes(token) === true) return true;
   return entry.descLower.includes(token);
 }
@@ -922,7 +934,7 @@ export function scoreAndFilterEntries(
     if (rejected) continue;
 
     for (const token of parsed.sourceTokens) {
-      if (!sourceMatches(entry, token)) {
+      if (!sourceMatches(entry, token, context)) {
         rejected = true;
         break;
       }
@@ -930,7 +942,7 @@ export function scoreAndFilterEntries(
     if (rejected) continue;
 
     for (const token of parsed.negatedSourceTokens) {
-      if (sourceMatches(entry, token)) {
+      if (sourceMatches(entry, token, context)) {
         rejected = true;
         break;
       }

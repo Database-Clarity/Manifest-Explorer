@@ -33,6 +33,7 @@ import type {
   SearchResponse,
   SearchResultItem,
   SortMode,
+  SourceFilterOption,
   TableStatus,
   VariantItem,
 } from '../types/manifest';
@@ -47,7 +48,7 @@ import {
   getTableGroup,
 } from './tables';
 import { bungieAssetUrl, getTargetTablesForField, getTargetTablesForObjectKey, toUnsignedHash } from './hash';
-import { SEASON_ALIASES, getD2aiMappings, refreshD2aiMappingsFromRemote } from './d2ai';
+import { SEASON_ALIASES, formatShortSeasonName, getD2aiMappings, refreshD2aiMappingsFromRemote } from './d2ai';
 import { annotateEnumField } from './enums';
 import { parseSearchQuery, scoreAndFilterEntries } from './query';
 import { streamTopLevelJsonObject } from './streamJson';
@@ -527,7 +528,12 @@ function currentCatalog(): FilterCatalog {
 
   rebuildSeasonMetadata();
   const seasons = buildSeasonOptions();
-  return seasons.length > 0 ? { categories, seasons } : { categories };
+  const sources = buildSourceOptions();
+
+  const catalog: FilterCatalog = { categories };
+  if (seasons.length > 0) catalog.seasons = seasons;
+  if (sources.length > 0) catalog.sources = sources;
+  return catalog;
 }
 
 function buildSeasonOptions(): FilterOption[] {
@@ -542,12 +548,40 @@ function buildSeasonOptions(): FilterOption[] {
     (a, b) => b[0] - a[0],
   )) {
     if (seasonNumber < 1) continue;
+    const shortName = name ? formatShortSeasonName(name) : '';
     options.push({
       value: seasonNumber,
-      label: name ? `S${seasonNumber} · ${name}` : `Season ${seasonNumber}`,
+      label: shortName ? `S${seasonNumber} · ${shortName}` : `Season ${seasonNumber}`,
       count: counts.get(seasonNumber) ?? 0,
     });
   }
+  return options;
+}
+
+function buildSourceOptions(): SourceFilterOption[] {
+  const d2ai = getD2aiMappings();
+  const counts = new Map<string, number>();
+  for (const entry of entries) {
+    const tags = entry.sourceTags;
+    if (!tags || tags.length === 0) continue;
+    for (const tag of tags) {
+      counts.set(tag, (counts.get(tag) ?? 0) + 1);
+    }
+  }
+
+  const options: SourceFilterOption[] = [];
+  for (const [key, count] of counts) {
+    if (count <= 0) continue;
+    const aliases = d2ai.sourceAliasesByKey[key];
+    const option: SourceFilterOption = {
+      key,
+      label: d2ai.sourceLabels[key] ?? key,
+      count,
+    };
+    if (aliases && aliases.length > 0) option.aliases = aliases;
+    options.push(option);
+  }
+  options.sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
   return options;
 }
 
@@ -726,6 +760,44 @@ function rebuildArtifactHashes(): void {
   for (const hash of perkHashes) artifactItemHashes.add(hash);
 }
 
+/** Collect canonical DIM source tags for an entry from item/source hash mappings. */
+function collectSourceTagsForEntry(
+  entry: SearchIndexEntry,
+  d2ai: ReturnType<typeof getD2aiMappings>,
+  collectibles: Record<string, Record<string, unknown>> | undefined,
+): string[] | undefined {
+  const tags = new Set<string>();
+
+  const fromItem = d2ai.itemHashToSourceTags.get(entry.hash);
+  if (fromItem) {
+    for (const tag of fromItem) tags.add(tag);
+  }
+
+  if (entry.collectibleHash !== undefined && collectibles) {
+    const collectible = collectibles[String(entry.collectibleHash)];
+    const sourceHash = asUnsigned(collectible?.sourceHash);
+    if (sourceHash !== undefined) {
+      const fromSource = d2ai.sourceHashToSourceTags.get(sourceHash);
+      if (fromSource) {
+        for (const tag of fromSource) tags.add(tag);
+      }
+    }
+  }
+
+  if (entry.table === 'DestinyCollectibleDefinition' && collectibles) {
+    const raw = collectibles[String(entry.hash)];
+    const sourceHash = asUnsigned(raw?.sourceHash);
+    if (sourceHash !== undefined) {
+      const fromSource = d2ai.sourceHashToSourceTags.get(sourceHash);
+      if (fromSource) {
+        for (const tag of fromSource) tags.add(tag);
+      }
+    }
+  }
+
+  return tags.size > 0 ? [...tags] : undefined;
+}
+
 /**
  * Fill in cross-table metadata on the in-memory search entries before they are
  * persisted: season numbers (via seasonHash, watermark, or trait ids), artifact
@@ -781,6 +853,10 @@ function enrichIndexedEntries(): void {
       const source = asString(collectible?.sourceString) ?? asString(collectible?.displaySource);
       if (source) entry.sourceLower = normalizeSearchText(source);
     }
+
+    const sourceTags = collectSourceTagsForEntry(entry, d2ai, collectibles);
+    if (sourceTags && sourceTags.length > 0) entry.sourceTags = sourceTags;
+    else entry.sourceTags = undefined;
   }
 
   recomputeLatestSeasonFromEntries();
@@ -928,6 +1004,8 @@ async function init(
           emitCatalog();
         }
       });
+      // Resume background indexing for tables a prior visit did not finish.
+      void resumeBackgroundIndexing();
       return currentStatus();
     }
   }
@@ -982,18 +1060,21 @@ async function init(
     }
   });
 
-  // Stage 3: background secondary indexing.
+  // Stage 3: background secondary + remaining-table indexing.
   state.phase = 'indexing-secondary';
   emitStatus(true);
   void (async () => {
     try {
       await loadTablesInParallel(SECONDARY_INDEX_TABLES, 4);
       await persistSearchIndex();
+      emitCatalog();
+      await indexRemainingTables();
     } finally {
       state.phase = 'ready';
       state.currentTable = undefined;
       emitStatus(true);
       emitTables(true);
+      emitCatalog();
     }
   })();
 
@@ -1005,6 +1086,48 @@ async function backgroundUpdateCheck(): Promise<void> {
   if (result.hasUpdate) {
     // Seamlessly rebuild with the newer manifest in the background.
     void init(state.locale, state.apiKey, true);
+  }
+}
+
+/** Tables handled by the streaming full-item loader rather than the JSON path. */
+const FULL_ITEM_TABLES = new Set<string>([
+  INVENTORY_ITEM_TABLE,
+  'DestinyInventoryItemLiteDefinition',
+]);
+
+/** Tables in componentPaths that are not yet indexed (and not full-item tables). */
+function computeRemainingTables(): string[] {
+  const remaining: string[] = [];
+  for (const table of Object.keys(state.componentPaths)) {
+    if (indexedTables.has(table)) continue;
+    if (FULL_ITEM_TABLES.has(table)) continue;
+    remaining.push(table);
+  }
+  return remaining;
+}
+
+/** Stage 3: cache + index every remaining manifest table in the background. */
+async function indexRemainingTables(): Promise<void> {
+  const remaining = computeRemainingTables();
+  if (remaining.length === 0) return;
+  await loadTablesInParallel(remaining, 4);
+  await persistSearchIndex();
+  emitCatalog();
+}
+
+/** Resume Stage 3 on a cached boot when a prior visit stopped partway through. */
+async function resumeBackgroundIndexing(): Promise<void> {
+  if (computeRemainingTables().length === 0) return;
+  state.phase = 'indexing-secondary';
+  emitStatus(true);
+  try {
+    await indexRemainingTables();
+  } finally {
+    state.phase = 'ready';
+    state.currentTable = undefined;
+    emitStatus(true);
+    emitTables(true);
+    emitCatalog();
   }
 }
 
@@ -1087,6 +1210,9 @@ async function doLoadTable(table: string, explicit: boolean): Promise<void> {
       indexedTables.add(table);
       status.indexed = true;
       await persistSearchIndex();
+      // Collectible-derived source tags + source counts become available the
+      // moment collectibles land, so refresh the filter catalog immediately.
+      if (table === 'DestinyCollectibleDefinition') emitCatalog();
     } else {
       status.indexed = true;
     }
@@ -1158,6 +1284,8 @@ async function loadAllTables(): Promise<void> {
     const all = Object.keys(state.componentPaths);
     const remaining = all.filter((table) => !getOrCreateTableStatus(table).loaded);
     await loadTablesInParallel(remaining, 4);
+    await persistSearchIndex();
+    emitCatalog();
   } finally {
     loadAllInProgress = false;
     emitStatus(true);
@@ -1177,6 +1305,7 @@ async function search(
 ): Promise<SearchResponse> {
   const availableTables = [...Object.keys(state.componentPaths), ARTIFACT_PERKS_TABLE];
   const parsed = parseSearchQuery(query, availableTables);
+  const d2ai = getD2aiMappings();
   return scoreAndFilterEntries(
     entries,
     parsed,
@@ -1188,6 +1317,7 @@ async function search(
       latestSeason: latestSeasonNumber,
       seasonNameMap: seasonNameByNumber,
       seasonAliases: SEASON_ALIASES,
+      sourceAliasToKey: d2ai.sourceAliasToKey,
     },
   );
 }

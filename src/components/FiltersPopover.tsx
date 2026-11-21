@@ -128,15 +128,27 @@ const SOURCE_OPTIONS: readonly TokenOption[] = [
   { token: 'source:raid', label: 'Raid' },
   { token: 'source:dungeon', label: 'Dungeon' },
   { token: 'source:trials', label: 'Trials' },
+  { token: 'source:ironbanner', label: 'Iron Banner' },
+  { token: 'source:nightfall', label: 'Nightfall' },
+  { token: 'source:strikes', label: 'Strikes' },
   { token: 'source:crucible', label: 'Crucible' },
-  { token: 'source:vanguard', label: 'Vanguard' },
   { token: 'source:gambit', label: 'Gambit' },
   { token: 'source:eververse', label: 'Eververse' },
-  { token: 'source:"iron banner"', label: 'Iron Banner' },
-  { token: 'source:nightfall', label: 'Nightfall' },
+  { token: 'source:seasonpass', label: 'Season Pass' },
+  { token: 'source:events', label: 'Events' },
+  { token: 'source:exoticquest', label: 'Exotic Mission' },
+  { token: 'source:lostsectors', label: 'Lost Sectors' },
+  { token: 'source:legendaryengram', label: 'World Drops' },
 ];
 
 const LATEST_SEASON_OPTION: TokenOption = { token: 'season:latest', label: 'Latest season' };
+
+interface SourceFilterOption {
+  key: string;
+  label: string;
+  count: number;
+  aliases?: string[];
+}
 
 const NUMBER_FORMAT = new Intl.NumberFormat('en-US');
 
@@ -156,6 +168,8 @@ export function FiltersPopover({
   align = 'start',
 }: FiltersPopoverProps): ReactNode {
   const [categoryQuery, setCategoryQuery] = useState('');
+  const [sourceQuery, setSourceQuery] = useState('');
+  const [collapsibleOpen, setCollapsibleOpen] = useState<Record<string, boolean>>({});
 
   const query = useExplorerStore((state) => state.query);
   const setQuery = useExplorerStore((state) => state.setQuery);
@@ -168,9 +182,12 @@ export function FiltersPopover({
   // so this file compiles cleanly no matter which side merges first.
   const seasons: readonly FilterOption[] =
     (filterCatalog as { seasons?: FilterOption[] }).seasons ?? [];
+  const sources: readonly SourceFilterOption[] =
+    (filterCatalog as { sources?: SourceFilterOption[] }).sources ?? [];
   const categories = filterCatalog.categories;
 
   const normalizedCategoryQuery = categoryQuery.trim().toLowerCase();
+  const normalizedSourceQuery = sourceQuery.trim().toLowerCase();
   const filteredCategories = useMemo(
     () =>
       categories.filter((option) =>
@@ -179,6 +196,18 @@ export function FiltersPopover({
           : option.label.toLowerCase().includes(normalizedCategoryQuery),
       ),
     [categories, normalizedCategoryQuery],
+  );
+  const filteredSources = useMemo(
+    () =>
+      sources.filter((source) => {
+        if (normalizedSourceQuery.length === 0) {
+          return true;
+        }
+        return [source.label, source.key, ...(source.aliases ?? [])].some((value) =>
+          value.toLowerCase().includes(normalizedSourceQuery),
+        );
+      }),
+    [sources, normalizedSourceQuery],
   );
 
   // Skip seasons with no indexed items so empty rows never clutter the list.
@@ -193,9 +222,10 @@ export function FiltersPopover({
     setQuery(clearQueryFilterTokens(query));
     resetFilters();
     setCategoryQuery('');
+    setSourceQuery('');
   }
 
-  function renderTokenChip(option: TokenOption): ReactNode {
+  function renderTokenChip(option: TokenOption, onToggle?: () => void): ReactNode {
     const selected = hasQueryToken(query, option.token);
     return (
       <button
@@ -204,7 +234,10 @@ export function FiltersPopover({
         className={cx(styles.chip, selected && styles.chipOn)}
         aria-pressed={selected}
         title={option.token}
-        onClick={() => toggleToken(option.token)}
+        onClick={() => {
+          toggleToken(option.token);
+          onToggle?.();
+        }}
       >
         {option.dot !== undefined && (
           <span
@@ -225,7 +258,7 @@ export function FiltersPopover({
     return (
       <section className={styles.group}>
         <h3 className={styles.groupTitle}>{title}</h3>
-        <div className={styles.chips}>{options.map(renderTokenChip)}</div>
+        <div className={styles.chips}>{options.map((option) => renderTokenChip(option))}</div>
       </section>
     );
   }
@@ -234,14 +267,31 @@ export function FiltersPopover({
     summary: string,
     options: readonly TokenOption[],
   ): ReactNode {
+    const hasSelected = options.some((option) => hasQueryToken(query, option.token));
+    const isOpen = hasSelected || collapsibleOpen[summary] === true;
+
     return (
-      <details className={styles.collapsible}>
-        <summary className={styles.collapsibleSummary}>
+      <details className={styles.collapsible} open={isOpen}>
+        <summary
+          className={styles.collapsibleSummary}
+          onClick={(event) => {
+            event.preventDefault();
+            if (!hasSelected) {
+              setCollapsibleOpen((current) => ({ ...current, [summary]: !isOpen }));
+            }
+          }}
+        >
           <ChevronRightIcon size={11} className={styles.summaryChevron} />
           {summary}
         </summary>
         <div className={styles.collapsibleBody}>
-          <div className={styles.chips}>{options.map(renderTokenChip)}</div>
+          <div className={styles.chips}>
+            {options.map((option) =>
+              renderTokenChip(option, () =>
+                setCollapsibleOpen((current) => ({ ...current, [summary]: true })),
+              ),
+            )}
+          </div>
         </div>
       </details>
     );
@@ -254,7 +304,7 @@ export function FiltersPopover({
       anchorRef={anchorRef}
       align={align}
       label="Search filters"
-      width="24rem"
+      width="min(46rem, calc(100vw - 1.5rem))"
     >
       <div className={styles.body}>
         <div className={styles.header}>
@@ -268,98 +318,154 @@ export function FiltersPopover({
           from there.
         </p>
 
-        {renderChipGroup('Highlights & flags', HIGHLIGHT_OPTIONS)}
-        {renderChipGroup('Tier', TIER_OPTIONS)}
-        {renderChipGroup('Damage', DAMAGE_OPTIONS)}
+        <div className={styles.columns}>
+          <div className={styles.col}>
+            {renderChipGroup('Highlights & flags', HIGHLIGHT_OPTIONS)}
+            {renderChipGroup('Tier', TIER_OPTIONS)}
+            {renderChipGroup('Damage', DAMAGE_OPTIONS)}
 
-        <section className={styles.group}>
-          <h3 className={styles.groupTitle}>Ammo &amp; slot</h3>
-          <div className={styles.chips}>{AMMO_OPTIONS.map(renderTokenChip)}</div>
-          <div className={styles.chips}>{SLOT_OPTIONS.map(renderTokenChip)}</div>
-        </section>
+            <section className={styles.group}>
+              <h3 className={styles.groupTitle}>Ammo &amp; slot</h3>
+              <div className={styles.chips}>
+                {AMMO_OPTIONS.map((option) => renderTokenChip(option))}
+              </div>
+              <div className={styles.chips}>
+                {SLOT_OPTIONS.map((option) => renderTokenChip(option))}
+              </div>
+            </section>
 
-        {renderChipGroup('Class', CLASS_OPTIONS)}
-        {renderChipGroup('Item type', TYPE_OPTIONS)}
+            {renderChipGroup('Class', CLASS_OPTIONS)}
+            {renderChipGroup('Item type', TYPE_OPTIONS)}
 
-        <section className={styles.group}>
-          <h3 className={styles.groupTitle}>Weapon</h3>
-          {renderCollapsible('Weapon subtype', SUBTYPE_OPTIONS)}
-        </section>
-
-        <section className={styles.group}>
-          <h3 className={styles.groupTitle}>Season / expansion</h3>
-          <div className={styles.chips}>{renderTokenChip(LATEST_SEASON_OPTION)}</div>
-          {visibleSeasons.length > 0 &&
-            renderCollapsible(
-              'All seasons',
-              visibleSeasons.map((option) => ({
-                token: `season:${option.value}`,
-                label: option.label,
-                count: option.count,
-              })),
-            )}
-        </section>
-
-        {renderChipGroup('Source', SOURCE_OPTIONS)}
-
-        <section className={styles.group}>
-          <h3 className={styles.groupTitle}>Item category</h3>
-          <div className={styles.searchWrap}>
-            <SearchIcon size={12} className={styles.searchIcon} />
-            <input
-              type="search"
-              className={styles.categorySearch}
-              value={categoryQuery}
-              onChange={(event) => setCategoryQuery(event.target.value)}
-              placeholder="Find a category…"
-              aria-label="Find an item category"
-              autoComplete="off"
-              spellCheck={false}
-            />
+            <section className={styles.group}>
+              <h3 className={styles.groupTitle}>Weapon</h3>
+              {renderCollapsible('Weapon subtype', SUBTYPE_OPTIONS)}
+            </section>
           </div>
-          {filteredCategories.length > 0 ? (
-            <div className={styles.categoryList}>
-              {filteredCategories.map((option) => {
-                const token = categoryToken(option.label);
-                const selected = hasQueryToken(query, token);
-                return (
-                  <button
-                    key={option.value}
-                    type="button"
-                    className={cx(styles.categoryRow, selected && styles.categoryRowOn)}
-                    aria-pressed={selected}
-                    title={token}
-                    onClick={() => toggleToken(token)}
-                  >
-                    <span className={styles.categoryCheck} aria-hidden="true">
-                      {selected && <CheckIcon size={11} />}
-                    </span>
-                    <span className={styles.categoryName}>{option.label}</span>
-                    {option.count !== undefined && (
-                      <span className={styles.categoryCount}>
-                        {NUMBER_FORMAT.format(option.count)}
-                      </span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          ) : (
-            <p className={styles.emptyCategories}>No categories match that search.</p>
-          )}
-        </section>
 
-        <section className={styles.group}>
-          <h3 className={styles.groupTitle}>Options</h3>
-          <label className={styles.checkRow}>
-            <input
-              type="checkbox"
-              checked={includeUnnamed}
-              onChange={(event) => setFilters({ includeUnnamed: event.target.checked })}
-            />
-            <span>Include unnamed definitions</span>
-          </label>
-        </section>
+          <div className={styles.col}>
+            <section className={styles.group}>
+              <h3 className={styles.groupTitle}>Season / expansion</h3>
+              <div className={styles.chips}>{renderTokenChip(LATEST_SEASON_OPTION)}</div>
+              {visibleSeasons.length > 0 &&
+                renderCollapsible(
+                  'All seasons',
+                  visibleSeasons.map((option) => ({
+                    token: `season:${option.value}`,
+                    label: option.label,
+                    count: option.count,
+                  })),
+                )}
+            </section>
+
+            <section className={styles.group}>
+              <h3 className={styles.groupTitle}>Source</h3>
+              <div className={styles.chips}>
+                {SOURCE_OPTIONS.map((option) => renderTokenChip(option))}
+              </div>
+              <div className={styles.searchWrap}>
+                <SearchIcon size={12} className={styles.searchIcon} />
+                <input
+                  type="search"
+                  className={styles.optionSearch}
+                  value={sourceQuery}
+                  onChange={(event) => setSourceQuery(event.target.value)}
+                  placeholder="Find a raid, dungeon, destination, vendor…"
+                  aria-label="Find a source"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              </div>
+              {filteredSources.length > 0 ? (
+                <div className={styles.optionList}>
+                  {filteredSources.map((source) => {
+                    const token = `source:${source.key}`;
+                    const selected = hasQueryToken(query, token);
+                    return (
+                      <button
+                        key={source.key}
+                        type="button"
+                        className={cx(styles.optionRow, selected && styles.categoryRowOn)}
+                        aria-pressed={selected}
+                        title={token}
+                        onClick={() => toggleToken(token)}
+                      >
+                        <span className={styles.optionCheck} aria-hidden="true">
+                          {selected && <CheckIcon size={11} />}
+                        </span>
+                        <span className={styles.optionName}>{source.label}</span>
+                        <span className={styles.optionCount}>
+                          {NUMBER_FORMAT.format(source.count)}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className={styles.emptyOptions}>No sources match that search.</p>
+              )}
+            </section>
+
+            <section className={styles.group}>
+              <h3 className={styles.groupTitle}>Item category</h3>
+              <div className={styles.searchWrap}>
+                <SearchIcon size={12} className={styles.searchIcon} />
+                <input
+                  type="search"
+                  className={styles.optionSearch}
+                  value={categoryQuery}
+                  onChange={(event) => setCategoryQuery(event.target.value)}
+                  placeholder="Find a category…"
+                  aria-label="Find an item category"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              </div>
+              {filteredCategories.length > 0 ? (
+                <div className={styles.optionList}>
+                  {filteredCategories.map((option) => {
+                    const token = categoryToken(option.label);
+                    const selected = hasQueryToken(query, token);
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        className={cx(styles.optionRow, selected && styles.categoryRowOn)}
+                        aria-pressed={selected}
+                        title={token}
+                        onClick={() => toggleToken(token)}
+                      >
+                        <span className={styles.optionCheck} aria-hidden="true">
+                          {selected && <CheckIcon size={11} />}
+                        </span>
+                        <span className={styles.optionName}>{option.label}</span>
+                        {option.count !== undefined && (
+                          <span className={styles.optionCount}>
+                            {NUMBER_FORMAT.format(option.count)}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className={styles.emptyOptions}>No categories match that search.</p>
+              )}
+            </section>
+
+            <section className={styles.group}>
+              <h3 className={styles.groupTitle}>Options</h3>
+              <label className={styles.checkRow}>
+                <input
+                  type="checkbox"
+                  checked={includeUnnamed}
+                  onChange={(event) => setFilters({ includeUnnamed: event.target.checked })}
+                />
+                <span>Include unnamed definitions</span>
+              </label>
+            </section>
+          </div>
+        </div>
 
         <div className={styles.hint}>
           <code>tier:exotic damage:solar is:enhanced season:latest cat:"Hand Cannon"</code>

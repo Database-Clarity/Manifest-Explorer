@@ -425,20 +425,16 @@ function JsonNode({
           </button>
           <span className={styles.containerMeta}>{summary}</span>
           {objectKeyRef && (
-            <span className={styles.annotation}>
-              <span className={styles.annotationSep} aria-hidden="true">
-                →
-              </span>
-              <button
-                type="button"
-                className={styles.refLink}
-                onClick={handleObjectRefClick}
-                onAuxClick={handleObjectRefAuxClick}
-                title={`Click to inspect · Ctrl+Click or middle-click for new tab (${objectKeyRef.table}:${objectKeyRef.hash}${objectKeyRef.subtitle ? ` — ${objectKeyRef.subtitle}` : ''})`}
-              >
-                {getShortTableName(objectKeyRef.table)} &quot;{objectKeyRef.name || 'Unnamed'}&quot;
-              </button>
-            </span>
+            <button
+              type="button"
+              className={`${styles.annotation} ${styles.annotationRef} ${styles.refBadge}`}
+              onClick={handleObjectRefClick}
+              onAuxClick={handleObjectRefAuxClick}
+              title={`Click to inspect · Ctrl+Click or middle-click for new tab (${objectKeyRef.table}:${objectKeyRef.hash}${objectKeyRef.subtitle ? ` — ${objectKeyRef.subtitle}` : ''})`}
+            >
+              <span className={styles.refTable}>{getShortTableName(objectKeyRef.table)}</span>
+              <span className={styles.refName}>&quot;{objectKeyRef.name || 'Unnamed'}&quot;</span>
+            </button>
           )}
           {peek && <span className={styles.peek}>{peek}</span>}
           {swatch && (
@@ -586,50 +582,37 @@ function JsonNode({
         )}
 
         {resolvedRef && (
-          <span className={styles.annotation}>
-            <span className={styles.annotationSep} aria-hidden="true">
-              →
-            </span>
-            <button
-              type="button"
-              className={styles.refLink}
-              onClick={handleRefClick}
-              onAuxClick={handleRefAuxClick}
-              title={`Click to inspect · Ctrl+Click or middle-click for new tab (${resolvedRef.table}:${resolvedRef.hash}${resolvedRef.subtitle ? ` — ${resolvedRef.subtitle}` : ''})`}
-            >
-              {getShortTableName(resolvedRef.table)} &quot;{resolvedRef.name || 'Unnamed'}&quot;
-            </button>
-          </span>
+          <button
+            type="button"
+            className={`${styles.annotation} ${styles.annotationRef} ${styles.refBadge}`}
+            onClick={handleRefClick}
+            onAuxClick={handleRefAuxClick}
+            title={`Click to inspect · Ctrl+Click or middle-click for new tab (${resolvedRef.table}:${resolvedRef.hash}${resolvedRef.subtitle ? ` — ${resolvedRef.subtitle}` : ''})`}
+          >
+            <span className={styles.refTable}>{getShortTableName(resolvedRef.table)}</span>
+            <span className={styles.refName}>&quot;{resolvedRef.name || 'Unnamed'}&quot;</span>
+          </button>
         )}
 
         {!resolvedRef && enumInfo && (
-          <span className={styles.annotation}>
-            <span className={styles.annotationSep} aria-hidden="true">
-              →
-            </span>
-            <span className={styles.enumValue}>
-              <span className={styles.enumType}>{enumInfo.enumName}</span>
-              <span className={styles.enumDot}>{enumInfo.isBitmask ? ': ' : '.'}</span>
-              <span className={styles.enumLabel}>{enumInfo.label}</span>
-            </span>
+          <span className={`${styles.annotation} ${styles.annotationEnum}`}>
+            <span className={styles.enumType}>{enumInfo.enumName}</span>
+            <span className={styles.enumDot}>{enumInfo.isBitmask ? ': ' : '.'}</span>
+            <span className={styles.enumLabel}>{enumInfo.label}</span>
           </span>
         )}
 
         {!resolvedRef && !enumInfo && lazyTargetTable && lazyHash !== null && (
-          <span className={styles.annotation}>
-            <span className={styles.annotationSep} aria-hidden="true">
-              →
-            </span>
-            <button
-              type="button"
-              className={`${styles.refLink} ${styles.refLinkLazy}`}
-              onClick={handleLazyRefClick}
-              onAuxClick={handleLazyRefAuxClick}
-              title={`Table not loaded yet — click to load ${lazyTargetTable} and open ${lazyHash} · Ctrl+Click or middle-click for new tab`}
-            >
-              Open {getShortTableName(lazyTargetTable)} {lazyHash}
-            </button>
-          </span>
+          <button
+            type="button"
+            className={`${styles.annotation} ${styles.annotationLazy} ${styles.refBadge}`}
+            onClick={handleLazyRefClick}
+            onAuxClick={handleLazyRefAuxClick}
+            title={`Table not loaded yet — click to load ${lazyTargetTable} and open ${lazyHash} · Ctrl+Click or middle-click for new tab`}
+          >
+            <span className={styles.lazyLabel}>Open {getShortTableName(lazyTargetTable)}</span>
+            <span className={styles.lazyHash}>{lazyHash}</span>
+          </button>
         )}
 
         <div className={styles.rowActions}>

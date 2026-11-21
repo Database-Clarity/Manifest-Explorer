@@ -121,6 +121,9 @@
   height: 0.5rem;
   border-radius: 50%;
   flex-shrink: 0;
+  // Subtle inner ring: keeps the pure-white Kinetic dot and pale Arc dot crisp
+  // on Europa Ice Light surfaces (inset ring never changes the dot's 0.5rem box).
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 28%, transparent);
 }
 
 .inlineList {

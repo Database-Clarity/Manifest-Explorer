@@ -1,5 +1,16 @@
 /// <reference types="vite/client" />
-import { useRef, useState, type ReactNode, type RefObject } from 'react';
+import {
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type FocusEvent,
+  type KeyboardEvent,
+  type MouseEvent,
+  type ReactNode,
+  type RefObject,
+} from 'react';
 import type { BungieLocale, SortMode, TableStatus } from '../types/manifest';
 import { BUNGIE_LOCALES } from '../types/manifest';
 import { getShortTableName } from '../manifest/tables';
@@ -20,6 +31,12 @@ import {
 import { Popover } from '../ui/Popover';
 import { CollectorPopover } from './CollectorPopover';
 import { FiltersPopover } from './FiltersPopover';
+import {
+  SearchAutocomplete,
+  applySearchSuggestion,
+  buildSearchSuggestions,
+  type SearchSuggestion,
+} from './SearchAutocomplete';
 import { SettingsPopover } from './SettingsPopover';
 import styles from './Header.module.scss';
 
@@ -134,6 +151,11 @@ export function Header({
   onSelectTable,
 }: HeaderProps): ReactNode {
   const [menu, setMenu] = useState<MenuState | null>(null);
+  const [searchFocused, setSearchFocused] = useState(false);
+  const [searchCaret, setSearchCaret] = useState(0);
+  const [suggestionIndex, setSuggestionIndex] = useState(-1);
+  const [suggestionsDismissed, setSuggestionsDismissed] = useState(false);
+  const suggestionListId = useId();
 
   const filtersDesktopRef = useRef<HTMLButtonElement>(null);
   const filtersMobileRef = useRef<HTMLButtonElement>(null);
@@ -150,6 +172,7 @@ export function Header({
   const setTableFilter = useExplorerStore((state) => state.setTableFilter);
   const setMobileInspectorOpen = useExplorerStore((state) => state.setMobileInspectorOpen);
   const tables = useExplorerStore((state) => state.tables);
+  const filterCatalog = useExplorerStore((state) => state.filterCatalog);
   const indexedEntryCount = useExplorerStore((state) => state.manifestStatus.indexedEntryCount);
 
   const locale = useSettingsStore((state) => state.locale);
@@ -162,6 +185,16 @@ export function Header({
   const activeFilterCount = countActiveFilters(query, filters.includeUnnamed);
   const uniqueTables = dedupeTables(tables);
   const hasUnloadedTables = uniqueTables.some((table) => !table.loaded);
+
+  const suggestions = useMemo(
+    () => buildSearchSuggestions(query, searchCaret, filterCatalog, tables),
+    [query, searchCaret, filterCatalog, tables],
+  );
+  const autocompleteOpen = searchFocused && !suggestionsDismissed && suggestions.length > 0;
+  const activeSuggestionIndex =
+    autocompleteOpen && suggestionIndex >= 0 && suggestionIndex < suggestions.length
+      ? suggestionIndex
+      : -1;
 
   const groupedTables = TABLE_GROUP_ORDER.map(([group, label]) => ({
     group,
@@ -205,6 +238,124 @@ export function Header({
     searchInputRef.current?.focus();
   }
 
+  /** Keeps the tracked caret in sync without resetting the highlight needlessly. */
+  function syncSearchCaret(input: HTMLInputElement): number {
+    const caret = input.selectionStart ?? input.value.length;
+    if (caret !== searchCaret) {
+      setSearchCaret(caret);
+      setSuggestionIndex(-1);
+    }
+    return caret;
+  }
+
+  function handleSearchChange(event: ChangeEvent<HTMLInputElement>): void {
+    setQuery(event.target.value);
+    setSearchCaret(event.target.selectionStart ?? event.target.value.length);
+    setSuggestionIndex(-1);
+    setSuggestionsDismissed(false);
+  }
+
+  function handleSearchFocus(event: FocusEvent<HTMLInputElement>): void {
+    setSearchFocused(true);
+    setSearchCaret(event.currentTarget.selectionStart ?? event.currentTarget.value.length);
+    setSuggestionsDismissed(false);
+  }
+
+  function handleSearchBlur(): void {
+    setSearchFocused(false);
+    setSuggestionIndex(-1);
+    setSuggestionsDismissed(false);
+  }
+
+  function handleSearchClick(event: MouseEvent<HTMLInputElement>): void {
+    syncSearchCaret(event.currentTarget);
+  }
+
+  function handleSearchKeyUp(event: KeyboardEvent<HTMLInputElement>): void {
+    // These keys are handled in keydown; accepting moves the caret on the next
+    // frame, so resyncing here would overwrite it with the stale position.
+    if (
+      event.key === 'ArrowDown' ||
+      event.key === 'ArrowUp' ||
+      event.key === 'Tab' ||
+      event.key === 'Enter' ||
+      event.key === 'Escape'
+    ) {
+      return;
+    }
+    syncSearchCaret(event.currentTarget);
+  }
+
+  function acceptSuggestion(suggestion: SearchSuggestion): void {
+    const input = searchInputRef.current;
+    const caret = input?.selectionStart ?? searchCaret;
+    const result = applySearchSuggestion(query, caret, suggestion);
+
+    setQuery(result.query);
+    setSearchCaret(result.caret);
+    setSuggestionIndex(-1);
+    setSuggestionsDismissed(false);
+
+    if (input) {
+      input.focus();
+      window.requestAnimationFrame(() => {
+        input.setSelectionRange(result.caret, result.caret);
+      });
+    }
+  }
+
+  function handleSearchKeyDown(event: KeyboardEvent<HTMLInputElement>): void {
+    const input = event.currentTarget;
+    const caret = input.selectionStart ?? input.value.length;
+    const current = buildSearchSuggestions(query, caret, filterCatalog, tables);
+    const open = searchFocused && !suggestionsDismissed && current.length > 0;
+
+    if (event.key === 'Escape') {
+      if (open) {
+        // Dismiss only the dropdown; leave the query and other dialogs alone.
+        event.stopPropagation();
+        setSuggestionsDismissed(true);
+        setSuggestionIndex(-1);
+      }
+      return;
+    }
+
+    if (!open) return;
+
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      event.stopPropagation();
+      const forward = event.key === 'ArrowDown';
+      setSuggestionIndex((index) => {
+        const base = index >= 0 && index < current.length ? index : -1;
+        if (forward) return base < 0 ? 0 : (base + 1) % current.length;
+        return base < 0 ? current.length - 1 : (base - 1 + current.length) % current.length;
+      });
+      return;
+    }
+
+    if (event.key === 'Tab') {
+      if (event.shiftKey) return;
+      const index =
+        suggestionIndex >= 0 && suggestionIndex < current.length ? suggestionIndex : 0;
+      const chosen = current[index];
+      if (!chosen) return;
+      event.preventDefault();
+      event.stopPropagation();
+      acceptSuggestion(chosen);
+      return;
+    }
+
+    if (event.key === 'Enter') {
+      if (suggestionIndex < 0 || suggestionIndex >= current.length) return;
+      const chosen = current[suggestionIndex];
+      if (!chosen) return;
+      event.preventDefault();
+      event.stopPropagation();
+      acceptSuggestion(chosen);
+    }
+  }
+
   function handleSelectTable(table: string): void {
     onSelectTable(table);
     setMenu(null);
@@ -245,13 +396,27 @@ export function Header({
                 type="search"
                 className={styles.searchInput}
                 value={query}
-                onChange={(event) => setQuery(event.target.value)}
+                onChange={handleSearchChange}
+                onFocus={handleSearchFocus}
+                onBlur={handleSearchBlur}
+                onClick={handleSearchClick}
+                onKeyDown={handleSearchKeyDown}
+                onKeyUp={handleSearchKeyUp}
                 placeholder={
                   deepSearch
                     ? 'Deep search inside JSON keys & values…'
                     : 'Search name, hash, tier:exotic, table:perk…'
                 }
                 aria-label={deepSearch ? 'Deep search inside manifest JSON' : 'Search the manifest'}
+                role="combobox"
+                aria-autocomplete="list"
+                aria-expanded={autocompleteOpen}
+                aria-controls={autocompleteOpen ? `${suggestionListId}-list` : undefined}
+                aria-activedescendant={
+                  activeSuggestionIndex >= 0
+                    ? `${suggestionListId}-option-${activeSuggestionIndex}`
+                    : undefined
+                }
                 autoComplete="off"
                 autoCorrect="off"
                 spellCheck={false}
@@ -272,6 +437,13 @@ export function Header({
                   /
                 </kbd>
               )}
+              <SearchAutocomplete
+                id={suggestionListId}
+                suggestions={autocompleteOpen ? suggestions : []}
+                highlightIndex={activeSuggestionIndex}
+                onHighlight={setSuggestionIndex}
+                onAccept={acceptSuggestion}
+              />
             </div>
 
             <button

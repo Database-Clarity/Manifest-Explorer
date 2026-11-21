@@ -89,12 +89,12 @@
   --checker-a: #1a1e24;
   --checker-b: #2a313a;
 
-  // Destiny elements (from Clarity tokens)
-  --el-kinetic: #c9d1da;
-  --el-arc: #7fd0ec;
-  --el-solar: #f0702c;
-  --el-void: #b78bd0;
-  --el-stasis: #8577ff;
+  // Destiny elements — exact DestinyDamageTypeDefinition.color codes from Bungie's D2 manifest
+  --el-kinetic: #ffffff;
+  --el-arc: #85c5ec;
+  --el-solar: #f2721b;
+  --el-void: #b184c5;
+  --el-stasis: #4d88ff;
   --el-strand: #35e366;
   --el-prismatic: #f075c3;
 
@@ -196,13 +196,14 @@
   --checker-a: #e8eff5;
   --checker-b: #cbd8e3;
 
-  // Destiny elements (AA darkened on Europa Ice)
-  --el-kinetic: #4f5b68;
-  --el-arc: #00708c;
-  --el-solar: #b54300;
-  --el-void: #8a4aab;
-  --el-stasis: #5b4ff0;
-  --el-strand: #147a33;
+  // Destiny elements — exact DestinyDamageTypeDefinition.color codes from Bungie's D2 manifest,
+  // identical in both themes so tags always match the in-game element icons.
+  --el-kinetic: #ffffff;
+  --el-arc: #85c5ec;
+  --el-solar: #f2721b;
+  --el-void: #b184c5;
+  --el-stasis: #4d88ff;
+  --el-strand: #35e366;
   --el-prismatic: #a32766;
 
   // Destiny item rarity tier text colours (WCAG AA >= 4.5:1 on Europa Ice --page / --col)

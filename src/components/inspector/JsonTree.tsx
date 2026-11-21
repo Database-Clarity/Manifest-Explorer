@@ -512,6 +512,8 @@ function JsonNode({
   const lazyHash =
     lazyTargetTable !== undefined && typeof value === 'number' ? toUnsignedHash(value) : null;
   const isImage = isBungieImagePath(value);
+  const escapedString =
+    typeof value === 'string' ? JSON.stringify(value).slice(1, -1) : null;
 
   const handleRefClick = (event: MouseEvent<HTMLButtonElement>): void => {
     if (!resolvedRef) return;
@@ -568,7 +570,7 @@ function JsonNode({
 
         {typeof value === 'string' && (
           <span className={styles.valString}>
-            &quot;{highlightText(value, filterLower)}&quot;
+            &quot;{highlightText(escapedString ?? value, filterLower)}&quot;
           </span>
         )}
         {typeof value === 'number' && (

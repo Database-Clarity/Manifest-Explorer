@@ -365,17 +365,32 @@ export function App(): ReactNode {
     hydrateEntrySummaries,
   ]);
 
-  // Run search whenever query, deepSearch, filters, sort, or indexed entry count changes
+  // Debounce typed queries cleanly so background table indexing can never cancel/starve typing.
+  const [debouncedQuery, setDebouncedQuery] = useState(query);
+  useEffect(() => {
+    const trimmed = query.trim();
+    if (trimmed.length === 0) {
+      setDebouncedQuery(query);
+      return;
+    }
+    const isDeepQuery = deepSearch || /^deep:/i.test(trimmed);
+    const delay = isDeepQuery ? 450 : 280;
+    const timer = window.setTimeout(() => {
+      setDebouncedQuery(query);
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [query, deepSearch]);
+
+  // Run search whenever debouncedQuery, deepSearch, filters, sort, or indexed entry count changes
   useEffect(() => {
     if (manifestStatus.indexedEntryCount === 0 && manifestStatus.phase !== 'ready') {
       return;
     }
 
-    const searchKey = `${query}|${deepSearch ? '1' : '0'}|${sortMode}|${JSON.stringify(filters)}`;
+    const searchKey = `${debouncedQuery}|${deepSearch ? '1' : '0'}|${sortMode}|${JSON.stringify(filters)}`;
     const isBackgroundIndexRefresh = searchKey === lastSearchKeyRef.current;
-    lastSearchKeyRef.current = searchKey;
 
-    const trimmed = query.trim();
+    const trimmed = debouncedQuery.trim();
     const hasDeepPrefix = /^deep:/i.test(trimmed);
     const useDeep = (deepSearch || hasDeepPrefix) && trimmed.length > 0;
     const effectiveDeepQuery = hasDeepPrefix
@@ -383,15 +398,10 @@ export function App(): ReactNode {
       : trimmed;
 
     const seq = ++searchSeqRef.current;
-    const delay = isBackgroundIndexRefresh
-      ? 450
-      : useDeep
-        ? 140
-        : query.length > 0
-          ? 25
-          : 0;
+    const delay = isBackgroundIndexRefresh ? 500 : 0;
 
     const timer = window.setTimeout(() => {
+      lastSearchKeyRef.current = searchKey;
       const hasExistingResults = useExplorerStore.getState().results.length > 0;
       if (!isBackgroundIndexRefresh && (useDeep || !hasExistingResults)) {
         setSearching(true);
@@ -400,7 +410,7 @@ export function App(): ReactNode {
       const promise =
         useDeep && effectiveDeepQuery.length > 0
           ? manifestClient.deepSearch(effectiveDeepQuery, filters, 400)
-          : manifestClient.search(query, filters, sortMode, 2500);
+          : manifestClient.search(debouncedQuery, filters, sortMode, 2500);
 
       void promise
         .then((res) => {
@@ -423,7 +433,7 @@ export function App(): ReactNode {
 
     return () => window.clearTimeout(timer);
   }, [
-    query,
+    debouncedQuery,
     deepSearch,
     filters,
     sortMode,

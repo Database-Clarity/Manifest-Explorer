@@ -7,7 +7,7 @@ import styles from './BungieIcon.module.scss';
 export interface BungieIconProps {
   /** Relative Bungie icon path, e.g. /common/destiny2_content/icons/....png */
   icon?: string;
-  /** Relative Bungie watermark path rendered behind the icon. */
+  /** Relative Bungie watermark path rendered over the icon. */
   watermark?: string;
   /**
    * Retained for backwards compatibility with existing call sites.

@@ -29,6 +29,8 @@ export const CORE_BOOT_TABLES = [
   'DestinyInventoryBucketDefinition',
   'DestinyItemTierTypeDefinition',
   'DestinyTraitDefinition',
+  'DestinySeasonDefinition',
+  'DestinyArtifactDefinition',
 ] as const;
 
 /**
@@ -460,6 +462,12 @@ function asNumberArray(value: unknown): number[] | undefined {
   return numbers.length > 0 ? numbers : undefined;
 }
 
+function asStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const strings = value.filter((entry): entry is string => typeof entry === 'string');
+  return strings.length > 0 ? strings : undefined;
+}
+
 function normalizeText(value: string): string {
   return value.replace(/\s+/g, ' ').trim().toLowerCase();
 }
@@ -532,6 +540,11 @@ export function extractTableEntrySummary(
   const iconWatermark = firstString(displayProperties?.iconWatermark, raw.iconWatermark);
   const index = asNumber(raw.index);
 
+  const seasonHash = asNumber(raw.seasonHash);
+  const seasonNumber = asNumber(raw.seasonNumber);
+  const sourceLower = normalizeText(firstString(raw.displaySource, raw.sourceString) ?? '');
+  const traitIds = asStringArray(raw.traitIds)?.map((trait) => trait.toLowerCase());
+
   const entry: SearchIndexEntry = {
     hash,
     table: canonicalTable,
@@ -545,6 +558,10 @@ export function extractTableEntrySummary(
   if (icon) entry.icon = icon;
   if (iconWatermark) entry.iconWatermark = iconWatermark;
   if (index !== undefined) entry.index = index;
+  if (seasonHash !== undefined) entry.seasonHash = seasonHash >>> 0;
+  if (seasonNumber !== undefined) entry.seasonNumber = seasonNumber;
+  if (sourceLower) entry.sourceLower = truncate(sourceLower, 300);
+  if (traitIds) entry.traitIds = traitIds;
 
   if (canonicalTable === INVENTORY_ITEM_TABLE) {
     const inventory = asRecord(raw.inventory);
@@ -567,6 +584,14 @@ export function extractTableEntrySummary(
     if (itemCategoryHashes) entry.itemCategoryHashes = itemCategoryHashes;
     if (plugCategoryIdentifier) entry.plugCategoryIdentifier = plugCategoryIdentifier;
 
+    const equippingBlock = asRecord(raw.equippingBlock);
+    const ammoType = asNumber(equippingBlock?.ammoType) ?? asNumber(raw.ammoType);
+    const bucketHash = asNumber(inventory?.bucketTypeHash) ?? asNumber(raw.bucketTypeHash);
+    const collectibleHash = asNumber(raw.collectibleHash);
+    if (ammoType !== undefined) entry.ammoType = ammoType;
+    if (bucketHash !== undefined) entry.bucketHash = bucketHash >>> 0;
+    if (collectibleHash !== undefined) entry.collectibleHash = collectibleHash >>> 0;
+
     const redacted = asBoolean(raw.redacted) === true || asBoolean(raw.isRedacted) === true;
     entry.isRedacted = redacted;
 
@@ -587,11 +612,14 @@ export function extractTableEntrySummary(
       nameLower.includes('holofoil');
     entry.isHolofoil = isHolofoil;
 
+    const hasEnhancedTrait = traitIds?.some((trait) => trait.includes('enhanced')) === true;
     const isEnhanced =
       typeDisplay.includes('enhanced') ||
       tierAndTypeDisplay.includes('enhanced') ||
       plugCategoryLower.includes('enhanced') ||
-      nameLower.endsWith('(enhanced)');
+      nameLower.endsWith('(enhanced)') ||
+      nameLower.startsWith('enhanced ') ||
+      hasEnhancedTrait;
     entry.isEnhanced = isEnhanced;
 
     const isFeatured = asBoolean(raw.isFeatured) === true || asBoolean(raw.featured) === true;
@@ -604,9 +632,41 @@ export function extractTableEntrySummary(
       nameLower.includes('[dummy]');
     entry.isDummy = isDummy;
 
+    const recipeItemHash = asNumber(inventory?.recipeItemHash);
+    const hasCraftingTrait =
+      traitIds?.some(
+        (trait) =>
+          trait.includes('crafted') ||
+          trait.includes('deepsight') ||
+          trait.includes('deep sight') ||
+          trait.includes('shaped'),
+      ) === true;
+    const isCraftable =
+      (recipeItemHash !== undefined && recipeItemHash > 0) ||
+      itemType === 30 ||
+      hasCraftingTrait;
+    entry.isCraftable = isCraftable;
+
+    const isCatalyst =
+      nameLower.includes('catalyst') ||
+      typeDisplay.includes('catalyst') ||
+      tierAndTypeDisplay.includes('catalyst') ||
+      plugCategoryLower.includes('catalyst');
+    entry.isCatalyst = isCatalyst;
+
+    const isOrnament =
+      typeDisplay.includes('ornament') ||
+      tierAndTypeDisplay.includes('ornament') ||
+      plugCategoryLower.includes('ornament');
+    entry.isOrnament = isOrnament;
+
     const loreHash = asNumber(raw.loreHash);
     entry.hasLore = loreHash !== undefined && loreHash > 0;
     entry.hasScreenshot = asString(raw.screenshot) !== undefined;
+    entry.hasFlavor =
+      asString(raw.flavorText) !== undefined ||
+      asString(displayProperties?.flavorText) !== undefined;
+    entry.hasCollectible = (collectibleHash ?? 0) > 0;
   }
 
   return entry;

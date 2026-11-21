@@ -83,7 +83,6 @@ export function VariantsTab({
               >
                 <BungieIcon
                   icon={item.icon}
-                  watermark={item.iconWatermark}
                   isEnhanced={item.isEnhanced}
                   size={32}
                 />

@@ -23,6 +23,13 @@ export interface SearchFlags {
   hasLore?: boolean;
   hasIcon?: boolean;
   hasScreenshot?: boolean;
+  hasWatermark?: boolean;
+  hasFlavor?: boolean;
+  hasCollectible?: boolean;
+  artifact?: boolean;
+  craftable?: boolean;
+  catalyst?: boolean;
+  ornament?: boolean;
 }
 
 export interface ParsedQuery {
@@ -38,9 +45,26 @@ export interface ParsedQuery {
   damageFilters: number[];
   classFilters: number[];
   typeFilters: number[];
+  ammoFilters: number[];
+  slotFilters: number[];
+  subtypeFilters: number[];
   /** Lowercased category name fragments from cat:/category:. */
   categoryTokens: string[];
+  /** Raw season filter values (numeric, latest/current, or name fragment). */
+  seasonFilters: string[];
+  sourceTokens: string[];
+  negatedSourceTokens: string[];
+  traitTokens: string[];
+  negatedTraitTokens: string[];
   flags: SearchFlags;
+}
+
+/** Context resolved at search time that individual entries cannot encode. */
+export interface SearchContext {
+  /** Highest known season number, for `season:latest` / `season:current`. */
+  latestSeason?: number;
+  /** seasonNumber -> display name, for `season:<name fragment>`. */
+  seasonNameMap?: Map<number, string>;
 }
 
 type FlagKey = keyof SearchFlags;
@@ -133,6 +157,113 @@ const FLAG_TOKENS: Readonly<Record<string, FlagKey>> = {
   hasicon: 'hasIcon',
   screenshot: 'hasScreenshot',
   hasscreenshot: 'hasScreenshot',
+  watermark: 'hasWatermark',
+  haswatermark: 'hasWatermark',
+  flavor: 'hasFlavor',
+  hasflavor: 'hasFlavor',
+  collectible: 'hasCollectible',
+  hascollectible: 'hasCollectible',
+  artifact: 'artifact',
+  artifactperk: 'artifact',
+  seasonalartifact: 'artifact',
+  craftable: 'craftable',
+  crafted: 'craftable',
+  pattern: 'craftable',
+  catalyst: 'catalyst',
+  ornament: 'ornament',
+};
+
+const AMMO_TOKENS: Readonly<Record<string, number>> = {
+  primary: 1,
+  special: 2,
+  heavy: 3,
+};
+
+const SLOT_TOKENS: Readonly<Record<string, number>> = {
+  kinetic: 1498876634,
+  energy: 2465295065,
+  power: 953998645,
+  heavy: 953998645,
+  helmet: 3448274439,
+  head: 3448274439,
+  gauntlets: 3551918588,
+  arms: 3551918588,
+  chest: 14239492,
+  legs: 20886954,
+  boots: 20886954,
+  class: 1585787867,
+  classitem: 1585787867,
+  ghost: 4023194814,
+};
+
+const SUBTYPE_TOKENS: Readonly<Record<string, number>> = {
+  autorifle: 6,
+  auto: 6,
+  shotgun: 7,
+  machinegun: 8,
+  lmg: 8,
+  handcannon: 9,
+  hc: 9,
+  rocket: 10,
+  rl: 10,
+  rocketlauncher: 10,
+  fusion: 11,
+  fusionrifle: 11,
+  sniper: 12,
+  sniperrifle: 12,
+  pulse: 13,
+  pulserifle: 13,
+  scout: 14,
+  scoutrifle: 14,
+  sidearm: 17,
+  sword: 18,
+  linear: 22,
+  lfr: 22,
+  linearfusion: 22,
+  linearfusionrifle: 22,
+  grenade: 23,
+  gl: 23,
+  grenadelauncher: 23,
+  smg: 24,
+  submachinegun: 24,
+  trace: 25,
+  tracerifle: 25,
+  bow: 31,
+  glaive: 33,
+};
+
+type ValueAliasKind = 'tier' | 'damage' | 'class' | 'type' | 'ammo';
+
+interface ValueAlias {
+  kind: ValueAliasKind;
+  value: number;
+}
+
+/** Convenience `is:`/`has:` aliases that resolve to a scalar field match. */
+const IS_VALUE_ALIASES: Readonly<Record<string, ValueAlias>> = {
+  exotic: { kind: 'tier', value: 6 },
+  legendary: { kind: 'tier', value: 5 },
+  rare: { kind: 'tier', value: 4 },
+  uncommon: { kind: 'tier', value: 3 },
+  common: { kind: 'tier', value: 2 },
+  basic: { kind: 'tier', value: 2 },
+  weapon: { kind: 'type', value: 3 },
+  armor: { kind: 'type', value: 2 },
+  armour: { kind: 'type', value: 2 },
+  mod: { kind: 'type', value: 19 },
+  shader: { kind: 'type', value: 20 },
+  kinetic: { kind: 'damage', value: 1 },
+  arc: { kind: 'damage', value: 2 },
+  solar: { kind: 'damage', value: 3 },
+  void: { kind: 'damage', value: 4 },
+  stasis: { kind: 'damage', value: 6 },
+  strand: { kind: 'damage', value: 7 },
+  primary: { kind: 'ammo', value: 1 },
+  special: { kind: 'ammo', value: 2 },
+  heavy: { kind: 'ammo', value: 3 },
+  titan: { kind: 'class', value: 0 },
+  hunter: { kind: 'class', value: 1 },
+  warlock: { kind: 'class', value: 2 },
 };
 
 const TOKEN_RE = /(?:[^\s",;]+|"[^"]*")+/g;
@@ -196,6 +327,33 @@ function resolveItemType(value: string): number | null {
   return null;
 }
 
+function resolveAmmo(value: string): number | null {
+  const token = value.trim().toLowerCase();
+  const direct = AMMO_TOKENS[token];
+  if (direct !== undefined) return direct;
+  const numeric = Number(token);
+  if (Number.isInteger(numeric) && numeric >= 1 && numeric <= 3) return numeric;
+  return null;
+}
+
+function resolveSlot(value: string): number | null {
+  const token = value.trim().toLowerCase();
+  const direct = SLOT_TOKENS[token];
+  if (direct !== undefined) return direct;
+  const numeric = Number(token);
+  if (Number.isInteger(numeric) && numeric >= 0) return numeric >>> 0;
+  return null;
+}
+
+function resolveSubtype(value: string): number | null {
+  const token = value.trim().toLowerCase();
+  const direct = SUBTYPE_TOKENS[token];
+  if (direct !== undefined) return direct;
+  const numeric = Number(token);
+  if (Number.isInteger(numeric) && numeric >= 0) return numeric;
+  return null;
+}
+
 function looksLikeHashToken(value: string): boolean {
   const token = value.replace(/^#/, '');
   return /^[+-]?0x[0-9a-f]+$/i.test(token) || /^[+-]?\d{6,10}$/.test(token);
@@ -213,7 +371,15 @@ export function parseSearchQuery(raw: string, availableTables: string[]): Parsed
   const damageFilters: number[] = [];
   const classFilters: number[] = [];
   const typeFilters: number[] = [];
+  const ammoFilters: number[] = [];
+  const slotFilters: number[] = [];
+  const subtypeFilters: number[] = [];
   const categoryTokens: string[] = [];
+  const seasonFilters: string[] = [];
+  const sourceTokens: string[] = [];
+  const negatedSourceTokens: string[] = [];
+  const traitTokens: string[] = [];
+  const negatedTraitTokens: string[] = [];
   const flags: SearchFlags = {};
 
   let tableFilter: string | undefined;
@@ -292,6 +458,51 @@ export function parseSearchQuery(raw: string, availableTables: string[]): Parsed
           break;
         }
 
+        case 'ammo': {
+          if (negated) break;
+          const ammo = resolveAmmo(value);
+          if (ammo !== null) pushUniqueNumber(ammoFilters, ammo);
+          break;
+        }
+
+        case 'slot': {
+          if (negated) break;
+          const slot = resolveSlot(value);
+          if (slot !== null) pushUniqueNumber(slotFilters, slot);
+          break;
+        }
+
+        case 'subtype':
+        case 'weapon': {
+          if (negated) break;
+          const subtype = resolveSubtype(value);
+          if (subtype !== null) pushUniqueNumber(subtypeFilters, subtype);
+          break;
+        }
+
+        case 'season':
+        case 's': {
+          if (negated) break;
+          pushUnique(seasonFilters, normalizePhrase(value));
+          break;
+        }
+
+        case 'source': {
+          const phrase = normalizePhrase(value);
+          if (!phrase) break;
+          if (negated) pushUnique(negatedSourceTokens, phrase);
+          else pushUnique(sourceTokens, phrase);
+          break;
+        }
+
+        case 'trait': {
+          const phrase = normalizePhrase(value);
+          if (!phrase) break;
+          if (negated) pushUnique(negatedTraitTokens, phrase);
+          else pushUnique(traitTokens, phrase);
+          break;
+        }
+
         case 'cat':
         case 'category':
         case 'categories': {
@@ -302,8 +513,32 @@ export function parseSearchQuery(raw: string, availableTables: string[]): Parsed
 
         case 'is':
         case 'has': {
-          const flagKey = FLAG_TOKENS[value.toLowerCase().replace(/[^a-z]/g, '')];
-          if (flagKey) flags[flagKey] = !negated;
+          const normalized = value.toLowerCase().replace(/[^a-z]/g, '');
+          const flagKey = FLAG_TOKENS[normalized];
+          if (flagKey) {
+            flags[flagKey] = !negated;
+          } else {
+            const alias = IS_VALUE_ALIASES[normalized];
+            if (alias && !negated) {
+              switch (alias.kind) {
+                case 'tier':
+                  pushUniqueNumber(tierFilters, alias.value);
+                  break;
+                case 'damage':
+                  pushUniqueNumber(damageFilters, alias.value);
+                  break;
+                case 'class':
+                  pushUniqueNumber(classFilters, alias.value);
+                  break;
+                case 'type':
+                  pushUniqueNumber(typeFilters, alias.value);
+                  break;
+                case 'ammo':
+                  pushUniqueNumber(ammoFilters, alias.value);
+                  break;
+              }
+            }
+          }
           break;
         }
 
@@ -349,7 +584,15 @@ export function parseSearchQuery(raw: string, availableTables: string[]): Parsed
     damageFilters,
     classFilters,
     typeFilters,
+    ammoFilters,
+    slotFilters,
+    subtypeFilters,
     categoryTokens,
+    seasonFilters,
+    sourceTokens,
+    negatedSourceTokens,
+    traitTokens,
+    negatedTraitTokens,
     flags,
   };
   if (tableFilter) parsed.tableFilter = tableFilter;
@@ -418,9 +661,60 @@ function entryFlag(entry: SearchIndexEntry, key: FlagKey): boolean {
       return entry.icon !== undefined;
     case 'hasScreenshot':
       return entry.hasScreenshot === true;
+    case 'hasWatermark':
+      return entry.iconWatermark !== undefined;
+    case 'hasFlavor':
+      return entry.hasFlavor === true;
+    case 'hasCollectible':
+      return entry.hasCollectible === true;
+    case 'artifact':
+      return entry.isArtifact === true;
+    case 'craftable':
+      return entry.isCraftable === true;
+    case 'catalyst':
+      return entry.isCatalyst === true;
+    case 'ornament':
+      return entry.isOrnament === true;
     default:
       return false;
   }
+}
+
+function sourceMatches(entry: SearchIndexEntry, token: string): boolean {
+  if (!token) return false;
+  if (entry.sourceLower?.includes(token) === true) return true;
+  return entry.descLower.includes(token);
+}
+
+function traitMatches(entry: SearchIndexEntry, token: string): boolean {
+  if (!token) return false;
+  return entry.traitIds?.some((trait) => trait.includes(token)) === true;
+}
+
+function resolveSeasonNumbers(
+  tokens: readonly string[],
+  context: SearchContext | undefined,
+): Set<number> | undefined {
+  if (tokens.length === 0) return undefined;
+  const result = new Set<number>();
+  for (const raw of tokens) {
+    const token = raw.toLowerCase();
+    if (token === 'latest' || token === 'current') {
+      if (context?.latestSeason !== undefined) result.add(context.latestSeason);
+      continue;
+    }
+    const numeric = Number(token);
+    if (Number.isInteger(numeric) && numeric >= 0) {
+      result.add(numeric);
+      continue;
+    }
+    if (context?.seasonNameMap) {
+      for (const [seasonNumber, name] of context.seasonNameMap) {
+        if (name.toLowerCase().includes(token)) result.add(seasonNumber);
+      }
+    }
+  }
+  return result;
 }
 
 /**
@@ -497,6 +791,7 @@ export function scoreAndFilterEntries(
   sort: SortMode,
   categoryNameMap: Map<number, string>,
   maxResults?: number,
+  context?: SearchContext,
 ): SearchResponse {
   const startedAt = Date.now();
 
@@ -509,6 +804,7 @@ export function scoreAndFilterEntries(
   const hasHashFilter = parsed.hashMatches.length > 0;
   const hashSet = hasHashFilter ? new Set(parsed.hashMatches) : undefined;
   const selectedCategories = uiFilters.itemCategoryHashes.filter((hash) => hash !== 0);
+  const seasonNumbers = resolveSeasonNumbers(parsed.seasonFilters, context);
 
   const flagKeys = Object.keys(parsed.flags) as FlagKey[];
 
@@ -548,6 +844,18 @@ export function scoreAndFilterEntries(
       if (entry.classType === undefined || !parsed.classFilters.includes(entry.classType)) continue;
     }
     if (parsed.typeFilters.length > 0 && !matchesAnyType(entry, parsed.typeFilters)) continue;
+    if (parsed.ammoFilters.length > 0) {
+      if (entry.ammoType === undefined || !parsed.ammoFilters.includes(entry.ammoType)) continue;
+    }
+    if (parsed.slotFilters.length > 0) {
+      if (entry.bucketHash === undefined || !parsed.slotFilters.includes(entry.bucketHash)) continue;
+    }
+    if (parsed.subtypeFilters.length > 0) {
+      if (entry.itemSubType === undefined || !parsed.subtypeFilters.includes(entry.itemSubType)) continue;
+    }
+    if (seasonNumbers) {
+      if (entry.seasonNumber === undefined || !seasonNumbers.has(entry.seasonNumber)) continue;
+    }
 
     let flagMismatch = false;
     for (const key of flagKeys) {
@@ -580,6 +888,38 @@ export function scoreAndFilterEntries(
 
     for (const token of parsed.negatedTokens) {
       if (textMatches(entry, token)) {
+        rejected = true;
+        break;
+      }
+    }
+    if (rejected) continue;
+
+    for (const token of parsed.sourceTokens) {
+      if (!sourceMatches(entry, token)) {
+        rejected = true;
+        break;
+      }
+    }
+    if (rejected) continue;
+
+    for (const token of parsed.negatedSourceTokens) {
+      if (sourceMatches(entry, token)) {
+        rejected = true;
+        break;
+      }
+    }
+    if (rejected) continue;
+
+    for (const token of parsed.traitTokens) {
+      if (!traitMatches(entry, token)) {
+        rejected = true;
+        break;
+      }
+    }
+    if (rejected) continue;
+
+    for (const token of parsed.negatedTraitTokens) {
+      if (traitMatches(entry, token)) {
         rejected = true;
         break;
       }

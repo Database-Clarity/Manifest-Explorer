@@ -3,6 +3,7 @@ import {
   useEffect,
   useMemo,
   useRef,
+  useState,
   type PointerEvent,
   type ReactNode,
   type UIEvent,
@@ -24,6 +25,7 @@ import {
   ArrowLeftIcon,
   ArrowRightIcon,
   CheckIcon,
+  ChevronDownIcon,
   CloseIcon,
   CopyIcon,
   DiffIcon,
@@ -34,6 +36,7 @@ import {
   PlusIcon,
 } from '../../ui/Icons';
 import { getTierColorVar } from '../../ui/rarity';
+import { Popover } from '../../ui/Popover';
 import { Skeleton } from '../../ui/Skeleton';
 import { BungieIcon } from '../BungieIcon';
 import { DiffTab } from './DiffTab';
@@ -143,6 +146,7 @@ export function DefinitionInspector({
   const pinnedDiffRef = useExplorerStore((s) => s.pinnedDiffRef);
   const inspectorMaximized = useExplorerStore((s) => s.inspectorMaximized);
   const closeSession = useExplorerStore((s) => s.closeSession);
+  const closeOtherSessions = useExplorerStore((s) => s.closeOtherSessions);
   const toggleInspectorMaximized = useExplorerStore((s) => s.toggleInspectorMaximized);
   const closeInspector = useExplorerStore((s) => s.closeInspector);
   const setActiveTab = useExplorerStore((s) => s.setActiveTab);
@@ -165,12 +169,40 @@ export function DefinitionInspector({
 
   const dragStartRef = useRef<{ x: number; startWidth: number } | null>(null);
   const tabPanelRef = useRef<HTMLDivElement | null>(null);
+  const sessionTabsScrollRef = useRef<HTMLDivElement | null>(null);
+  const sessionMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
   const activeBannerItemRef = useRef<HTMLButtonElement | null>(null);
+  const [tabsOverflowing, setTabsOverflowing] = useState(false);
+  const [tabsMenuOpen, setTabsMenuOpen] = useState(false);
+  const [tabsMenuFilter, setTabsMenuFilter] = useState('');
   const scrollTimerRef = useRef<number | null>(null);
   const liveScrollRef = useRef<{ tab: InspectorTab; top: number }>({
     tab: activeTab,
     top: 0,
   });
+
+  useEffect(() => {
+    const element = sessionTabsScrollRef.current;
+    if (!element) {
+      setTabsOverflowing(false);
+      return;
+    }
+
+    const measureOverflow = (): void => {
+      const overflowing = element.scrollWidth > element.clientWidth + 2;
+      setTabsOverflowing((current) => (current === overflowing ? current : overflowing));
+    };
+
+    measureOverflow();
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', measureOverflow);
+      return () => window.removeEventListener('resize', measureOverflow);
+    }
+
+    const observer = new ResizeObserver(measureOverflow);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [sessions.length, width]);
 
   // Synchronously persist the current scroll container's scrollTop before leaving
   const flushScroll = useCallback(() => {
@@ -466,7 +498,16 @@ export function DefinitionInspector({
       {/* Open-definitions tab strip with tab-group sharing */}
       {sessions.length >= 1 && (
         <div className={styles.sessionBar} role="tablist" aria-label="Open definitions">
-          <div className={styles.sessionTabsScroll}>
+          <div
+            ref={sessionTabsScrollRef}
+            className={styles.sessionTabsScroll}
+            onMouseDown={(e) => {
+              if (e.button === 1) {
+                e.preventDefault();
+                e.stopPropagation();
+              }
+            }}
+          >
             {sessions.map((session, idx) => {
               const isActive = idx === activeSessionIndex;
               const cur = session.history[session.historyIndex];
@@ -477,9 +518,16 @@ export function DefinitionInspector({
                 <div
                   key={session.id}
                   className={`${styles.sessionTab} ${isActive ? styles.sessionTabActive : ''}`}
+                  onMouseDown={(e) => {
+                    if (e.button === 1) {
+                      e.preventDefault();
+                      e.stopPropagation();
+                    }
+                  }}
                   onAuxClick={(e) => {
                     if (e.button === 1) {
                       e.preventDefault();
+                      e.stopPropagation();
                       closeSession(idx);
                     }
                   }}
@@ -520,6 +568,24 @@ export function DefinitionInspector({
               );
             })}
           </div>
+          {(tabsOverflowing || sessions.length >= 6) && (
+            <button
+              ref={sessionMenuTriggerRef}
+              type="button"
+              className={styles.sessionMenuTrigger}
+              aria-label="Show all open tabs"
+              aria-haspopup="dialog"
+              aria-expanded={tabsMenuOpen}
+              title="Show all open tabs"
+              onClick={() => {
+                setTabsMenuFilter('');
+                setTabsMenuOpen((open) => !open);
+              }}
+            >
+              <ChevronDownIcon size={12} />
+              <span>{sessions.length}</span>
+            </button>
+          )}
           <button
             type="button"
             className={styles.sessionShareBtn}
@@ -540,6 +606,145 @@ export function DefinitionInspector({
             <LinkIcon size={12} />
             <span>{sessions.length > 1 ? `Share tabs (${sessions.length})` : 'Share'}</span>
           </button>
+          {(tabsOverflowing || sessions.length >= 6) && (
+            <Popover
+              open={tabsMenuOpen}
+              onClose={() => setTabsMenuOpen(false)}
+              anchorRef={sessionMenuTriggerRef}
+              align="end"
+              label="All open tabs"
+              width={sessions.length <= 8 ? '18rem' : sessions.length <= 18 ? '34rem' : '48rem'}
+            >
+              <div className={styles.sessionMenuBody}>
+                <div className={styles.sessionMenuHeader}>
+                  <span className={styles.sessionMenuTitle}>
+                    Open tabs ({sessions.length})
+                  </span>
+                  {sessions.length > 1 && (
+                    <button
+                      type="button"
+                      className={styles.sessionMenuCloseOthers}
+                      onClick={() => {
+                        closeOtherSessions(activeSessionIndex);
+                        setTabsMenuOpen(false);
+                      }}
+                    >
+                      Close others
+                    </button>
+                  )}
+                </div>
+                {sessions.length > 10 && (
+                  <input
+                    type="search"
+                    className={styles.sessionMenuFilter}
+                    value={tabsMenuFilter}
+                    onChange={(e) => setTabsMenuFilter(e.target.value)}
+                    placeholder="Find by name, table, or hash…"
+                    aria-label="Filter open tabs"
+                  />
+                )}
+                <div
+                  className={`${styles.sessionMenuGrid} ${
+                    sessions.length >= 19
+                      ? styles.sessionMenuGridThree
+                      : sessions.length >= 9
+                        ? styles.sessionMenuGridTwo
+                        : ''
+                  }`}
+                >
+                  {sessions.map((session, idx) => {
+                    const cur = session.history[session.historyIndex];
+                    const tabLabel = cur
+                      ? cur.label || fallbackEntryLabel(cur)
+                      : 'Tab';
+                    const isActive = idx === activeSessionIndex;
+                    const searchText = cur
+                      ? `${tabLabel} ${cur.table} ${cur.hash}`.toLowerCase()
+                      : tabLabel.toLowerCase();
+                    if (
+                      tabsMenuFilter.trim() &&
+                      !searchText.includes(tabsMenuFilter.trim().toLowerCase())
+                    ) {
+                      return null;
+                    }
+
+                    return (
+                      <div
+                        key={session.id}
+                        className={`${styles.sessionMenuItem} ${
+                          isActive ? styles.sessionMenuItemActive : ''
+                        }`}
+                        onMouseDown={(e) => {
+                          if (e.button === 1) {
+                            e.preventDefault();
+                            e.stopPropagation();
+                          }
+                        }}
+                        onAuxClick={(e) => {
+                          if (e.button === 1) {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            closeSession(idx);
+                          }
+                        }}
+                      >
+                        <button
+                          type="button"
+                          className={styles.sessionMenuItemMain}
+                          title={
+                            cur
+                              ? `${tabLabel} (${getShortTableName(cur.table)}:${cur.hash})`
+                              : tabLabel
+                          }
+                          onClick={() => {
+                            handleSessionSwitch(idx);
+                            setTabsMenuOpen(false);
+                          }}
+                        >
+                          <BungieIcon icon={cur?.icon} size={16} />
+                          <span className={styles.sessionMenuItemLabel}>{tabLabel}</span>
+                          {cur?.hasCoTables && (
+                            <span className={styles.sessionMenuItemCat}>
+                              {getShortTableName(cur.table)}
+                            </span>
+                          )}
+                          {isActive && (
+                            <span className={styles.sessionMenuActiveIndicator}>
+                              Current
+                            </span>
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          className={styles.sessionMenuClose}
+                          aria-label={`Close ${tabLabel}`}
+                          title="Close tab"
+                          onClick={() => closeSession(idx)}
+                        >
+                          <CloseIcon size={11} />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+                {sessions.every((session) => {
+                  const cur = session.history[session.historyIndex];
+                  const tabLabel = cur
+                    ? cur.label || fallbackEntryLabel(cur)
+                    : 'Tab';
+                  const searchText = cur
+                    ? `${tabLabel} ${cur.table} ${cur.hash}`.toLowerCase()
+                    : tabLabel.toLowerCase();
+                  return (
+                    !tabsMenuFilter.trim() ||
+                    !searchText.includes(tabsMenuFilter.trim().toLowerCase())
+                  );
+                }) && tabsMenuFilter.trim() && (
+                  <p className={styles.sessionMenuEmpty}>No open tabs match that filter.</p>
+                )}
+              </div>
+            </Popover>
+          )}
         </div>
       )}
 

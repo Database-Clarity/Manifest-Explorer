@@ -50,14 +50,34 @@ export interface SearchIndexEntry {
   classType?: number;
   damageType?: number;
   itemCategoryHashes?: number[];
+  /** DestinyAmmunitionType: 1 Primary, 2 Special, 3 Heavy */
+  ammoType?: number;
+  /** Inventory bucket type hash (equipment slot) */
+  bucketHash?: number;
+  /** Associated Destiny season/episode number (1-based) */
+  seasonNumber?: number;
+  /** DestinySeasonDefinition hash */
+  seasonHash?: number;
+  /** Collectible definition hash when present */
+  collectibleHash?: number;
   isRedacted?: boolean;
   isAdept?: boolean;
   isEnhanced?: boolean;
   isHolofoil?: boolean;
   isFeatured?: boolean;
   isDummy?: boolean;
+  isArtifact?: boolean;
+  isCraftable?: boolean;
+  isCatalyst?: boolean;
+  isOrnament?: boolean;
   hasLore?: boolean;
   hasScreenshot?: boolean;
+  hasFlavor?: boolean;
+  hasCollectible?: boolean;
+  /** Normalized displaySource / sourceString snippet for `source:` search */
+  sourceLower?: string;
+  /** Lowercased trait id strings for `trait:` search */
+  traitIds?: string[];
   plugCategoryIdentifier?: string;
 }
 
@@ -291,6 +311,8 @@ export interface FilterOption {
 
 export interface FilterCatalog {
   categories: FilterOption[];
+  /** Season/episode filter options (value = seasonNumber), newest first. */
+  seasons?: FilterOption[];
 }
 
 export type ImageScalingMode = 'sharp' | 'integer' | 'smooth';

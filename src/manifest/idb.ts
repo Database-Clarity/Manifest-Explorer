@@ -26,7 +26,19 @@ export interface ManifestMeta {
 export interface SearchIndexCache {
   entries: SearchIndexEntry[];
   indexedTables: string[];
+  /**
+   * Bump whenever the shape/meaning of a SearchIndexEntry changes so that
+   * caches written by an older build are treated as stale and rebuilt instead
+   * of being served with missing fields (e.g. `isEnhanced`).
+   */
+  schemaVersion?: number;
 }
+
+/**
+ * Current search index schema version. Older caches (or caches without this
+ * field) are discarded and rebuilt cleanly.
+ */
+export const SEARCH_INDEX_SCHEMA_VERSION = 3;
 
 export interface CacheStats {
   available: boolean;

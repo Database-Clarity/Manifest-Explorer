@@ -50,6 +50,23 @@
   }
 }
 
+/**
+ * The search cluster groups [ search input ] [ Filters ] [ Deep ] together at
+ * the bar's start. It flexes to fill the bar; the locale select and the
+ * trailing icon buttons keep their `margin-left: auto` push to the far right.
+ */
+.searchCluster {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  flex: 1 1 auto;
+  min-width: 0;
+
+  @include theme.mobile {
+    gap: 0.25rem;
+  }
+}
+
 .searchField {
   position: relative;
   display: flex;

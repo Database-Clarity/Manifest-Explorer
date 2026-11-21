@@ -12,7 +12,7 @@
 .watermark {
   position: absolute;
   inset: 0;
-  z-index: 0;
+  z-index: 2;
   display: block;
   width: 100%;
   height: 100%;
@@ -62,7 +62,7 @@
 .enhancedGlow {
   position: absolute;
   inset: 0;
-  z-index: 2;
+  z-index: 3;
   pointer-events: none;
   background: linear-gradient(
     to top,
@@ -75,7 +75,7 @@
   position: absolute;
   bottom: 10%;
   left: 1px;
-  z-index: 3;
+  z-index: 4;
   display: flex;
   align-items: flex-end;
   justify-content: center;

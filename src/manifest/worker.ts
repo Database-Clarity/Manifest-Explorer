@@ -63,6 +63,7 @@ import {
   putMeta,
   putSearchIndex,
   putTableData,
+  SEARCH_INDEX_SCHEMA_VERSION,
   type ManifestMeta,
   type SearchIndexCache,
 } from './idb';
@@ -284,6 +285,14 @@ const categoryNameMap = new Map<number, string>();
 const loadingPromises = new Map<string, Promise<void>>();
 let fullItemCount = 0;
 let clarityPromise: Promise<Map<number, ClarityDescriptionEntry>> | undefined;
+
+// Cross-table enrichment state. Rebuilt from the loaded DestinyArtifactDefinition
+// and DestinySeasonDefinition data before the search index is persisted.
+const artifactItemHashes = new Set<number>();
+const seasonNumberByHash = new Map<number, number>();
+const seasonNameByNumber = new Map<number, string>();
+const watermarkSeasonByIcon = new Map<string, number>();
+let latestSeasonNumber = 0;
 
 type WorkerScope = {
   postMessage(message: unknown): void;
@@ -511,7 +520,31 @@ function currentCatalog(): FilterCatalog {
   const categories: FilterOption[] = [...categoryNameMap.entries()]
     .map(([value, label]) => ({ value, label }))
     .sort((a, b) => a.label.localeCompare(b.label));
-  return { categories };
+
+  rebuildSeasonMetadata();
+  const seasons = buildSeasonOptions();
+  return seasons.length > 0 ? { categories, seasons } : { categories };
+}
+
+function buildSeasonOptions(): FilterOption[] {
+  const counts = new Map<number, number>();
+  for (const entry of entries) {
+    if (entry.seasonNumber === undefined) continue;
+    counts.set(entry.seasonNumber, (counts.get(entry.seasonNumber) ?? 0) + 1);
+  }
+
+  const options: FilterOption[] = [];
+  for (const [seasonNumber, name] of [...seasonNameByNumber.entries()].sort(
+    (a, b) => b[0] - a[0],
+  )) {
+    if (seasonNumber < 1) continue;
+    options.push({
+      value: seasonNumber,
+      label: name ? `S${seasonNumber} · ${name}` : `Season ${seasonNumber}`,
+      count: counts.get(seasonNumber) ?? 0,
+    });
+  }
+  return options;
 }
 
 function emitCatalog(): void {
@@ -559,10 +592,146 @@ function appendEntries(newEntries: SearchIndexEntry[]): void {
   }
 }
 
+function normalizeSearchText(value: string): string {
+  return value.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+/** Derive a season number from a trait id such as `season_25` or `season25`. */
+function seasonNumberFromTraits(traitIds: readonly string[] | undefined): number | undefined {
+  if (!traitIds) return undefined;
+  for (const trait of traitIds) {
+    const match = trait.match(/(?:^|[_-])season[_-]?(\d+)$/);
+    if (match) {
+      const num = Number(match[1]);
+      if (Number.isInteger(num) && num >= 1) return num;
+    }
+  }
+  return undefined;
+}
+
+/** Rebuild season metadata maps from the loaded DestinySeasonDefinition data. */
+function rebuildSeasonMetadata(): void {
+  seasonNumberByHash.clear();
+  seasonNameByNumber.clear();
+  watermarkSeasonByIcon.clear();
+
+  const data = tableDataMap.get('DestinySeasonDefinition');
+  if (data) {
+    for (const [hashKey, raw] of Object.entries(data)) {
+      const seasonNumber = asNumber(raw.seasonNumber);
+      if (seasonNumber === undefined) continue;
+      const hash = toUnsignedHash(Number(hashKey));
+      seasonNumberByHash.set(hash, seasonNumber);
+      if (seasonNumber > latestSeasonNumber) latestSeasonNumber = seasonNumber;
+
+      if (seasonNumber >= 1 && !seasonNameByNumber.has(seasonNumber)) {
+        const name = displayName(raw, `Season ${seasonNumber}`);
+        if (name) seasonNameByNumber.set(seasonNumber, name);
+      }
+
+      const watermark =
+        asString(asRecord(raw.displayProperties)?.iconWatermark) ?? asString(raw.iconWatermark);
+      if (watermark) watermarkSeasonByIcon.set(watermark, seasonNumber);
+    }
+  }
+
+  // Cached boots have no raw table data in memory; reconstruct names/numbers
+  // from the already-indexed season definition entries so the seasons catalog
+  // and `season:<name>` search keep working without a full reload.
+  if (seasonNameByNumber.size === 0) {
+    for (const entry of entries) {
+      if (entry.table !== 'DestinySeasonDefinition' || entry.seasonNumber === undefined) continue;
+      if (entry.seasonNumber >= 1 && !seasonNameByNumber.has(entry.seasonNumber)) {
+        seasonNameByNumber.set(entry.seasonNumber, entry.name || `Season ${entry.seasonNumber}`);
+      }
+    }
+  }
+}
+
+/** Rebuild the set of hashes belonging to the active seasonal artifact. */
+function rebuildArtifactHashes(): void {
+  artifactItemHashes.clear();
+  const data = tableDataMap.get('DestinyArtifactDefinition');
+  if (!data) return;
+
+  let activeHash: number | undefined;
+  let activeIndex = -1;
+  const perkHashes = new Set<number>();
+
+  for (const [hashKey, raw] of Object.entries(data)) {
+    const hash = toUnsignedHash(Number(hashKey));
+    const index = asNumber(raw.index) ?? 0;
+    if (index >= activeIndex) {
+      activeIndex = index;
+      activeHash = hash;
+    }
+
+    const tiers = raw.tiers;
+    if (!Array.isArray(tiers)) continue;
+    for (const tier of tiers) {
+      const items = asRecord(tier)?.items;
+      if (!Array.isArray(items)) continue;
+      for (const item of items) {
+        const itemHash = asUnsigned(asRecord(item)?.itemHash);
+        if (itemHash !== undefined) perkHashes.add(itemHash);
+      }
+    }
+  }
+
+  if (activeHash !== undefined) artifactItemHashes.add(activeHash);
+  for (const hash of perkHashes) artifactItemHashes.add(hash);
+}
+
+/**
+ * Fill in cross-table metadata on the in-memory search entries before they are
+ * persisted: season numbers (via seasonHash, watermark, or trait ids), artifact
+ * membership, and collectible source strings. Idempotent and order-independent,
+ * so it works whether InventoryItem or the referenced tables load first.
+ */
+function enrichIndexedEntries(): void {
+  rebuildSeasonMetadata();
+  rebuildArtifactHashes();
+
+  const collectibles = tableDataMap.get('DestinyCollectibleDefinition');
+
+  for (const entry of entries) {
+    if (entry.seasonNumber === undefined && entry.seasonHash !== undefined) {
+      const number = seasonNumberByHash.get(entry.seasonHash);
+      if (number !== undefined) entry.seasonNumber = number;
+    }
+    if (entry.seasonNumber === undefined) {
+      const fromTrait = seasonNumberFromTraits(entry.traitIds);
+      if (fromTrait !== undefined) entry.seasonNumber = fromTrait;
+    }
+    if (entry.seasonNumber === undefined && entry.iconWatermark) {
+      const number = watermarkSeasonByIcon.get(entry.iconWatermark);
+      if (number !== undefined) entry.seasonNumber = number;
+    }
+
+    if (artifactItemHashes.has(entry.hash)) entry.isArtifact = true;
+
+    if (entry.sourceLower === undefined && entry.collectibleHash !== undefined && collectibles) {
+      const collectible = collectibles[String(entry.collectibleHash)];
+      const source = asString(collectible?.sourceString) ?? asString(collectible?.displaySource);
+      if (source) entry.sourceLower = normalizeSearchText(source);
+    }
+  }
+}
+
+function recomputeLatestSeasonFromEntries(): void {
+  for (const entry of entries) {
+    if (entry.seasonNumber !== undefined && entry.seasonNumber > latestSeasonNumber) {
+      latestSeasonNumber = entry.seasonNumber;
+    }
+  }
+}
+
 async function persistSearchIndex(): Promise<void> {
+  enrichIndexedEntries();
   await putSearchIndex(state.locale, state.versionSignature, {
     entries,
     indexedTables: [...indexedTables],
+    schemaVersion: SEARCH_INDEX_SCHEMA_VERSION,
   });
 }
 
@@ -611,6 +780,7 @@ function applyCachedState(
   indexedTables.clear();
   for (const table of cached.indexedTables) indexedTables.add(table);
   rebuildEntryLookups();
+  recomputeLatestSeasonFromEntries();
   for (const table of Object.keys(meta.componentPaths)) getOrCreateTableStatus(table);
   for (const table of indexedTables) {
     const status = getOrCreateTableStatus(table);
@@ -636,7 +806,8 @@ async function init(
   if (!forceRefresh) {
     const meta = await getMeta(locale);
     const cached = meta ? await getSearchIndex(locale, meta.versionSignature) : undefined;
-    if (meta && cached) {
+    const cachedIsCurrent = cached?.schemaVersion === SEARCH_INDEX_SCHEMA_VERSION;
+    if (meta && cachedIsCurrent) {
       applyCachedState(meta, cached);
       state.phase = 'ready';
       emitStatus(true);
@@ -890,6 +1061,10 @@ async function search(
     sort,
     categoryNameMap,
     maxResults,
+    {
+      latestSeason: latestSeasonNumber,
+      seasonNameMap: seasonNameByNumber,
+    },
   );
 }
 

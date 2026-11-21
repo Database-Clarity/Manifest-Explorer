@@ -1,11 +1,12 @@
 /// <reference types="vite/client" />
 import { useRef, useState, type ReactNode, type RefObject } from 'react';
-import type { BungieLocale, SearchFilters, SortMode, TableStatus } from '../types/manifest';
+import type { BungieLocale, SortMode, TableStatus } from '../types/manifest';
 import { BUNGIE_LOCALES } from '../types/manifest';
 import { getShortTableName } from '../manifest/tables';
 import { useCollectorStore } from '../stores/collector';
 import { useExplorerStore } from '../stores/explorer';
 import { useSettingsStore } from '../stores/settings';
+import { countQueryFilterTokens } from '../utils/queryTokens';
 import {
   BookmarkIcon,
   ChevronDownIcon,
@@ -63,16 +64,13 @@ function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter((part): part is string => typeof part === 'string' && part.length > 0).join(' ');
 }
 
-function countActiveFilters(filters: SearchFilters): number {
-  return (
-    filters.tierTypes.length +
-    filters.damageTypes.length +
-    filters.classTypes.length +
-    filters.itemTypes.length +
-    filters.itemCategoryHashes.length +
-    (filters.includeUnnamed ? 1 : 0) +
-    (filters.onlyRedacted ? 1 : 0)
-  );
+/**
+ * Active filter count for the Filters button badge: structured filter tokens
+ * currently in the query (each chip writes one) plus the popover-only
+ * "include unnamed definitions" toggle.
+ */
+function countActiveFilters(query: string, includeUnnamed: boolean): number {
+  return countQueryFilterTokens(query) + (includeUnnamed ? 1 : 0);
 }
 
 function formatBadge(count: number): string {
@@ -136,7 +134,7 @@ export function Header({
   const collectedCount = useCollectorStore((state) => state.items.length);
   const collectMode = useCollectorStore((state) => state.collectMode);
 
-  const activeFilterCount = countActiveFilters(filters);
+  const activeFilterCount = countActiveFilters(query, filters.includeUnnamed);
   const uniqueTables = dedupeTables(tables);
   const hasUnloadedTables = uniqueTables.some((table) => !table.loaded);
 
@@ -154,6 +152,7 @@ export function Header({
 
   const filtersAnchorRef =
     menu?.name === 'filters' && menu.source === 'mobile' ? filtersMobileRef : filtersDesktopRef;
+  const filtersAlign = menu?.name === 'filters' && menu.source === 'mobile' ? 'end' : 'start';
   const collectorAnchorRef =
     menu?.name === 'collector' && menu.source === 'mobile' ? collectorMobileRef : collectorDesktopRef;
 
@@ -211,51 +210,73 @@ export function Header({
             <span className={styles.brandText}>Manifest Explorer</span>
           </button>
 
-          <div className={styles.searchField}>
-            <SearchIcon size={14} className={styles.searchIcon} />
-            <input
-              ref={searchInputRef}
-              type="search"
-              className={styles.searchInput}
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder={
-                deepSearch
-                  ? 'Deep search inside JSON keys & values…'
-                  : 'Search name, hash, tier:exotic, table:perk…'
-              }
-              aria-label={deepSearch ? 'Deep search inside manifest JSON' : 'Search the manifest'}
-              autoComplete="off"
-              autoCorrect="off"
-              spellCheck={false}
-              enterKeyHint="search"
-            />
-            {query.length > 0 ? (
-              <button
-                type="button"
-                className={styles.clearSearch}
-                onClick={handleClearSearch}
-                aria-label="Clear search"
-                title="Clear search"
-              >
-                <CloseIcon size={12} />
-              </button>
-            ) : (
-              <kbd className={styles.kbd} aria-hidden="true" title="Shortcut: press / when not typing to jump here">
-                /
-              </kbd>
-            )}
-          </div>
+          <div className={styles.searchCluster}>
+            <div className={styles.searchField}>
+              <SearchIcon size={14} className={styles.searchIcon} />
+              <input
+                ref={searchInputRef}
+                type="search"
+                className={styles.searchInput}
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder={
+                  deepSearch
+                    ? 'Deep search inside JSON keys & values…'
+                    : 'Search name, hash, tier:exotic, table:perk…'
+                }
+                aria-label={deepSearch ? 'Deep search inside manifest JSON' : 'Search the manifest'}
+                autoComplete="off"
+                autoCorrect="off"
+                spellCheck={false}
+                enterKeyHint="search"
+              />
+              {query.length > 0 ? (
+                <button
+                  type="button"
+                  className={styles.clearSearch}
+                  onClick={handleClearSearch}
+                  aria-label="Clear search"
+                  title="Clear search"
+                >
+                  <CloseIcon size={12} />
+                </button>
+              ) : (
+                <kbd className={styles.kbd} aria-hidden="true" title="Shortcut: press / when not typing to jump here">
+                  /
+                </kbd>
+              )}
+            </div>
 
-          <button
-            type="button"
-            className={cx(styles.deepBtn, deepSearch && styles.iconBtnOn)}
-            onClick={toggleDeepSearch}
-            aria-pressed={deepSearch}
-            title="Deep search: match text inside raw JSON keys & values"
-          >
-            Deep
-          </button>
+            <button
+              ref={filtersDesktopRef}
+              type="button"
+              className={cx(styles.iconBtn, styles.desktopOnly, activeFilterCount > 0 && styles.iconBtnOn)}
+              onClick={() => toggleMenu('filters', 'desktop')}
+              aria-label={
+                activeFilterCount > 0 ? `Filters, ${activeFilterCount} active` : 'Filters'
+              }
+              aria-expanded={filtersOpen}
+              aria-haspopup="dialog"
+              title="Filters — writes editable tokens like is:enhanced into the search bar"
+            >
+              <FilterIcon size={15} />
+              {activeFilterCount > 0 && (
+                <span className={styles.badge} aria-hidden="true">
+                  {formatBadge(activeFilterCount)}
+                </span>
+              )}
+            </button>
+
+            <button
+              type="button"
+              className={cx(styles.deepBtn, deepSearch && styles.iconBtnOn)}
+              onClick={toggleDeepSearch}
+              aria-pressed={deepSearch}
+              title="Deep search: match text inside raw JSON keys & values"
+            >
+              Deep
+            </button>
+          </div>
 
           <select
             className={cx(styles.locale, styles.desktopOnly)}
@@ -270,26 +291,6 @@ export function Header({
               </option>
             ))}
           </select>
-
-          <button
-            ref={filtersDesktopRef}
-            type="button"
-            className={cx(styles.iconBtn, styles.desktopOnly, activeFilterCount > 0 && styles.iconBtnOn)}
-            onClick={() => toggleMenu('filters', 'desktop')}
-            aria-label={
-              activeFilterCount > 0 ? `Filters, ${activeFilterCount} active` : 'Filters'
-            }
-            aria-expanded={filtersOpen}
-            aria-haspopup="dialog"
-            title="Filters"
-          >
-            <FilterIcon size={15} />
-            {activeFilterCount > 0 && (
-              <span className={styles.badge} aria-hidden="true">
-                {formatBadge(activeFilterCount)}
-              </span>
-            )}
-          </button>
 
           <button
             ref={collectorDesktopRef}
@@ -467,6 +468,7 @@ export function Header({
         open={filtersOpen}
         onClose={closeMenu}
         anchorRef={filtersAnchorRef}
+        align={filtersAlign}
       />
 
       <CollectorPopover

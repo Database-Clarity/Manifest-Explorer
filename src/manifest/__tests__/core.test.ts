@@ -22,7 +22,7 @@ import {
   toSignedHash,
   toUnsignedHash,
 } from '../hash';
-import { parseSearchQuery, scoreAndFilterEntries } from '../query';
+import { parseSearchQuery, scoreAndFilterEntries, type SearchContext } from '../query';
 import {
   CORE_BOOT_TABLES,
   extractTableEntrySummary,
@@ -31,6 +31,7 @@ import {
   getTableGroup,
   resolveTableAlias,
 } from '../tables';
+import { SEARCH_INDEX_SCHEMA_VERSION } from '../idb';
 
 const ITEM_TABLE = 'DestinyInventoryItemDefinition';
 const LITE_TABLE = 'DestinyInventoryItemLiteDefinition';
@@ -72,6 +73,7 @@ function rank(
     sort?: 'relevance' | 'name-asc' | 'name-desc' | 'hash-asc' | 'hash-desc' | 'index-desc';
     categories?: Map<number, string>;
     maxResults?: number;
+    context?: SearchContext;
   } = {},
 ) {
   return scoreAndFilterEntries(
@@ -81,6 +83,7 @@ function rank(
     options.sort ?? 'relevance',
     options.categories ?? new Map(),
     options.maxResults,
+    options.context,
   );
 }
 
@@ -677,6 +680,213 @@ describe('ranking and filtering', () => {
     expect(result.items).toHaveLength(10);
     expect(result.totalMatches).toBe(25);
     expect(result.durationMs).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe('search index schema version', () => {
+  it('exports a schema version so stale caches are rebuilt', () => {
+    expect(SEARCH_INDEX_SCHEMA_VERSION).toBe(3);
+  });
+});
+
+describe('enriched summary extraction', () => {
+  it('hardens enhanced detection with name prefix and trait ids', () => {
+    const byPrefix = extractTableEntrySummary(ITEM_TABLE, '10', {
+      displayProperties: { name: 'Enhanced Sidearm' },
+    });
+    expect(byPrefix.isEnhanced).toBe(true);
+
+    const byTrait = extractTableEntrySummary(ITEM_TABLE, '11', {
+      displayProperties: { name: 'Some Perk' },
+      traitIds: ['enhanced_perk'],
+    });
+    expect(byTrait.isEnhanced).toBe(true);
+    expect(byTrait.traitIds).toEqual(['enhanced_perk']);
+  });
+
+  it('extracts ammo, bucket, season, crafting, catalyst, ornament and source metadata', () => {
+    const summary = extractTableEntrySummary(ITEM_TABLE, '20', {
+      displayProperties: { name: 'Revenant Sidearm' },
+      itemType: 3,
+      itemSubType: 17,
+      equippingBlock: { ammoType: 1 },
+      inventory: { bucketTypeHash: 2465295065, recipeItemHash: 12345, tierType: 5 },
+      seasonHash: 123456789,
+      collectibleHash: 987654321,
+      flavorText: 'A relic of the Revenant episode.',
+      displaySource: 'Source: Episode: Revenant',
+      traitIds: ['season_25'],
+      itemTypeDisplayName: 'Sidearm',
+    });
+
+    expect(summary.ammoType).toBe(1);
+    expect(summary.bucketHash).toBe(2465295065);
+    expect(summary.seasonHash).toBe(123456789);
+    expect(summary.collectibleHash).toBe(987654321);
+    expect(summary.isCraftable).toBe(true);
+    expect(summary.hasFlavor).toBe(true);
+    expect(summary.hasCollectible).toBe(true);
+    expect(summary.sourceLower).toContain('episode: revenant');
+    expect(summary.traitIds).toEqual(['season_25']);
+  });
+
+  it('detects crafting via pattern item type and catalyst/ornament via display names', () => {
+    const pattern = extractTableEntrySummary(ITEM_TABLE, '30', {
+      displayProperties: { name: 'Pattern' },
+      itemType: 30,
+    });
+    expect(pattern.isCraftable).toBe(true);
+
+    const catalyst = extractTableEntrySummary(ITEM_TABLE, '31', {
+      displayProperties: { name: 'Malfeasance' },
+      itemTypeDisplayName: 'Weapon Catalyst',
+    });
+    expect(catalyst.isCatalyst).toBe(true);
+
+    const ornament = extractTableEntrySummary(ITEM_TABLE, '32', {
+      displayProperties: { name: 'Gjallarhorn' },
+      itemTypeDisplayName: 'Weapon Ornament',
+    });
+    expect(ornament.isOrnament).toBe(true);
+  });
+
+  it('keeps new metadata off non-item tables', () => {
+    const record = extractTableEntrySummary('DestinyRecordDefinition', '40', {
+      displayProperties: { name: 'Flawless' },
+      seasonHash: 5,
+      displaySource: 'Source: Trials of Osiris',
+    });
+    expect(record.seasonHash).toBe(5);
+    expect(record.sourceLower).toContain('trials of osiris');
+    expect(record.ammoType).toBeUndefined();
+    expect(record.isCraftable).toBeUndefined();
+  });
+});
+
+describe('DIM-inspired query operators', () => {
+  it('filters by ammo: primary/special/heavy and numeric values', () => {
+    const entries = [
+      makeEntry({ hash: 1, name: 'Primary Weapon', ammoType: 1 }),
+      makeEntry({ hash: 2, name: 'Special Weapon', ammoType: 2 }),
+      makeEntry({ hash: 3, name: 'Heavy Weapon', ammoType: 3 }),
+    ];
+    expect(rank('ammo:primary', entries).items.map((item) => item.hash)).toEqual([1]);
+    expect(rank('ammo:special', entries).items.map((item) => item.hash)).toEqual([2]);
+    expect(rank('ammo:heavy', entries).items.map((item) => item.hash)).toEqual([3]);
+    expect(rank('ammo:2', entries).items.map((item) => item.hash)).toEqual([2]);
+  });
+
+  it('filters by slot: using bucket aliases and numeric hashes', () => {
+    const entries = [
+      makeEntry({ hash: 1, name: 'Kinetic Weapon', bucketHash: 1498876634 }),
+      makeEntry({ hash: 2, name: 'Energy Weapon', bucketHash: 2465295065 }),
+      makeEntry({ hash: 3, name: 'Power Weapon', bucketHash: 953998645 }),
+      makeEntry({ hash: 4, name: 'Helmet', bucketHash: 3448274439 }),
+    ];
+    expect(rank('slot:kinetic', entries).items.map((item) => item.hash)).toEqual([1]);
+    expect(rank('slot:energy', entries).items.map((item) => item.hash)).toEqual([2]);
+    expect(rank('slot:heavy', entries).items.map((item) => item.hash)).toEqual([3]);
+    expect(rank('slot:head', entries).items.map((item) => item.hash)).toEqual([4]);
+    expect(rank('slot:2465295065', entries).items.map((item) => item.hash)).toEqual([2]);
+  });
+
+  it('filters by subtype: / weapon: using DestinyItemSubType names', () => {
+    const entries = [
+      makeEntry({ hash: 1, name: 'Auto Rifle', itemSubType: 6 }),
+      makeEntry({ hash: 2, name: 'Grenade Launcher', itemSubType: 23 }),
+      makeEntry({ hash: 3, name: 'Bow', itemSubType: 31 }),
+      makeEntry({ hash: 4, name: 'Sword', itemSubType: 18 }),
+    ];
+    expect(rank('subtype:auto', entries).items.map((item) => item.hash)).toEqual([1]);
+    expect(rank('weapon:grenade', entries).items.map((item) => item.hash)).toEqual([2]);
+    expect(rank('subtype:gl', entries).items.map((item) => item.hash)).toEqual([2]);
+    expect(rank('weapon:bow', entries).items.map((item) => item.hash)).toEqual([3]);
+    expect(rank('subtype:smg', entries).items.map((item) => item.hash)).toEqual([]);
+  });
+
+  it('filters by season: numeric, latest/current and name fragments', () => {
+    const entries = [
+      makeEntry({ hash: 1, name: 'Wish Item', seasonNumber: 24 }),
+      makeEntry({ hash: 2, name: 'Revenant Item', seasonNumber: 25 }),
+      makeEntry({ hash: 3, name: 'No Season' }),
+    ];
+    const context: SearchContext = {
+      latestSeason: 25,
+      seasonNameMap: new Map([
+        [24, 'Season of the Wish'],
+        [25, 'Episode: Revenant'],
+      ]),
+    };
+    expect(rank('season:25', entries, { context }).items.map((item) => item.hash)).toEqual([2]);
+    expect(rank('season:latest', entries, { context }).items.map((item) => item.hash)).toEqual([2]);
+    expect(rank('season:current', entries, { context }).items.map((item) => item.hash)).toEqual([2]);
+    expect(rank('season:revenant', entries, { context }).items.map((item) => item.hash)).toEqual([2]);
+    expect(rank('s:24', entries, { context }).items.map((item) => item.hash)).toEqual([1]);
+  });
+
+  it('filters by source: against sourceLower and descLower, with negation', () => {
+    const entries = [
+      makeEntry({ hash: 1, name: 'Raid Item', sourceLower: 'source: last wish raid' }),
+      makeEntry({ hash: 2, name: 'Dungeon Item', sourceLower: 'source: shattered throne dungeon' }),
+      makeEntry({ hash: 3, name: 'Trials Item', descLower: 'earn from trials of osiris' }),
+    ];
+    expect(rank('source:raid', entries).items.map((item) => item.hash)).toEqual([1]);
+    expect(rank('source:dungeon', entries).items.map((item) => item.hash)).toEqual([2]);
+    expect(rank('source:trials', entries).items.map((item) => item.hash)).toEqual([3]);
+    expect(rank('-source:raid', entries).items.map((item) => item.hash)).toEqual([2, 3]);
+  });
+
+  it('filters by trait: substring with negation', () => {
+    const entries = [
+      makeEntry({ hash: 1, name: 'Enhanced Perk', traitIds: ['enhanced', 'barrel'] }),
+      makeEntry({ hash: 2, name: 'Regular Perk', traitIds: ['barrel'] }),
+      makeEntry({ hash: 3, name: 'No Traits' }),
+    ];
+    expect(rank('trait:enhanced', entries, { sort: 'hash-asc' }).items.map((item) => item.hash)).toEqual([1]);
+    expect(rank('-trait:enhanced', entries, { sort: 'hash-asc' }).items.map((item) => item.hash)).toEqual([2, 3]);
+  });
+
+  it('filters by is:artifact with aliases', () => {
+    const entries = [
+      makeEntry({ hash: 1, name: 'Artifact Mod', isArtifact: true }),
+      makeEntry({ hash: 2, name: 'Normal Mod' }),
+    ];
+    expect(rank('is:artifact', entries).items.map((item) => item.hash)).toEqual([1]);
+    expect(rank('is:artifactperk', entries).items.map((item) => item.hash)).toEqual([1]);
+    expect(rank('is:seasonalartifact', entries).items.map((item) => item.hash)).toEqual([1]);
+  });
+
+  it('filters by is:craftable / is:catalyst / is:ornament', () => {
+    const entries = [
+      makeEntry({ hash: 1, name: 'Craftable Weapon', isCraftable: true }),
+      makeEntry({ hash: 2, name: 'Catalyst', isCatalyst: true }),
+      makeEntry({ hash: 3, name: 'Ornament', isOrnament: true }),
+      makeEntry({ hash: 4, name: 'Plain Weapon' }),
+    ];
+    expect(rank('is:craftable', entries).items.map((item) => item.hash)).toEqual([1]);
+    expect(rank('is:crafted', entries).items.map((item) => item.hash)).toEqual([1]);
+    expect(rank('is:catalyst', entries).items.map((item) => item.hash)).toEqual([2]);
+    expect(rank('is:ornament', entries).items.map((item) => item.hash)).toEqual([3]);
+  });
+
+  it('filters by has:watermark', () => {
+    const entries = [
+      makeEntry({ hash: 1, name: 'Watermarked', iconWatermark: '/img/wm.png' }),
+      makeEntry({ hash: 2, name: 'Plain' }),
+    ];
+    expect(rank('has:watermark', entries).items.map((item) => item.hash)).toEqual([1]);
+    expect(rank('has:watermark', [entries[1]!]).items).toHaveLength(0);
+  });
+
+  it('supports convenience is:exotic and is:solar aliases', () => {
+    const entries = [
+      makeEntry({ hash: 1, name: 'Exotic Solar', tierType: 6, damageType: 3, itemType: 3 }),
+      makeEntry({ hash: 2, name: 'Legendary Solar', tierType: 5, damageType: 3, itemType: 3 }),
+      makeEntry({ hash: 3, name: 'Exotic Arc', tierType: 6, damageType: 2, itemType: 3 }),
+    ];
+    expect(rank('is:exotic', entries, { sort: 'hash-asc' }).items.map((item) => item.hash)).toEqual([1, 3]);
+    expect(rank('is:solar', entries, { sort: 'hash-asc' }).items.map((item) => item.hash)).toEqual([1, 2]);
+    expect(rank('is:weapon', entries, { sort: 'hash-asc' }).items.map((item) => item.hash)).toEqual([1, 2, 3]);
   });
 });
 

@@ -110,7 +110,7 @@ export function DiffTab({
       `${getShortTableName(pinnedDetail.table)} ${pinnedDetail.hash}`);
 
   return (
-    <div className={styles.scrollBody}>
+    <div className={styles.scrollBody} data-inspector-scroll="true">
       <div className={styles.diffHeader}>
         <div className={styles.diffSummary}>
           <span>
@@ -118,7 +118,7 @@ export function DiffTab({
             <button
               type="button"
               className={styles.inlineLink}
-              onClick={() => onNavigateRef(pinnedRef)}
+              onClick={() => onNavigateRef({ ...pinnedRef, label: pinnedName })}
             >
               {pinnedName} ({pinnedRef.hash})
             </button>

@@ -4,6 +4,7 @@ import type {
   FilterCatalog,
   InspectorTab,
   ManifestStatus,
+  ResolvedSummaryEntry,
   SearchFilters,
   SearchResultItem,
   TableStatus,
@@ -21,14 +22,29 @@ export interface AppNotice {
 
 export type NoticeInput = Omit<AppNotice, 'id'> & { id?: string };
 
+/**
+ * One point in a tab's back/forward history timeline, preserving both display
+ * identity and view state (active sub-tab, scroll positions, JSON filter &
+ * expanded nodes).
+ */
+export interface TabHistoryEntry {
+  table: string;
+  hash: number;
+  /** Resolved human display name (overrides Table:Hash everywhere). */
+  label?: string;
+  icon?: string;
+  /** True when the same unsigned hash appears in multiple manifest tables/categories. */
+  hasCoTables?: boolean;
+  activeTab: InspectorTab;
+  scrollByTab: Partial<Record<InspectorTab, number>>;
+  jsonFilter?: string;
+  jsonExpanded?: Record<string, boolean>;
+}
+
 export interface InspectorSession {
   id: string;
-  stack: DefinitionRef[];
-  stackIndex: number;
-  label: string;
-  icon?: string;
-  activeTab: InspectorTab;
-  initialJsonFilter?: string;
+  history: TabHistoryEntry[];
+  historyIndex: number;
 }
 
 export interface ExplorerState {
@@ -46,8 +62,9 @@ export interface ExplorerState {
 
   sessions: InspectorSession[];
   activeSessionIndex: number;
-  stack: DefinitionRef[];
-  stackIndex: number;
+  /** Active tab's full history + future timeline. */
+  history: TabHistoryEntry[];
+  historyIndex: number;
   activeTab: InspectorTab;
   pinnedDiffRef: DefinitionRef | null;
   mobileInspectorOpen: boolean;
@@ -73,32 +90,43 @@ export interface ExplorerState {
   setFilterCatalog: (catalog: FilterCatalog) => void;
   setSelectedResultIndex: (index: number) => void;
 
-  /** Navigate in-place within the active tab (pushes onto that tab's Back/Forward history) and opens on Pretty. */
-  openDefinition: (
-    ref: DefinitionRef,
-    pushToStack?: boolean,
-    label?: string,
-    initialJsonFilter?: string,
-  ) => void;
-  /** Always open in a new tab (or focus if that exact ref is already the current entry of a tab) on Pretty. */
-  openInNewTab: (
-    ref: DefinitionRef,
-    label?: string,
-    focus?: boolean,
-    icon?: string,
-    initialJsonFilter?: string,
-  ) => void;
+  /**
+   * Navigate in-place within the active tab: pushes a fresh entry onto this
+   * tab's history (trimming any forward branch beyond historyIndex) and opens
+   * the new entry on the Pretty tab. Preserves the prior entry's saved state.
+   */
+  navigateInTab: (ref: DefinitionRef, jsonFilter?: string) => void;
+  /**
+   * Always open in a new tab (or focus an existing tab already showing that
+   * exact definition) on the Pretty tab.
+   */
+  openInNewTab: (ref: DefinitionRef, focus?: boolean, jsonFilter?: string) => void;
   switchSession: (index: number) => void;
   closeSession: (index: number) => void;
   closeOtherSessions: (index: number) => void;
-  updateActiveSessionMeta: (label: string, icon?: string) => void;
   toggleInspectorMaximized: () => void;
+
+  /** Step backward / forward / jump directly inside the active tab's history+future timeline without discarding future entries. */
   navigateBack: () => boolean;
   navigateForward: () => boolean;
-  jumpToStackIndex: (index: number) => void;
-  restoreHistoryPoint: (sessionId: string, stackIndex: number) => boolean;
-  closeInspector: () => void;
+  jumpToHistoryIndex: (index: number) => boolean;
+  restoreHistoryPoint: (sessionId: string, targetHistoryIndex: number) => boolean;
+
+  /** Persist per-entry view state & resolved display metadata. */
   setActiveTab: (tab: InspectorTab) => void;
+  saveEntryScroll: (tab: InspectorTab, scrollTop: number) => void;
+  saveEntryJsonState: (patch: {
+    jsonFilter?: string;
+    jsonExpanded?: Record<string, boolean>;
+  }) => void;
+  updateEntryMeta: (
+    table: string,
+    hash: number,
+    meta: { label?: string; icon?: string; hasCoTables?: boolean },
+  ) => void;
+  hydrateEntrySummaries: (summaries: Record<string, ResolvedSummaryEntry>) => void;
+
+  closeInspector: () => void;
   pinForDiff: (ref: DefinitionRef) => void;
   clearPinnedDiff: () => void;
   setMobileInspectorOpen: (open: boolean) => void;
@@ -180,8 +208,21 @@ export function shortTableName(name: string): string {
   return rest.endsWith('Definition') ? rest.slice(0, -'Definition'.length) : rest;
 }
 
-function defaultSessionLabel(ref: DefinitionRef): string {
+export function fallbackEntryLabel(ref: { table: string; hash: number }): string {
   return `${shortTableName(ref.table)}:${ref.hash}`;
+}
+
+function createHistoryEntry(ref: DefinitionRef, jsonFilter?: string): TabHistoryEntry {
+  const label = ref.label?.trim();
+  return {
+    table: ref.table,
+    hash: ref.hash >>> 0,
+    ...(label && label.length > 0 ? { label } : {}),
+    ...(ref.icon ? { icon: ref.icon } : {}),
+    activeTab: 'pretty',
+    scrollByTab: {},
+    ...(jsonFilter && jsonFilter.length > 0 ? { jsonFilter } : {}),
+  };
 }
 
 function safeDecode(value: string): string {
@@ -227,27 +268,28 @@ function syncActiveSession(
 ): {
   sessions: InspectorSession[];
   activeSessionIndex: number;
-  stack: DefinitionRef[];
-  stackIndex: number;
+  history: TabHistoryEntry[];
+  historyIndex: number;
   activeTab: InspectorTab;
 } {
   if (sessions.length === 0 || activeSessionIndex < 0) {
     return {
       sessions,
       activeSessionIndex: -1,
-      stack: [],
-      stackIndex: -1,
+      history: [],
+      historyIndex: -1,
       activeTab: 'pretty',
     };
   }
   const clamped = Math.max(0, Math.min(activeSessionIndex, sessions.length - 1));
   const active = sessions[clamped]!;
+  const current = active.history[active.historyIndex];
   return {
     sessions,
     activeSessionIndex: clamped,
-    stack: active.stack,
-    stackIndex: active.stackIndex,
-    activeTab: active.activeTab,
+    history: active.history,
+    historyIndex: active.historyIndex,
+    activeTab: current?.activeTab ?? 'pretty',
   };
 }
 
@@ -266,8 +308,8 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
 
   sessions: [],
   activeSessionIndex: -1,
-  stack: [],
-  stackIndex: -1,
+  history: [],
+  historyIndex: -1,
   activeTab: 'pretty',
   pinnedDiffRef: null,
   mobileInspectorOpen: false,
@@ -331,18 +373,15 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
       return { selectedResultIndex: clamped };
     }),
 
-  openDefinition: (ref, pushToStack = true, label, initialJsonFilter) => {
+  navigateInTab: (ref, jsonFilter) => {
     const state = get();
-    const resolvedLabel = label?.trim() || defaultSessionLabel(ref);
+    const entry = createHistoryEntry(ref, jsonFilter);
 
     if (state.activeSessionIndex < 0 || state.sessions.length === 0) {
       const session: InspectorSession = {
         id: createSessionId(),
-        stack: [ref],
-        stackIndex: 0,
-        label: resolvedLabel,
-        activeTab: 'pretty',
-        initialJsonFilter,
+        history: [entry],
+        historyIndex: 0,
       };
       set({
         ...syncActiveSession([session], 0),
@@ -352,39 +391,21 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
     }
 
     const active = state.sessions[state.activeSessionIndex]!;
-    const current = active.stackIndex >= 0 ? active.stack[active.stackIndex] : undefined;
+    const current = active.history[active.historyIndex];
 
-    if (!pushToStack) {
-      const nextStack = [...active.stack];
-      if (active.stackIndex >= 0 && nextStack.length > 0) {
-        nextStack[active.stackIndex] = ref;
-      } else {
-        nextStack.push(ref);
-      }
-      const nextSessions = state.sessions.map((s, idx) =>
-        idx === state.activeSessionIndex
+    if (current && current.table === entry.table && current.hash === entry.hash) {
+      const nextHistory = active.history.map((item, idx) =>
+        idx === active.historyIndex
           ? {
-              ...s,
-              stack: nextStack,
-              stackIndex: Math.max(0, active.stackIndex),
-              label: resolvedLabel,
-              activeTab: 'pretty' as const,
-              initialJsonFilter,
+              ...item,
+              label: entry.label ?? item.label,
+              icon: entry.icon ?? item.icon,
+              ...(jsonFilter !== undefined ? { jsonFilter } : {}),
             }
-          : s,
+          : item,
       );
-      set({
-        ...syncActiveSession(nextSessions, state.activeSessionIndex),
-        mobileInspectorOpen: true,
-      });
-      return;
-    }
-
-    if (current && current.table === ref.table && current.hash === ref.hash) {
       const nextSessions = state.sessions.map((s, idx) =>
-        idx === state.activeSessionIndex
-          ? { ...s, activeTab: 'pretty' as const, initialJsonFilter }
-          : s,
+        idx === state.activeSessionIndex ? { ...s, history: nextHistory } : s,
       );
       set({
         ...syncActiveSession(nextSessions, state.activeSessionIndex),
@@ -393,16 +414,13 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
       return;
     }
 
-    const nextStack = [...active.stack.slice(0, active.stackIndex + 1), ref];
+    const nextHistory = [...active.history.slice(0, active.historyIndex + 1), entry];
     const nextSessions = state.sessions.map((s, idx) =>
       idx === state.activeSessionIndex
         ? {
             ...s,
-            stack: nextStack,
-            stackIndex: nextStack.length - 1,
-            label: resolvedLabel,
-            activeTab: 'pretty' as const,
-            initialJsonFilter,
+            history: nextHistory,
+            historyIndex: nextHistory.length - 1,
           }
         : s,
     );
@@ -412,23 +430,31 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
     });
   },
 
-  openInNewTab: (ref, label, focus = true, icon, initialJsonFilter) => {
+  openInNewTab: (ref, focus = true, jsonFilter) => {
     const state = get();
+    const unsigned = ref.hash >>> 0;
     const existingIdx = state.sessions.findIndex((s) => {
-      const cur = s.stack[s.stackIndex];
-      return cur !== undefined && cur.table === ref.table && cur.hash === ref.hash;
+      const cur = s.history[s.historyIndex];
+      return cur !== undefined && cur.table === ref.table && cur.hash === unsigned;
     });
 
     if (existingIdx >= 0) {
-      const nextSessions = state.sessions.map((s, idx) =>
-        idx === existingIdx
-          ? {
-              ...s,
-              activeTab: 'pretty' as const,
-              initialJsonFilter: initialJsonFilter ?? s.initialJsonFilter,
-            }
-          : s,
-      );
+      const nextSessions = state.sessions.map((s, idx) => {
+        if (idx !== existingIdx) return s;
+        const nextHistory = s.history.map((item, hIdx) =>
+          hIdx === s.historyIndex
+            ? {
+                ...item,
+                label: ref.label?.trim() || item.label,
+                icon: ref.icon ?? item.icon,
+                ...(jsonFilter !== undefined
+                  ? { activeTab: 'pretty' as const, jsonFilter }
+                  : {}),
+              }
+            : item,
+        );
+        return { ...s, history: nextHistory };
+      });
       if (focus) {
         set({
           ...syncActiveSession(nextSessions, existingIdx),
@@ -442,12 +468,8 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
 
     const session: InspectorSession = {
       id: createSessionId(),
-      stack: [ref],
-      stackIndex: 0,
-      label: label?.trim() || defaultSessionLabel(ref),
-      icon,
-      activeTab: 'pretty',
-      initialJsonFilter,
+      history: [createHistoryEntry(ref, jsonFilter)],
+      historyIndex: 0,
     };
     const nextSessions = [...state.sessions, session];
     const nextIndex =
@@ -502,24 +524,6 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
       return syncActiveSession([keep], 0);
     }),
 
-  updateActiveSessionMeta: (label, icon) =>
-    set((state) => {
-      const trimmed = label.trim();
-      if (!trimmed || state.activeSessionIndex < 0) {
-        return {};
-      }
-      const active = state.sessions[state.activeSessionIndex];
-      if (!active || (active.label === trimmed && (icon === undefined || active.icon === icon))) {
-        return {};
-      }
-      const nextSessions = state.sessions.map((s, idx) =>
-        idx === state.activeSessionIndex
-          ? { ...s, label: trimmed, icon: icon ?? s.icon }
-          : s,
-      );
-      return { sessions: nextSessions };
-    }),
-
   toggleInspectorMaximized: () =>
     set((state) => ({ inspectorMaximized: !state.inspectorMaximized })),
 
@@ -529,20 +533,12 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
       return false;
     }
     const active = state.sessions[state.activeSessionIndex];
-    if (!active || active.stackIndex <= 0) {
+    if (!active || active.historyIndex <= 0) {
       return false;
     }
-    const nextIdx = active.stackIndex - 1;
-    const target = active.stack[nextIdx];
+    const nextIdx = active.historyIndex - 1;
     const nextSessions = state.sessions.map((s, idx) =>
-      idx === state.activeSessionIndex
-        ? {
-            ...s,
-            stackIndex: nextIdx,
-            label: target ? defaultSessionLabel(target) : s.label,
-            initialJsonFilter: undefined,
-          }
-        : s,
+      idx === state.activeSessionIndex ? { ...s, historyIndex: nextIdx } : s,
     );
     set(syncActiveSession(nextSessions, state.activeSessionIndex));
     return true;
@@ -554,72 +550,51 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
       return false;
     }
     const active = state.sessions[state.activeSessionIndex];
-    if (!active || active.stackIndex >= active.stack.length - 1) {
+    if (!active || active.historyIndex >= active.history.length - 1) {
       return false;
     }
-    const nextIdx = active.stackIndex + 1;
-    const target = active.stack[nextIdx];
+    const nextIdx = active.historyIndex + 1;
     const nextSessions = state.sessions.map((s, idx) =>
-      idx === state.activeSessionIndex
-        ? {
-            ...s,
-            stackIndex: nextIdx,
-            label: target ? defaultSessionLabel(target) : s.label,
-            initialJsonFilter: undefined,
-          }
-        : s,
+      idx === state.activeSessionIndex ? { ...s, historyIndex: nextIdx } : s,
     );
     set(syncActiveSession(nextSessions, state.activeSessionIndex));
     return true;
   },
 
-  jumpToStackIndex: (index) =>
-    set((state) => {
-      if (state.activeSessionIndex < 0) {
-        return {};
-      }
-      const active = state.sessions[state.activeSessionIndex];
-      if (!active || active.stack.length === 0) {
-        return {};
-      }
-      const clamped = Math.max(0, Math.min(index, active.stack.length - 1));
-      const target = active.stack[clamped];
-      const nextSessions = state.sessions.map((s, idx) =>
-        idx === state.activeSessionIndex
-          ? {
-              ...s,
-              stackIndex: clamped,
-              label: target ? defaultSessionLabel(target) : s.label,
-              initialJsonFilter: undefined,
-            }
-          : s,
-      );
-      return {
-        ...syncActiveSession(nextSessions, state.activeSessionIndex),
-        mobileInspectorOpen: true,
-      };
-    }),
+  jumpToHistoryIndex: (index) => {
+    const state = get();
+    if (state.activeSessionIndex < 0) {
+      return false;
+    }
+    const active = state.sessions[state.activeSessionIndex];
+    if (!active || index < 0 || index >= active.history.length) {
+      return false;
+    }
+    if (index === active.historyIndex) {
+      return false;
+    }
+    const nextSessions = state.sessions.map((s, idx) =>
+      idx === state.activeSessionIndex ? { ...s, historyIndex: index } : s,
+    );
+    set({
+      ...syncActiveSession(nextSessions, state.activeSessionIndex),
+      mobileInspectorOpen: true,
+    });
+    return true;
+  },
 
-  restoreHistoryPoint: (sessionId, targetStackIndex) => {
+  restoreHistoryPoint: (sessionId, targetHistoryIndex) => {
     const state = get();
     const sIdx = state.sessions.findIndex((s) => s.id === sessionId);
     if (sIdx < 0) {
       return false;
     }
     const session = state.sessions[sIdx]!;
-    if (targetStackIndex < 0 || targetStackIndex >= session.stack.length) {
+    if (targetHistoryIndex < 0 || targetHistoryIndex >= session.history.length) {
       return false;
     }
-    const target = session.stack[targetStackIndex];
     const nextSessions = state.sessions.map((s, idx) =>
-      idx === sIdx
-        ? {
-            ...s,
-            stackIndex: targetStackIndex,
-            label: target ? defaultSessionLabel(target) : s.label,
-            initialJsonFilter: undefined,
-          }
-        : s,
+      idx === sIdx ? { ...s, historyIndex: targetHistoryIndex } : s,
     );
     set({
       ...syncActiveSession(nextSessions, sIdx),
@@ -628,37 +603,164 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
     return true;
   },
 
-  closeInspector: () =>
-    set({
-      sessions: [],
-      activeSessionIndex: -1,
-      stack: [],
-      stackIndex: -1,
-      activeTab: 'pretty',
-      mobileInspectorOpen: false,
-      inspectorMaximized: false,
-    }),
-
   setActiveTab: (activeTab) =>
     set((state) => {
       if (state.activeSessionIndex < 0) {
         return { activeTab };
       }
-      const nextSessions = state.sessions.map((s, idx) =>
-        idx === state.activeSessionIndex ? { ...s, activeTab } : s,
-      );
-      return { sessions: nextSessions, activeTab };
+      const nextSessions = state.sessions.map((s, idx) => {
+        if (idx !== state.activeSessionIndex) return s;
+        const nextHistory = s.history.map((item, hIdx) =>
+          hIdx === s.historyIndex ? { ...item, activeTab } : item,
+        );
+        return { ...s, history: nextHistory };
+      });
+      return syncActiveSession(nextSessions, state.activeSessionIndex);
+    }),
+
+  saveEntryScroll: (tab, scrollTop) =>
+    set((state) => {
+      if (state.activeSessionIndex < 0) return {};
+      const active = state.sessions[state.activeSessionIndex];
+      const current = active?.history[active.historyIndex];
+      if (!active || !current) return {};
+      const rounded = Math.max(0, Math.round(scrollTop));
+      if (current.scrollByTab[tab] === rounded) return {};
+
+      const nextSessions = state.sessions.map((s, idx) => {
+        if (idx !== state.activeSessionIndex) return s;
+        const nextHistory = s.history.map((item, hIdx) =>
+          hIdx === s.historyIndex
+            ? { ...item, scrollByTab: { ...item.scrollByTab, [tab]: rounded } }
+            : item,
+        );
+        return { ...s, history: nextHistory };
+      });
+      return syncActiveSession(nextSessions, state.activeSessionIndex);
+    }),
+
+  saveEntryJsonState: (patch) =>
+    set((state) => {
+      if (state.activeSessionIndex < 0) return {};
+      const active = state.sessions[state.activeSessionIndex];
+      const current = active?.history[active.historyIndex];
+      if (!active || !current) return {};
+
+      const nextSessions = state.sessions.map((s, idx) => {
+        if (idx !== state.activeSessionIndex) return s;
+        const nextHistory = s.history.map((item, hIdx) =>
+          hIdx === s.historyIndex
+            ? {
+                ...item,
+                ...(patch.jsonFilter !== undefined ? { jsonFilter: patch.jsonFilter } : {}),
+                ...(patch.jsonExpanded !== undefined
+                  ? { jsonExpanded: patch.jsonExpanded }
+                  : {}),
+              }
+            : item,
+        );
+        return { ...s, history: nextHistory };
+      });
+      return syncActiveSession(nextSessions, state.activeSessionIndex);
+    }),
+
+  updateEntryMeta: (table, hash, meta) =>
+    set((state) => {
+      const unsigned = hash >>> 0;
+      const trimmedLabel = meta.label?.trim();
+      let changed = false;
+
+      const nextSessions = state.sessions.map((s) => {
+        let sessionChanged = false;
+        const nextHistory = s.history.map((item) => {
+          if (item.table !== table || item.hash !== unsigned) return item;
+          const nextLabel = trimmedLabel && trimmedLabel.length > 0 ? trimmedLabel : item.label;
+          const nextIcon = meta.icon ?? item.icon;
+          const nextCo = meta.hasCoTables ?? item.hasCoTables;
+          if (
+            nextLabel === item.label &&
+            nextIcon === item.icon &&
+            nextCo === item.hasCoTables
+          ) {
+            return item;
+          }
+          sessionChanged = true;
+          changed = true;
+          return {
+            ...item,
+            ...(nextLabel ? { label: nextLabel } : {}),
+            ...(nextIcon ? { icon: nextIcon } : {}),
+            ...(nextCo !== undefined ? { hasCoTables: nextCo } : {}),
+          };
+        });
+        return sessionChanged ? { ...s, history: nextHistory } : s;
+      });
+
+      if (!changed) return {};
+      return syncActiveSession(nextSessions, state.activeSessionIndex);
+    }),
+
+  hydrateEntrySummaries: (summaries) =>
+    set((state) => {
+      let changed = false;
+      const nextSessions = state.sessions.map((s) => {
+        let sessionChanged = false;
+        const nextHistory = s.history.map((item) => {
+          const summary = summaries[`${item.table}:${item.hash}`];
+          if (!summary) return item;
+          const nextLabel = summary.name?.trim() || item.label;
+          const nextIcon = summary.icon ?? item.icon;
+          const nextCo = summary.hasCoTables ?? item.hasCoTables;
+          if (
+            nextLabel === item.label &&
+            nextIcon === item.icon &&
+            nextCo === item.hasCoTables
+          ) {
+            return item;
+          }
+          sessionChanged = true;
+          changed = true;
+          return {
+            ...item,
+            ...(nextLabel ? { label: nextLabel } : {}),
+            ...(nextIcon ? { icon: nextIcon } : {}),
+            ...(nextCo !== undefined ? { hasCoTables: nextCo } : {}),
+          };
+        });
+        return sessionChanged ? { ...s, history: nextHistory } : s;
+      });
+
+      if (!changed) return {};
+      return syncActiveSession(nextSessions, state.activeSessionIndex);
+    }),
+
+  closeInspector: () =>
+    set({
+      sessions: [],
+      activeSessionIndex: -1,
+      history: [],
+      historyIndex: -1,
+      activeTab: 'pretty',
+      mobileInspectorOpen: false,
+      inspectorMaximized: false,
     }),
 
   pinForDiff: (ref) =>
     set((state) => {
-      const nextSessions =
-        state.activeSessionIndex >= 0
-          ? state.sessions.map((s, idx) =>
-              idx === state.activeSessionIndex ? { ...s, activeTab: 'diff' as const } : s,
-            )
-          : state.sessions;
-      return { pinnedDiffRef: ref, activeTab: 'diff', sessions: nextSessions };
+      if (state.activeSessionIndex < 0) {
+        return { pinnedDiffRef: ref, activeTab: 'diff' };
+      }
+      const nextSessions = state.sessions.map((s, idx) => {
+        if (idx !== state.activeSessionIndex) return s;
+        const nextHistory = s.history.map((item, hIdx) =>
+          hIdx === s.historyIndex ? { ...item, activeTab: 'diff' as const } : item,
+        );
+        return { ...s, history: nextHistory };
+      });
+      return {
+        pinnedDiffRef: ref,
+        ...syncActiveSession(nextSessions, state.activeSessionIndex),
+      };
     }),
 
   clearPinnedDiff: () => set({ pinnedDiffRef: null }),
@@ -714,15 +816,12 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
     let activeIdx = -1;
 
     if (segments[0] === 't' && segments[1]) {
-      // Shared tab group: #/t/InventoryItem:1363886209,SandboxPerk:2923251173?active=0
       const rawRefs = segments[1].split(',').map(parseRefSegment);
       const validRefs = rawRefs.filter((r): r is DefinitionRef => r !== null);
       sessions = validRefs.map((ref) => ({
         id: createSessionId(),
-        stack: [ref],
-        stackIndex: 0,
-        label: defaultSessionLabel(ref),
-        activeTab: 'pretty',
+        history: [createHistoryEntry(ref)],
+        historyIndex: 0,
       }));
       const activeParam = Number.parseInt(params.get('active') ?? '0', 10);
       activeIdx =
@@ -731,15 +830,15 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
           : -1;
     } else if (segments[0] === 'i') {
       const refs = segments.slice(1).map(parseRefSegment);
-      const stack = refs.filter((ref): ref is DefinitionRef => ref !== null);
-      if (stack.length > 0) {
+      const history = refs
+        .filter((ref): ref is DefinitionRef => ref !== null)
+        .map((ref) => createHistoryEntry(ref));
+      if (history.length > 0) {
         sessions = [
           {
             id: createSessionId(),
-            stack,
-            stackIndex: stack.length - 1,
-            label: defaultSessionLabel(stack[stack.length - 1]!),
-            activeTab: 'pretty',
+            history,
+            historyIndex: history.length - 1,
           },
         ];
         activeIdx = 0;
@@ -773,8 +872,8 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
     let base = '#/';
     if (sessions.length > 1) {
       const tabTokens = sessions
-        .map((s) => s.stack[s.stackIndex])
-        .filter((r): r is DefinitionRef => r !== undefined)
+        .map((s) => s.history[s.historyIndex])
+        .filter((r): r is TabHistoryEntry => r !== undefined)
         .map((ref) => `${encodeURIComponent(shortTableName(ref.table))}:${ref.hash}`);
       if (tabTokens.length > 0) {
         base = `#/t/${tabTokens.join(',')}`;
@@ -784,7 +883,7 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
       }
     } else if (sessions.length === 1) {
       const s = sessions[0]!;
-      const cur = s.stack[s.stackIndex];
+      const cur = s.history[s.historyIndex];
       if (cur) {
         base = `#/i/${encodeURIComponent(shortTableName(cur.table))}:${cur.hash}`;
       }
@@ -797,16 +896,18 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
   buildTabGroupShareUrl: () => {
     const { sessions, activeSessionIndex } = get();
     const tabTokens = sessions
-      .map((s) => s.stack[s.stackIndex])
-      .filter((r): r is DefinitionRef => r !== undefined)
+      .map((s) => s.history[s.historyIndex])
+      .filter((r): r is TabHistoryEntry => r !== undefined)
       .map((ref) => `${encodeURIComponent(shortTableName(ref.table))}:${ref.hash}`);
+
+    const origin =
+      typeof window !== 'undefined'
+        ? `${window.location.origin}${window.location.pathname}`
+        : '';
     if (tabTokens.length === 0) {
-      return window.location.href;
+      return `${origin}#/`;
     }
-    const base =
-      tabTokens.length === 1
-        ? `#/i/${tabTokens[0]}`
-        : `#/t/${tabTokens.join(',')}${activeSessionIndex > 0 ? `?active=${activeSessionIndex}` : ''}`;
-    return `${window.location.origin}${window.location.pathname}${base}`;
+    const suffix = activeSessionIndex > 0 ? `?active=${activeSessionIndex}` : '';
+    return `${origin}#/t/${tabTokens.join(',')}${suffix}`;
   },
 }));

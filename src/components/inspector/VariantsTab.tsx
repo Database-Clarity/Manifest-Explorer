@@ -44,7 +44,7 @@ export function VariantsTab({
   }
 
   return (
-    <div className={styles.scrollBody}>
+    <div className={styles.scrollBody} data-inspector-scroll="true">
       <div className={styles.metaHeader}>
         {variants.length} definitions share this name family.
       </div>
@@ -53,6 +53,12 @@ export function VariantsTab({
           const isCurrent =
             item.hash === currentRef.hash && item.table === currentRef.table;
           const tierColor = getTierColorVar(item.tierType);
+          const itemNavRef: DefinitionRef = {
+            table: item.table,
+            hash: item.hash,
+            label: item.name || undefined,
+            icon: item.icon,
+          };
           return (
             <div
               key={`${item.table}:${item.hash}`}
@@ -64,14 +70,14 @@ export function VariantsTab({
                 title="Click to open in tab · Ctrl+Click or middle-click for new tab"
                 onClick={(event) =>
                   onNavigateRef(
-                    { table: item.table, hash: item.hash },
+                    itemNavRef,
                     event.ctrlKey || event.metaKey || event.shiftKey,
                   )
                 }
                 onAuxClick={(event) => {
                   if (event.button === 1) {
                     event.preventDefault();
-                    onNavigateRef({ table: item.table, hash: item.hash }, true);
+                    onNavigateRef(itemNavRef, true);
                   }
                 }}
               >

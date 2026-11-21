@@ -97,7 +97,12 @@
   font-size: 0.6875rem;
   line-height: 1rem;
   text-align: center;
-  cursor: pointer;
+  pointer-events: none;
+  user-select: none;
+
+  .searchField:focus-within & {
+    display: none;
+  }
 
   @include theme.mobile {
     display: none;

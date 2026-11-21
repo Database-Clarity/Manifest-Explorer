@@ -12,6 +12,7 @@ import type {
   DefinitionDetailPayload,
   FilterCatalog,
   ManifestStatus,
+  ResolvedSummaryEntry,
   ReverseReferenceResponse,
   SearchFilters,
   SearchResponse,
@@ -33,6 +34,7 @@ import type {
   InitRequest,
   LoadAllTablesRequest,
   LoadTableRequest,
+  ResolveSummariesRequest,
   SearchRequest,
   UpdateCheckResult,
   WorkerEvent,
@@ -233,4 +235,15 @@ export function getCacheStats(): Promise<CacheStatsResult> {
 export function getFilterCatalog(): Promise<FilterCatalog> {
   const request: GetFilterCatalogRequest = { type: 'getFilterCatalog', id: ++nextId };
   return send<GetFilterCatalogRequest, FilterCatalog>(request);
+}
+
+export function resolveSummaries(
+  refs: Array<{ table: string; hash: number }>,
+): Promise<Record<string, ResolvedSummaryEntry>> {
+  const request: ResolveSummariesRequest = {
+    type: 'resolveSummaries',
+    id: ++nextId,
+    refs,
+  };
+  return send<ResolveSummariesRequest, Record<string, ResolvedSummaryEntry>>(request);
 }

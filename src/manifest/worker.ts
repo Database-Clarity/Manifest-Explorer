@@ -25,6 +25,7 @@ import type {
   OverviewSocketPlug,
   OverviewStat,
   ResolvedHashSummary,
+  ResolvedSummaryEntry,
   ReverseReference,
   ReverseReferenceResponse,
   SearchFilters,
@@ -169,6 +170,12 @@ export interface GetFilterCatalogRequest {
   id: number;
 }
 
+export interface ResolveSummariesRequest {
+  type: 'resolveSummaries';
+  id: number;
+  refs: Array<{ table: string; hash: number }>;
+}
+
 export type WorkerRequest =
   | InitRequest
   | SearchRequest
@@ -182,7 +189,8 @@ export type WorkerRequest =
   | CheckForUpdatesRequest
   | ClearCacheRequest
   | GetCacheStatsRequest
-  | GetFilterCatalogRequest;
+  | GetFilterCatalogRequest
+  | ResolveSummariesRequest;
 
 export interface WorkerSuccessResponse {
   id: number;
@@ -2085,6 +2093,63 @@ async function getCacheStats(): Promise<CacheStatsResult> {
   };
 }
 
+async function resolveSummaries(
+  refs: Array<{ table: string; hash: number }>,
+): Promise<Record<string, ResolvedSummaryEntry>> {
+  const result: Record<string, ResolvedSummaryEntry> = {};
+
+  for (const ref of refs) {
+    const unsigned = toUnsignedHash(ref.hash);
+    const key = `${ref.table}:${unsigned}`;
+    const coTables = tablesByHash.get(unsigned);
+    const hasCoTables = coTables !== undefined && coTables.size > 1;
+
+    const indexed = entriesByTableAndHash.get(key);
+    if (indexed) {
+      result[key] = {
+        name: indexed.name,
+        ...(indexed.icon ? { icon: indexed.icon } : {}),
+        ...(hasCoTables ? { hasCoTables: true } : {}),
+      };
+      continue;
+    }
+
+    if (ref.table === INVENTORY_ITEM_TABLE) {
+      const cachedFull = fullItemLru.get(unsigned);
+      if (cachedFull) {
+        const summary = extractTableEntrySummary(ref.table, String(unsigned), cachedFull);
+        result[key] = {
+          name: summary.name,
+          ...(summary.icon ? { icon: summary.icon } : {}),
+          ...(hasCoTables ? { hasCoTables: true } : {}),
+        };
+        continue;
+      }
+    }
+
+    let raw = tableDataMap.get(ref.table)?.[String(unsigned)];
+    if (!raw && state.versionSignature) {
+      const idbTable = await getTableData(state.locale, state.versionSignature, ref.table);
+      if (idbTable) {
+        tableDataMap.set(ref.table, idbTable);
+        raw = idbTable[String(unsigned)];
+      }
+    }
+    if (raw) {
+      const summary = extractTableEntrySummary(ref.table, String(unsigned), raw);
+      result[key] = {
+        name: summary.name,
+        ...(summary.icon ? { icon: summary.icon } : {}),
+        ...(hasCoTables ? { hasCoTables: true } : {}),
+      };
+    } else if (hasCoTables) {
+      result[key] = { name: '', hasCoTables: true };
+    }
+  }
+
+  return result;
+}
+
 // ---------------------------------------------------------------------------
 // RPC dispatch
 // ---------------------------------------------------------------------------
@@ -2117,6 +2182,8 @@ async function dispatch(message: WorkerRequest): Promise<unknown> {
       return getCacheStats();
     case 'getFilterCatalog':
       return getFilterCatalog();
+    case 'resolveSummaries':
+      return resolveSummaries(message.refs);
   }
 }
 

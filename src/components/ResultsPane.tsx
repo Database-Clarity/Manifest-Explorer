@@ -364,8 +364,8 @@ export function ResultsPane({ onOpenItem, onRetryBoot }: ResultsPaneProps): Reac
   const setQuery = useExplorerStore((state) => state.setQuery);
   const setTableFilter = useExplorerStore((state) => state.setTableFilter);
   const resetFilters = useExplorerStore((state) => state.resetFilters);
-  const stack = useExplorerStore((state) => state.stack);
-  const stackIndex = useExplorerStore((state) => state.stackIndex);
+  const history = useExplorerStore((state) => state.history);
+  const historyIndex = useExplorerStore((state) => state.historyIndex);
 
   const sortMode = useSettingsStore((state) => state.sortMode);
   const setSortMode = useSettingsStore((state) => state.setSortMode);
@@ -563,7 +563,7 @@ export function ResultsPane({ onOpenItem, onRetryBoot }: ResultsPaneProps): Reac
     ? `results-option-${clampedSelectedIndex}`
     : undefined;
 
-  const activeRef = stackIndex >= 0 ? stack[stackIndex] : undefined;
+  const activeRef = historyIndex >= 0 ? history[historyIndex] : undefined;
 
   const handleViewModeChange = useCallback(
     (mode: ViewMode) => {

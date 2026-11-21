@@ -45,11 +45,16 @@ export function CollectorPopover({ open, onClose, anchorRef }: CollectorPopoverP
   const removeItem = useCollectorStore((state) => state.removeItem);
   const clearAll = useCollectorStore((state) => state.clearAll);
 
-  const openDefinition = useExplorerStore((state) => state.openDefinition);
+  const openInNewTab = useExplorerStore((state) => state.openInNewTab);
   const pushNotice = useExplorerStore((state) => state.pushNotice);
 
   function handleInspect(item: CollectedItem): void {
-    openDefinition({ table: item.table, hash: item.hash });
+    openInNewTab({
+      table: item.table,
+      hash: item.hash,
+      label: item.name || undefined,
+      icon: item.icon,
+    });
     onClose();
   }
 

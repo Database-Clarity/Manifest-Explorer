@@ -128,6 +128,17 @@ export interface ManifestStatus {
 export interface DefinitionRef {
   table: string;
   hash: number;
+  /** Optional display name known at click time so tabs & history never flash Table:Hash. */
+  label?: string;
+  /** Optional icon path known at click time. */
+  icon?: string;
+}
+
+export interface ResolvedSummaryEntry {
+  name: string;
+  icon?: string;
+  /** True when the same unsigned hash exists in more than one manifest table/category. */
+  hasCoTables?: boolean;
 }
 
 export interface ResolvedHashSummary {

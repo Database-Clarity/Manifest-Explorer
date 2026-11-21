@@ -10,14 +10,15 @@ export interface HelpDialogProps {
 }
 
 const SHORTCUTS: ReadonlyArray<readonly [string, string]> = [
-  ['/', 'Focus search'],
-  ['Ctrl+K', 'Focus search from anywhere'],
-  ['↑/↓', 'Move the result selection'],
+  ['/', 'Jump to search bar (when not typing)'],
+  ['Ctrl+K', 'Jump to search bar from anywhere'],
+  ['↑ / ↓', 'Move the result selection'],
   ['Enter', 'Open the selected result in a new tab'],
-  ['Ctrl+Click / Middle-click', 'Open an in-definition link in a new tab'],
-  ['Alt+←/→ / Browser Back', 'Step through the active tab history'],
+  ['Ctrl+Click', 'Open an in-definition link in a new tab'],
+  ['Middle-click', 'Open a link in a new tab, or close a tab'],
+  ['Alt+← / Alt+→', 'Step through the active tab history/future'],
   ['Alt+W', 'Close the active tab'],
-  ['Esc', 'Close the inspector, search focus, or a dialog'],
+  ['Esc', 'Close a dialog, search focus, or the inspector'],
   ['1–6', 'Switch inspector tab'],
   ['c', 'Copy the current definition hash'],
   ['Shift+C', 'Copy the current definition JSON'],

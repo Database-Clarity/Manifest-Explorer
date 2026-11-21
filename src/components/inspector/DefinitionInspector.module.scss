@@ -135,6 +135,18 @@
   white-space: nowrap;
 }
 
+.sessionTabCat {
+  flex-shrink: 0;
+  padding: 0 0.25rem;
+  border: 1px solid var(--hair);
+  border-radius: 0.125rem;
+  background: var(--col);
+  color: var(--text3);
+  font-size: 0.625rem;
+  font-weight: 500;
+  line-height: 1.3;
+}
+
 .sessionCloseBtn {
   display: inline-flex;
   align-items: center;
@@ -240,7 +252,7 @@
   }
 }
 
-.breadcrumbs {
+.historyBanner {
   display: flex;
   align-items: center;
   gap: 0.125rem;
@@ -255,25 +267,36 @@
   }
 }
 
-.crumbItem {
+.historyItem {
   display: inline-flex;
   align-items: center;
   gap: 0.125rem;
+  flex-shrink: 0;
 }
 
-.crumbSep {
+.historySep {
   color: var(--text3);
   font-size: 0.75rem;
+  padding: 0 0.0625rem;
+  user-select: none;
 }
 
-.crumbBtn {
-  padding: 0.125rem 0.25rem;
-  border: 0;
+.historySepFuture {
+  opacity: 0.55;
+}
+
+.historyBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  max-width: 13rem;
+  padding: 0.125rem 0.375rem;
+  border: 1px solid transparent;
   border-radius: 0.1875rem;
   background: transparent;
-  color: var(--text2);
-  font-family: var(--code-font-family);
+  font: inherit;
   font-size: 0.75rem;
+  line-height: 1.25;
   cursor: pointer;
 
   @media (hover: hover) {
@@ -288,9 +311,47 @@
   }
 }
 
-.crumbCurrent {
+.historyBtnLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.historyPast {
+  color: var(--text2);
+}
+
+.historyCurrent {
+  background: var(--sel);
+  border-color: var(--hair);
   color: var(--text);
-  font-weight: 600;
+  font-weight: 700;
+}
+
+.historyFuture {
+  color: var(--text3);
+  font-style: italic;
+
+  @media (hover: hover) {
+    &:hover {
+      color: var(--text);
+      font-style: normal;
+    }
+  }
+}
+
+.historyCat {
+  flex-shrink: 0;
+  padding: 0 0.25rem;
+  border: 1px solid var(--hair);
+  border-radius: 0.125rem;
+  background: var(--col);
+  color: var(--text3);
+  font-family: var(--code-font-family);
+  font-size: 0.625rem;
+  font-style: normal;
+  font-weight: 500;
+  line-height: 1.3;
 }
 
 .entityHeader {

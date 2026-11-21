@@ -70,14 +70,13 @@ export function Popover({
       const maxLeft = Math.max(VIEWPORT_INSET, viewportWidth - panelWidth - VIEWPORT_INSET);
       const left = Math.min(Math.max(preferredLeft, VIEWPORT_INSET), maxLeft);
 
+      const maxTop = Math.max(VIEWPORT_INSET, viewportHeight - panelHeight - VIEWPORT_INSET);
       let top = rect.bottom + ANCHOR_GAP;
       if (top + panelHeight > viewportHeight - VIEWPORT_INSET) {
         const above = rect.top - panelHeight - ANCHOR_GAP;
-        top =
-          above >= VIEWPORT_INSET
-            ? above
-            : Math.max(VIEWPORT_INSET, viewportHeight - panelHeight - VIEWPORT_INSET);
+        top = above >= VIEWPORT_INSET && above <= maxTop ? above : maxTop;
       }
+      top = Math.min(Math.max(top, VIEWPORT_INSET), maxTop);
 
       setPosition({ top, left });
     };

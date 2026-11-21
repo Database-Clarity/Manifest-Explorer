@@ -84,8 +84,13 @@ function tierStyle(tierType?: number): { color: string } | undefined {
   return color ? { color } : undefined;
 }
 
-function itemRef(hash: number): DefinitionRef {
-  return { table: 'DestinyInventoryItemDefinition', hash };
+function itemRef(hash: number, label?: string, icon?: string): DefinitionRef {
+  return {
+    table: 'DestinyInventoryItemDefinition',
+    hash,
+    ...(label ? { label } : {}),
+    ...(icon ? { icon } : {}),
+  };
 }
 
 function totalPlugs(category: OverviewSocketCategory): number {
@@ -138,7 +143,7 @@ function PlugPool({ plugs, onNavigate }: PlugPoolProps): ReactNode {
           {visible.map((plug, index) => (
             <RefButton
               key={`${plug.hash}-${index}`}
-              ref={itemRef(plug.hash)}
+              ref={itemRef(plug.hash, plug.name, plug.icon)}
               className={styles.plugCell}
               title={plug.description || plug.name}
               onNavigate={onNavigate}
@@ -189,7 +194,7 @@ function SocketSlot({ socket, onNavigate }: SocketSlotProps): ReactNode {
       <div className={styles.socketSlot}>
         {primaryPlug ? (
           <RefButton
-            ref={itemRef(primaryPlug.hash)}
+            ref={itemRef(primaryPlug.hash, primaryPlug.name, primaryPlug.icon)}
             className={styles.entityRow}
             title={primaryPlug.description || primaryPlug.name}
             onNavigate={onNavigate}
@@ -338,6 +343,7 @@ function SocketsSection({ categories, onNavigate }: SocketsSectionProps): ReactN
                   ref={{
                     table: 'DestinySocketCategoryDefinition',
                     hash: category.categoryHash,
+                    label: category.name || undefined,
                   }}
                   className={styles.inlineLink}
                   onNavigate={onNavigate}
@@ -400,7 +406,7 @@ export function OverviewTab({
     Boolean(clarityEntry);
 
   return (
-    <div className={styles.scrollBody}>
+    <div className={styles.scrollBody} data-inspector-scroll="true">
       {detail.isLite && (
         <div className={styles.noticeBanner}>
           <span>
@@ -476,6 +482,8 @@ export function OverviewTab({
                     ref={{
                       table: 'DestinyDamageTypeDefinition',
                       hash: overview.damageType.hash,
+                      label: overview.damageType.name || undefined,
+                      icon: overview.damageType.icon,
                     }}
                     className={styles.inlineLink}
                     onNavigate={onNavigateRef}
@@ -504,7 +512,11 @@ export function OverviewTab({
                   {overview.categories.map((cat) => (
                     <RefButton
                       key={cat.hash}
-                      ref={{ table: 'DestinyItemCategoryDefinition', hash: cat.hash }}
+                      ref={{
+                        table: 'DestinyItemCategoryDefinition',
+                        hash: cat.hash,
+                        label: cat.name || undefined,
+                      }}
                       className={styles.inlineLink}
                       onNavigate={onNavigateRef}
                     >
@@ -555,7 +567,11 @@ export function OverviewTab({
               return (
                 <div key={stat.statHash} className={styles.statRow}>
                   <RefButton
-                    ref={{ table: 'DestinyStatDefinition', hash: stat.statHash }}
+                    ref={{
+                      table: 'DestinyStatDefinition',
+                      hash: stat.statHash,
+                      label: stat.name || undefined,
+                    }}
                     className={styles.statName}
                     title={stat.description}
                     onNavigate={onNavigateRef}
@@ -592,7 +608,12 @@ export function OverviewTab({
             {overview.perks.map((perk) => (
               <RefButton
                 key={perk.perkHash}
-                ref={{ table: 'DestinySandboxPerkDefinition', hash: perk.perkHash }}
+                ref={{
+                  table: 'DestinySandboxPerkDefinition',
+                  hash: perk.perkHash,
+                  label: perk.name || undefined,
+                  icon: perk.icon,
+                }}
                 className={styles.entityRow}
                 onNavigate={onNavigateRef}
               >
@@ -619,6 +640,7 @@ export function OverviewTab({
             ref={{
               table: 'DestinyCollectibleDefinition',
               hash: overview.collectible.hash,
+              label: overview.collectible.name || undefined,
             }}
             className={styles.entityRow}
             onNavigate={onNavigateRef}
@@ -641,7 +663,11 @@ export function OverviewTab({
           <h3 className={styles.sectionTitle}>
             Lore —{' '}
             <RefButton
-              ref={{ table: 'DestinyLoreDefinition', hash: overview.lore.loreHash }}
+              ref={{
+                table: 'DestinyLoreDefinition',
+                hash: overview.lore.loreHash,
+                label: overview.lore.name || undefined,
+              }}
               className={styles.inlineLink}
               onNavigate={onNavigateRef}
             >
@@ -664,7 +690,12 @@ export function OverviewTab({
             {overview.linkedEntities.map((ent, idx) => (
               <RefButton
                 key={`${ent.table}-${ent.hash}-${idx}`}
-                ref={{ table: ent.table, hash: ent.hash }}
+                ref={{
+                  table: ent.table,
+                  hash: ent.hash,
+                  label: ent.name || undefined,
+                  icon: ent.icon,
+                }}
                 className={styles.entityRow}
                 onNavigate={onNavigateRef}
               >

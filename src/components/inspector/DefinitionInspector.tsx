@@ -1,4 +1,12 @@
-import { useCallback, useMemo, useRef, type PointerEvent, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  type PointerEvent,
+  type ReactNode,
+  type UIEvent,
+} from 'react';
 import type {
   ClarityDescriptionEntry,
   DefinitionDetailPayload,
@@ -10,7 +18,7 @@ import type {
 import { toSignedHash, toUnsignedHash } from '../../manifest/hash';
 import { getShortTableName } from '../../manifest/tables';
 import { useCollectorStore } from '../../stores/collector';
-import { useExplorerStore } from '../../stores/explorer';
+import { fallbackEntryLabel, useExplorerStore } from '../../stores/explorer';
 import { useSettingsStore } from '../../stores/settings';
 import {
   ArrowLeftIcon,
@@ -82,10 +90,10 @@ export interface DefinitionInspectorProps {
   clarityEntry: ClarityDescriptionEntry | null;
   clarityLoading: boolean;
   showClarity: boolean;
-  onNavigateRef: (ref: DefinitionRef, pushToStack?: boolean, inNewTab?: boolean) => void;
+  onNavigateRef: (ref: DefinitionRef, inNewTab?: boolean) => void;
   onNavigateBack: () => void;
   onNavigateForward: () => void;
-  onJumpToStackIndex: (index: number) => void;
+  onJumpToHistoryIndex: (index: number) => void;
   onSwitchSession: (index: number) => void;
   onLoadFullItem: () => void;
   onLoadPriorityTable: (table: string) => void;
@@ -121,7 +129,7 @@ export function DefinitionInspector({
   onNavigateRef,
   onNavigateBack,
   onNavigateForward,
-  onJumpToStackIndex,
+  onJumpToHistoryIndex,
   onSwitchSession,
   onLoadFullItem,
   onLoadPriorityTable,
@@ -129,8 +137,8 @@ export function DefinitionInspector({
 }: DefinitionInspectorProps): ReactNode {
   const sessions = useExplorerStore((s) => s.sessions);
   const activeSessionIndex = useExplorerStore((s) => s.activeSessionIndex);
-  const stack = useExplorerStore((s) => s.stack);
-  const stackIndex = useExplorerStore((s) => s.stackIndex);
+  const history = useExplorerStore((s) => s.history);
+  const historyIndex = useExplorerStore((s) => s.historyIndex);
   const activeTab = useExplorerStore((s) => s.activeTab);
   const pinnedDiffRef = useExplorerStore((s) => s.pinnedDiffRef);
   const inspectorMaximized = useExplorerStore((s) => s.inspectorMaximized);
@@ -138,6 +146,8 @@ export function DefinitionInspector({
   const toggleInspectorMaximized = useExplorerStore((s) => s.toggleInspectorMaximized);
   const closeInspector = useExplorerStore((s) => s.closeInspector);
   const setActiveTab = useExplorerStore((s) => s.setActiveTab);
+  const saveEntryScroll = useExplorerStore((s) => s.saveEntryScroll);
+  const saveEntryJsonState = useExplorerStore((s) => s.saveEntryJsonState);
   const pinForDiff = useExplorerStore((s) => s.pinForDiff);
   const clearPinnedDiff = useExplorerStore((s) => s.clearPinnedDiff);
   const pushNotice = useExplorerStore((s) => s.pushNotice);
@@ -150,8 +160,160 @@ export function DefinitionInspector({
 
   const activeSession =
     activeSessionIndex >= 0 ? sessions[activeSessionIndex] : undefined;
+  const activeEntry =
+    historyIndex >= 0 ? history[historyIndex] : undefined;
 
   const dragStartRef = useRef<{ x: number; startWidth: number } | null>(null);
+  const tabPanelRef = useRef<HTMLDivElement | null>(null);
+  const activeBannerItemRef = useRef<HTMLButtonElement | null>(null);
+  const scrollTimerRef = useRef<number | null>(null);
+  const liveScrollRef = useRef<{ tab: InspectorTab; top: number }>({
+    tab: activeTab,
+    top: 0,
+  });
+
+  // Synchronously persist the current scroll container's scrollTop before leaving
+  const flushScroll = useCallback(() => {
+    if (scrollTimerRef.current !== null) {
+      window.clearTimeout(scrollTimerRef.current);
+      scrollTimerRef.current = null;
+    }
+    const panel = tabPanelRef.current;
+    const scroller = panel?.querySelector<HTMLElement>('[data-inspector-scroll="true"]');
+    if (scroller) {
+      saveEntryScroll(activeTab, scroller.scrollTop);
+    }
+  }, [activeTab, saveEntryScroll]);
+
+  const handlePanelScrollCapture = useCallback(
+    (event: UIEvent<HTMLDivElement>) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement) || target.dataset.inspectorScroll !== 'true') {
+        return;
+      }
+      const top = target.scrollTop;
+      liveScrollRef.current = { tab: activeTab, top };
+
+      if (scrollTimerRef.current !== null) {
+        window.clearTimeout(scrollTimerRef.current);
+      }
+      scrollTimerRef.current = window.setTimeout(() => {
+        scrollTimerRef.current = null;
+        saveEntryScroll(liveScrollRef.current.tab, liveScrollRef.current.top);
+      }, 120);
+    },
+    [activeTab, saveEntryScroll],
+  );
+
+  useEffect(
+    () => () => {
+      if (scrollTimerRef.current !== null) {
+        window.clearTimeout(scrollTimerRef.current);
+        scrollTimerRef.current = null;
+      }
+    },
+    [],
+  );
+
+  // Restore saved scrollTop whenever switching tabs, stepping through history/future,
+  // switching sub-tabs, or finishing a detail load.
+  const targetScrollTop = activeEntry?.scrollByTab[activeTab] ?? 0;
+  useEffect(() => {
+    let raf1 = 0;
+    let raf2 = 0;
+    const apply = (): void => {
+      const scroller = tabPanelRef.current?.querySelector<HTMLElement>(
+        '[data-inspector-scroll="true"]',
+      );
+      if (scroller) {
+        scroller.scrollTop = targetScrollTop;
+      }
+    };
+
+    raf1 = window.requestAnimationFrame(() => {
+      apply();
+      if (targetScrollTop > 0) {
+        raf2 = window.requestAnimationFrame(apply);
+      }
+    });
+
+    return () => {
+      window.cancelAnimationFrame(raf1);
+      window.cancelAnimationFrame(raf2);
+    };
+  }, [
+    activeSession?.id,
+    historyIndex,
+    activeTab,
+    detail?.table,
+    detail?.hash,
+    detail?.isLite,
+    targetScrollTop,
+  ]);
+
+  // Keep the bolded current item scrolled into view inside the history/future banner
+  useEffect(() => {
+    activeBannerItemRef.current?.scrollIntoView({
+      inline: 'nearest',
+      block: 'nearest',
+    });
+  }, [activeSession?.id, historyIndex, history.length]);
+
+  const navigateWithFlush = useCallback(
+    (ref: DefinitionRef, inNewTab = false) => {
+      flushScroll();
+      onNavigateRef(ref, inNewTab);
+    },
+    [flushScroll, onNavigateRef],
+  );
+
+  const handleSubTabChange = useCallback(
+    (tab: InspectorTab) => {
+      flushScroll();
+      setActiveTab(tab);
+    },
+    [flushScroll, setActiveTab],
+  );
+
+  const handleBackClick = useCallback(() => {
+    flushScroll();
+    onNavigateBack();
+  }, [flushScroll, onNavigateBack]);
+
+  const handleForwardClick = useCallback(() => {
+    flushScroll();
+    onNavigateForward();
+  }, [flushScroll, onNavigateForward]);
+
+  const handleJumpClick = useCallback(
+    (idx: number) => {
+      flushScroll();
+      onJumpToHistoryIndex(idx);
+    },
+    [flushScroll, onJumpToHistoryIndex],
+  );
+
+  const handleSessionSwitch = useCallback(
+    (idx: number) => {
+      flushScroll();
+      onSwitchSession(idx);
+    },
+    [flushScroll, onSwitchSession],
+  );
+
+  const handleJsonFilterChange = useCallback(
+    (nextFilter: string) => {
+      saveEntryJsonState({ jsonFilter: nextFilter });
+    },
+    [saveEntryJsonState],
+  );
+
+  const handleJsonExpandedChange = useCallback(
+    (nextExpanded: Record<string, boolean>) => {
+      saveEntryJsonState({ jsonExpanded: nextExpanded });
+    },
+    [saveEntryJsonState],
+  );
 
   const copyText = useCallback(
     async (text: string, label: string) => {
@@ -190,6 +352,20 @@ export function DefinitionInspector({
     dragStartRef.current = null;
   }, []);
 
+  // Only disambiguate with category badge when the same hash appears in multiple categories
+  const bannerMultiCategoryHashes = useMemo(() => {
+    const tablesByHash = new Map<number, Set<string>>();
+    for (const item of history) {
+      let set = tablesByHash.get(item.hash);
+      if (!set) {
+        set = new Set();
+        tablesByHash.set(item.hash, set);
+      }
+      set.add(item.table);
+    }
+    return tablesByHash;
+  }, [history]);
+
   const displayProps = detail?.data.displayProperties as
     | { name?: string; icon?: string; description?: string }
     | undefined;
@@ -198,7 +374,8 @@ export function DefinitionInspector({
     (typeof detail?.data.statName === 'string' && detail.data.statName.trim()) ||
     (typeof detail?.data.progressDescription === 'string' &&
       detail.data.progressDescription.trim()) ||
-    (currentRef ? `${getShortTableName(currentRef.table)} ${currentRef.hash}` : '');
+    activeEntry?.label ||
+    (currentRef ? fallbackEntryLabel(currentRef) : '');
   const itemSubtitle =
     (typeof detail?.data.itemTypeAndTierDisplayName === 'string' &&
       detail.data.itemTypeAndTierDisplayName) ||
@@ -206,7 +383,9 @@ export function DefinitionInspector({
       detail.data.itemTypeDisplayName) ||
     (currentRef ? getShortTableName(currentRef.table) : '');
   const iconPath =
-    typeof displayProps?.icon === 'string' ? displayProps.icon : undefined;
+    typeof displayProps?.icon === 'string'
+      ? displayProps.icon
+      : activeEntry?.icon;
   const watermarkPath =
     typeof detail?.data.iconWatermark === 'string'
       ? detail.data.iconWatermark
@@ -214,7 +393,7 @@ export function DefinitionInspector({
   const tierType =
     typeof (detail?.data.inventory as { tierType?: unknown } | undefined)?.tierType ===
     'number'
-      ? ((detail?.data.inventory as { tierType: number }).tierType)
+      ? (detail?.data.inventory as { tierType: number }).tierType
       : undefined;
   const tierColor = getTierColorVar(tierType);
   const isEnhanced = isDefinitionEnhanced(detail?.data);
@@ -284,13 +463,16 @@ export function DefinitionInspector({
         />
       )}
 
-      {/* Open-definitions tab strip with per-tab history & tab-group sharing */}
+      {/* Open-definitions tab strip with tab-group sharing */}
       {sessions.length >= 1 && (
         <div className={styles.sessionBar} role="tablist" aria-label="Open definitions">
           <div className={styles.sessionTabsScroll}>
             {sessions.map((session, idx) => {
               const isActive = idx === activeSessionIndex;
-              const cur = session.stack[session.stackIndex];
+              const cur = session.history[session.historyIndex];
+              const tabLabel = cur
+                ? cur.label || fallbackEntryLabel(cur)
+                : 'Tab';
               return (
                 <div
                   key={session.id}
@@ -307,13 +489,20 @@ export function DefinitionInspector({
                     role="tab"
                     aria-selected={isActive}
                     className={styles.sessionTabBtn}
-                    onClick={() => onSwitchSession(idx)}
-                    title={cur ? `${cur.table}:${cur.hash}` : session.label}
+                    onClick={() => handleSessionSwitch(idx)}
+                    title={
+                      cur
+                        ? `${tabLabel} (${getShortTableName(cur.table)}:${cur.hash})`
+                        : tabLabel
+                    }
                   >
-                    {session.icon && (
-                      <BungieIcon icon={session.icon} size={16} />
+                    {cur?.icon && <BungieIcon icon={cur.icon} size={16} />}
+                    <span className={styles.sessionTabLabel}>{tabLabel}</span>
+                    {cur?.hasCoTables && cur.label && (
+                      <span className={styles.sessionTabCat}>
+                        {getShortTableName(cur.table)}
+                      </span>
                     )}
-                    <span className={styles.sessionTabLabel}>{session.label}</span>
                   </button>
                   <button
                     type="button"
@@ -322,7 +511,7 @@ export function DefinitionInspector({
                       e.stopPropagation();
                       closeSession(idx);
                     }}
-                    aria-label={`Close ${session.label}`}
+                    aria-label={`Close ${tabLabel}`}
                     title="Close tab"
                   >
                     <CloseIcon size={11} />
@@ -354,7 +543,7 @@ export function DefinitionInspector({
         </div>
       )}
 
-      {/* Top navigation / breadcrumb stack bar */}
+      {/* Unified History / Current / Future timeline banner */}
       <div className={styles.navBar}>
         <div className={styles.navButtons}>
           <button
@@ -370,9 +559,9 @@ export function DefinitionInspector({
           <button
             type="button"
             className={styles.iconBtn}
-            onClick={onNavigateBack}
-            disabled={stackIndex <= 0}
-            aria-label="Previous definition in this tab"
+            onClick={handleBackClick}
+            disabled={historyIndex <= 0}
+            aria-label="Back in tab history"
             title="Back in tab history (Alt+Left or Browser Back)"
           >
             <ArrowLeftIcon size={14} />
@@ -380,28 +569,59 @@ export function DefinitionInspector({
           <button
             type="button"
             className={styles.iconBtn}
-            onClick={onNavigateForward}
-            disabled={stackIndex < 0 || stackIndex >= stack.length - 1}
-            aria-label="Next definition in this tab"
+            onClick={handleForwardClick}
+            disabled={historyIndex < 0 || historyIndex >= history.length - 1}
+            aria-label="Forward in tab history"
             title="Forward in tab history (Alt+Right or Browser Forward)"
           >
             <ArrowRightIcon size={14} />
           </button>
         </div>
 
-        <nav className={styles.breadcrumbs} aria-label="Tab history">
-          {stack.slice(0, stackIndex + 1).map((entry, idx) => {
-            const isLast = idx === stackIndex;
+        <nav className={styles.historyBanner} aria-label="Tab history and future">
+          {history.map((entry, idx) => {
+            const isPast = idx < historyIndex;
+            const isCurrent = idx === historyIndex;
+            const isFuture = idx > historyIndex;
+            const displayLabel = entry.label || fallbackEntryLabel(entry);
+            const hashHasMultipleCategories =
+              Boolean(entry.hasCoTables) ||
+              (bannerMultiCategoryHashes.get(entry.hash)?.size ?? 0) > 1;
+            const showCategory = Boolean(entry.label) && hashHasMultipleCategories;
+            const shortCat = getShortTableName(entry.table);
+            const positionKind = isPast ? 'History' : isCurrent ? 'Current' : 'Forward';
+
             return (
-              <span key={`${entry.table}:${entry.hash}:${idx}`} className={styles.crumbItem}>
-                {idx > 0 && <span className={styles.crumbSep}>/</span>}
+              <span
+                key={`${entry.table}:${entry.hash}:${idx}`}
+                className={styles.historyItem}
+              >
+                {idx > 0 && (
+                  <span
+                    className={`${styles.historySep} ${isFuture ? styles.historySepFuture : ''}`}
+                    aria-hidden="true"
+                  >
+                    ›
+                  </span>
+                )}
                 <button
+                  ref={isCurrent ? activeBannerItemRef : undefined}
                   type="button"
-                  className={`${styles.crumbBtn} ${isLast ? styles.crumbCurrent : ''}`}
-                  onClick={() => onJumpToStackIndex(idx)}
-                  aria-current={isLast ? 'page' : undefined}
+                  className={`${styles.historyBtn} ${
+                    isCurrent
+                      ? styles.historyCurrent
+                      : isFuture
+                        ? styles.historyFuture
+                        : styles.historyPast
+                  }`}
+                  onClick={() => handleJumpClick(idx)}
+                  aria-current={isCurrent ? 'page' : undefined}
+                  title={`${positionKind}: ${displayLabel} (${shortCat}:${entry.hash})`}
                 >
-                  {getShortTableName(entry.table)}:{entry.hash}
+                  <span className={styles.historyBtnLabel}>{displayLabel}</span>
+                  {showCategory && (
+                    <span className={styles.historyCat}>{shortCat}</span>
+                  )}
                 </button>
               </span>
             );
@@ -511,7 +731,13 @@ export function DefinitionInspector({
             type="button"
             className={styles.actionBtn}
             onClick={() => {
-              pinForDiff(currentRef);
+              flushScroll();
+              pinForDiff({
+                table: currentRef.table,
+                hash: unsignedHash,
+                label: itemName,
+                icon: iconPath,
+              });
               pushNotice({ tone: 'info', message: `Pinned ${itemName} as diff baseline` });
             }}
             title="Pin as diff baseline"
@@ -546,7 +772,7 @@ export function DefinitionInspector({
           </button>
         </div>
 
-        {/* Same-hash cross-table switcher (like Deepsight's side rail) */}
+        {/* Same-hash cross-table switcher */}
         {detail && detail.coTables.length > 0 && (
           <div className={styles.coTableStrip} aria-label="Same hash in other tables">
             <span className={styles.coTableLabel}>Also in:</span>
@@ -556,16 +782,15 @@ export function DefinitionInspector({
                 type="button"
                 className={styles.coTableBtn}
                 onClick={(e) =>
-                  onNavigateRef(
+                  navigateWithFlush(
                     { table, hash: unsignedHash },
-                    true,
                     e.ctrlKey || e.metaKey || e.shiftKey,
                   )
                 }
                 onAuxClick={(e) => {
                   if (e.button === 1) {
                     e.preventDefault();
-                    onNavigateRef({ table, hash: unsignedHash }, true, true);
+                    navigateWithFlush({ table, hash: unsignedHash }, true);
                   }
                 }}
               >
@@ -593,7 +818,7 @@ export function DefinitionInspector({
               role="tab"
               aria-selected={selected}
               className={`${styles.tabBtn} ${selected ? styles.tabActive : ''}`}
-              onClick={() => setActiveTab(tab.id)}
+              onClick={() => handleSubTabChange(tab.id)}
             >
               <span className={styles.tabLabelFull}>
                 {tab.label}
@@ -608,8 +833,13 @@ export function DefinitionInspector({
         })}
       </div>
 
-      {/* Tab panel */}
-      <div className={styles.tabPanel} role="tabpanel">
+      {/* Tab panel (captures scroll across every tab for history state persistence) */}
+      <div
+        ref={tabPanelRef}
+        className={styles.tabPanel}
+        role="tabpanel"
+        onScrollCapture={handlePanelScrollCapture}
+      >
         {loading && !detail ? (
           <div className={styles.loadingState}>
             <Skeleton height="1.25rem" width="55%" />
@@ -629,12 +859,15 @@ export function DefinitionInspector({
           <>
             {activeTab === 'pretty' && (
               <JsonTree
-                key={`${currentRef.table}:${currentRef.hash}:${activeSession?.id ?? ''}`}
+                key={`${activeSession?.id ?? ''}:${historyIndex}:${currentRef.table}:${currentRef.hash}`}
                 data={detail.data}
                 resolvedRefs={detail.resolvedRefs}
-                initialFilter={activeSession?.initialJsonFilter}
+                initialFilter={activeEntry?.jsonFilter}
+                onFilterChange={handleJsonFilterChange}
+                initialExpanded={activeEntry?.jsonExpanded}
+                onExpandedChange={handleJsonExpandedChange}
                 imageScaling={imageScaling}
-                onNavigateRef={(ref, inNewTab) => onNavigateRef(ref, true, inNewTab)}
+                onNavigateRef={(ref, inNewTab) => navigateWithFlush(ref, inNewTab)}
                 onCopy={copyText}
               />
             )}
@@ -645,7 +878,7 @@ export function DefinitionInspector({
                 clarityEntry={clarityEntry}
                 clarityLoading={clarityLoading}
                 showClarity={showClarity}
-                onNavigateRef={(ref, inNewTab) => onNavigateRef(ref, true, inNewTab)}
+                onNavigateRef={(ref, inNewTab) => navigateWithFlush(ref, inNewTab)}
                 onLoadFullItem={onLoadFullItem}
               />
             )}
@@ -654,10 +887,16 @@ export function DefinitionInspector({
                 currentRef={currentRef}
                 variants={variants}
                 loading={variantsLoading}
-                onNavigateRef={(ref, inNewTab) => onNavigateRef(ref, true, inNewTab)}
+                onNavigateRef={(ref, inNewTab) => navigateWithFlush(ref, inNewTab)}
                 onDiffVariant={(variantRef) => {
-                  pinForDiff(currentRef);
-                  onNavigateRef(variantRef, true, false);
+                  flushScroll();
+                  pinForDiff({
+                    table: currentRef.table,
+                    hash: unsignedHash,
+                    label: itemName,
+                    icon: iconPath,
+                  });
+                  onNavigateRef(variantRef, false);
                   setActiveTab('diff');
                 }}
               />
@@ -666,7 +905,7 @@ export function DefinitionInspector({
               <ReferencesTab
                 response={references}
                 loading={referencesLoading}
-                onNavigateRef={(ref, inNewTab) => onNavigateRef(ref, true, inNewTab)}
+                onNavigateRef={(ref, inNewTab) => navigateWithFlush(ref, inNewTab)}
                 onLoadPriorityTable={onLoadPriorityTable}
               />
             )}
@@ -690,7 +929,9 @@ export function DefinitionInspector({
                     Download .json
                   </button>
                 </div>
-                <pre className={styles.rawPre}>{rawJsonText}</pre>
+                <pre className={styles.rawPre} data-inspector-scroll="true">
+                  {rawJsonText}
+                </pre>
               </div>
             )}
             {activeTab === 'diff' && (
@@ -699,9 +940,16 @@ export function DefinitionInspector({
                 pinnedRef={pinnedDiffRef}
                 pinnedDetail={pinnedDetail}
                 pinnedLoading={pinnedLoading}
-                onPinCurrent={() => pinForDiff(currentRef)}
+                onPinCurrent={() =>
+                  pinForDiff({
+                    table: currentRef.table,
+                    hash: unsignedHash,
+                    label: itemName,
+                    icon: iconPath,
+                  })
+                }
                 onClearPin={clearPinnedDiff}
-                onNavigateRef={(ref) => onNavigateRef(ref, true)}
+                onNavigateRef={(ref) => navigateWithFlush(ref, false)}
               />
             )}
           </>

@@ -48,7 +48,7 @@ export function ReferencesTab({
   }
 
   return (
-    <div className={styles.scrollBody}>
+    <div className={styles.scrollBody} data-inspector-scroll="true">
       {response && (
         <div className={styles.metaHeader}>
           <span>
@@ -97,14 +97,27 @@ export function ReferencesTab({
                   title="Click to open in tab · Ctrl+Click or middle-click for new tab"
                   onClick={(event) =>
                     onNavigateRef(
-                      { table: ref.sourceTable, hash: ref.sourceHash },
+                      {
+                        table: ref.sourceTable,
+                        hash: ref.sourceHash,
+                        label: ref.sourceName || undefined,
+                        icon: ref.sourceIcon,
+                      },
                       event.ctrlKey || event.metaKey || event.shiftKey,
                     )
                   }
                   onAuxClick={(event) => {
                     if (event.button === 1) {
                       event.preventDefault();
-                      onNavigateRef({ table: ref.sourceTable, hash: ref.sourceHash }, true);
+                      onNavigateRef(
+                        {
+                          table: ref.sourceTable,
+                          hash: ref.sourceHash,
+                          label: ref.sourceName || undefined,
+                          icon: ref.sourceIcon,
+                        },
+                        true,
+                      );
                     }
                   }}
                 >

@@ -35,8 +35,12 @@ export interface JsonTreeProps {
   resolvedRefs: Record<string, ResolvedHashSummary>;
   onNavigateRef: (ref: DefinitionRef, inNewTab?: boolean) => void;
   onCopy: (text: string, label: string) => void;
-  /** Seed/sync the filter, for example when a Deep Search result is opened. */
+  /** Seed/sync the filter, for example when restoring tab history or Deep Search. */
   initialFilter?: string;
+  onFilterChange?: (filter: string) => void;
+  /** Restored manual expand/collapse overrides keyed by JSON path. */
+  initialExpanded?: Record<string, boolean>;
+  onExpandedChange?: (expanded: Record<string, boolean>) => void;
   imageScaling?: ImageScalingMode;
 }
 
@@ -302,6 +306,8 @@ interface NodeProps {
   depth: number;
   filterLower: string;
   expandGeneration: { mode: 'default' | 'expand' | 'collapse'; seq: number };
+  expandedMap: Record<string, boolean>;
+  onTogglePath: (path: string, nextOpen: boolean) => void;
   resolvedRefs: Record<string, ResolvedHashSummary>;
   onNavigateRef: (ref: DefinitionRef, inNewTab?: boolean) => void;
   onCopy: (text: string, label: string) => void;
@@ -318,6 +324,8 @@ function JsonNode({
   depth,
   filterLower,
   expandGeneration,
+  expandedMap,
+  onTogglePath,
   resolvedRefs,
   onNavigateRef,
   onCopy,
@@ -329,13 +337,7 @@ function JsonNode({
     depth === 0 &&
     (nodeKey === 'displayProperties' || nodeKey === 'inventory' || nodeKey === 'equippingBlock');
 
-  const [manualOpen, setManualOpen] = useState<boolean | null>(null);
-  const [lastSeq, setLastSeq] = useState(expandGeneration.seq);
-
-  if (lastSeq !== expandGeneration.seq) {
-    setLastSeq(expandGeneration.seq);
-    setManualOpen(null);
-  }
+  const manualOpen = expandedMap[path] ?? null;
 
   const isExpanded =
     filterLower.length > 0
@@ -372,7 +374,12 @@ function JsonNode({
     const handleObjectRefClick = (event: MouseEvent<HTMLButtonElement>): void => {
       if (!objectKeyRef) return;
       onNavigateRef(
-        { table: objectKeyRef.table, hash: objectKeyRef.hash },
+        {
+          table: objectKeyRef.table,
+          hash: objectKeyRef.hash,
+          label: objectKeyRef.name || undefined,
+          icon: objectKeyRef.icon,
+        },
         event.ctrlKey || event.metaKey,
       );
     };
@@ -380,7 +387,15 @@ function JsonNode({
     const handleObjectRefAuxClick = (event: MouseEvent<HTMLButtonElement>): void => {
       if (event.button === 1 && objectKeyRef) {
         event.preventDefault();
-        onNavigateRef({ table: objectKeyRef.table, hash: objectKeyRef.hash }, true);
+        onNavigateRef(
+          {
+            table: objectKeyRef.table,
+            hash: objectKeyRef.hash,
+            label: objectKeyRef.name || undefined,
+            icon: objectKeyRef.icon,
+          },
+          true,
+        );
       }
     };
 
@@ -390,7 +405,7 @@ function JsonNode({
           <button
             type="button"
             className={styles.toggleBtn}
-            onClick={() => setManualOpen(!isExpanded)}
+            onClick={() => onTogglePath(path, !isExpanded)}
             aria-expanded={isExpanded}
             disabled={count === 0}
           >
@@ -467,6 +482,8 @@ function JsonNode({
                   depth={depth + 1}
                   filterLower={filterLower}
                   expandGeneration={expandGeneration}
+                  expandedMap={expandedMap}
+                  onTogglePath={onTogglePath}
                   resolvedRefs={resolvedRefs}
                   onNavigateRef={onNavigateRef}
                   onCopy={onCopy}
@@ -499,7 +516,12 @@ function JsonNode({
   const handleRefClick = (event: MouseEvent<HTMLButtonElement>): void => {
     if (!resolvedRef) return;
     onNavigateRef(
-      { table: resolvedRef.table, hash: resolvedRef.hash },
+      {
+        table: resolvedRef.table,
+        hash: resolvedRef.hash,
+        label: resolvedRef.name || undefined,
+        icon: resolvedRef.icon,
+      },
       event.ctrlKey || event.metaKey,
     );
   };
@@ -507,7 +529,15 @@ function JsonNode({
   const handleRefAuxClick = (event: MouseEvent<HTMLButtonElement>): void => {
     if (event.button === 1 && resolvedRef) {
       event.preventDefault();
-      onNavigateRef({ table: resolvedRef.table, hash: resolvedRef.hash }, true);
+      onNavigateRef(
+        {
+          table: resolvedRef.table,
+          hash: resolvedRef.hash,
+          label: resolvedRef.name || undefined,
+          icon: resolvedRef.icon,
+        },
+        true,
+      );
     }
   };
 
@@ -627,9 +657,15 @@ export function JsonTree({
   onNavigateRef,
   onCopy,
   initialFilter,
+  onFilterChange,
+  initialExpanded,
+  onExpandedChange,
   imageScaling = 'sharp',
 }: JsonTreeProps): ReactNode {
   const [filter, setFilter] = useState(initialFilter ?? '');
+  const [expandedMap, setExpandedMap] = useState<Record<string, boolean>>(
+    () => initialExpanded ?? {},
+  );
   const [expandGeneration, setExpandGeneration] = useState<{
     mode: 'default' | 'expand' | 'collapse';
     seq: number;
@@ -639,6 +675,25 @@ export function JsonTree({
   useEffect(() => {
     setFilter(initialFilter ?? '');
   }, [initialFilter]);
+
+  const handleFilterChange = useCallback(
+    (next: string) => {
+      setFilter(next);
+      onFilterChange?.(next);
+    },
+    [onFilterChange],
+  );
+
+  const handleTogglePath = useCallback(
+    (targetPath: string, nextOpen: boolean) => {
+      setExpandedMap((prev) => {
+        const next = { ...prev, [targetPath]: nextOpen };
+        onExpandedChange?.(next);
+        return next;
+      });
+    },
+    [onExpandedChange],
+  );
 
   const filterLower = filter.trim().toLowerCase();
 
@@ -668,31 +723,40 @@ export function JsonTree({
           type="search"
           className={styles.filterInput}
           value={filter}
-          onChange={(e) => setFilter(e.target.value)}
+          onChange={(e) => handleFilterChange(e.target.value)}
           placeholder="Filter keys or values…"
           aria-label="Filter JSON keys or values"
         />
         <button
           type="button"
           className={styles.toolBtn}
-          onClick={() =>
-            setExpandGeneration((prev) => ({ mode: 'expand', seq: prev.seq + 1 }))
-          }
+          onClick={() => {
+            setExpandedMap({});
+            onExpandedChange?.({});
+            setExpandGeneration((prev) => ({ mode: 'expand', seq: prev.seq + 1 }));
+          }}
         >
           Expand
         </button>
         <button
           type="button"
           className={styles.toolBtn}
-          onClick={() =>
-            setExpandGeneration((prev) => ({ mode: 'collapse', seq: prev.seq + 1 }))
-          }
+          onClick={() => {
+            setExpandedMap({});
+            onExpandedChange?.({});
+            setExpandGeneration((prev) => ({ mode: 'collapse', seq: prev.seq + 1 }));
+          }}
         >
           Collapse
         </button>
       </div>
 
-      <div className={styles.tree} role="tree" aria-label="Definition JSON">
+      <div
+        className={styles.tree}
+        data-inspector-scroll="true"
+        role="tree"
+        aria-label="Definition JSON"
+      >
         {rootEntries.length === 0 ? (
           <div className={styles.empty}>No fields match &quot;{filter}&quot;.</div>
         ) : (
@@ -705,6 +769,8 @@ export function JsonTree({
               depth={0}
               filterLower={filterLower}
               expandGeneration={expandGeneration}
+              expandedMap={expandedMap}
+              onTogglePath={handleTogglePath}
               resolvedRefs={resolvedRefs}
               onNavigateRef={onNavigateRef}
               onCopy={handleCopy}

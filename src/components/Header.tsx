@@ -241,15 +241,9 @@ export function Header({
                 <CloseIcon size={12} />
               </button>
             ) : (
-              <button
-                type="button"
-                className={styles.kbd}
-                onClick={() => searchInputRef.current?.focus()}
-                tabIndex={-1}
-                title="Press / to focus search"
-              >
+              <kbd className={styles.kbd} aria-hidden="true" title="Shortcut: press / when not typing to jump here">
                 /
-              </button>
+              </kbd>
             )}
           </div>
 

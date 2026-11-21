@@ -35,7 +35,7 @@ const TAB_KEYS: readonly InspectorTab[] = [
 interface HistoryTabState {
   manifestExplorer: true;
   sessionId: string;
-  stackIndex: number;
+  historyIndex: number;
 }
 
 function isTextInputTarget(target: EventTarget | null): boolean {
@@ -61,13 +61,24 @@ function isEditableTarget(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && target.tagName === 'SELECT';
 }
 
+function flushActiveInspectorDomScroll(): void {
+  const scroller = document.querySelector<HTMLElement>(
+    'aside[aria-label="Definition inspector"] [data-inspector-scroll="true"]',
+  );
+  if (!scroller) return;
+  const st = useExplorerStore.getState();
+  st.saveEntryScroll(st.activeTab, scroller.scrollTop);
+}
+
 export function App(): ReactNode {
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const searchSeqRef = useRef(0);
   const detailSeqRef = useRef(0);
   const syncingHashRef = useRef(false);
   const applyingPopStateRef = useRef(false);
+  const lastHandledHashRef = useRef('');
   const lastSearchKeyRef = useRef('');
+  const maxPushedBySessionRef = useRef(new Map<string, number>());
 
   const [helpOpen, setHelpOpen] = useState(false);
 
@@ -92,8 +103,8 @@ export function App(): ReactNode {
   const results = useExplorerStore((s) => s.results);
   const selectedResultIndex = useExplorerStore((s) => s.selectedResultIndex);
   const sessions = useExplorerStore((s) => s.sessions);
-  const stack = useExplorerStore((s) => s.stack);
-  const stackIndex = useExplorerStore((s) => s.stackIndex);
+  const history = useExplorerStore((s) => s.history);
+  const historyIndex = useExplorerStore((s) => s.historyIndex);
   const activeTab = useExplorerStore((s) => s.activeTab);
   const pinnedDiffRef = useExplorerStore((s) => s.pinnedDiffRef);
 
@@ -104,17 +115,16 @@ export function App(): ReactNode {
   const setSearching = useExplorerStore((s) => s.setSearching);
   const setTableFilter = useExplorerStore((s) => s.setTableFilter);
   const setSelectedResultIndex = useExplorerStore((s) => s.setSelectedResultIndex);
-  const openDefinition = useExplorerStore((s) => s.openDefinition);
+  const navigateInTab = useExplorerStore((s) => s.navigateInTab);
   const openInNewTab = useExplorerStore((s) => s.openInNewTab);
   const switchSession = useExplorerStore((s) => s.switchSession);
   const closeSession = useExplorerStore((s) => s.closeSession);
-  const updateActiveSessionMeta = useExplorerStore((s) => s.updateActiveSessionMeta);
+  const updateEntryMeta = useExplorerStore((s) => s.updateEntryMeta);
+  const hydrateEntrySummaries = useExplorerStore((s) => s.hydrateEntrySummaries);
   const inspectorMaximized = useExplorerStore((s) => s.inspectorMaximized);
   const activeSessionIndex = useExplorerStore((s) => s.activeSessionIndex);
   const sessionsCount = sessions.length;
-  const navigateBack = useExplorerStore((s) => s.navigateBack);
-  const navigateForward = useExplorerStore((s) => s.navigateForward);
-  const jumpToStackIndex = useExplorerStore((s) => s.jumpToStackIndex);
+  const jumpToHistoryIndex = useExplorerStore((s) => s.jumpToHistoryIndex);
   const restoreHistoryPoint = useExplorerStore((s) => s.restoreHistoryPoint);
   const closeInspector = useExplorerStore((s) => s.closeInspector);
   const setActiveTab = useExplorerStore((s) => s.setActiveTab);
@@ -122,8 +132,15 @@ export function App(): ReactNode {
   const hydrateFromHashUrl = useExplorerStore((s) => s.hydrateFromHashUrl);
   const buildHashUrl = useExplorerStore((s) => s.buildHashUrl);
 
-  const currentRef: DefinitionRef | null =
-    stackIndex >= 0 ? (stack[stackIndex] ?? null) : null;
+  const activeEntry = historyIndex >= 0 ? (history[historyIndex] ?? null) : null;
+  const currentRef: DefinitionRef | null = activeEntry
+    ? {
+        table: activeEntry.table,
+        hash: activeEntry.hash,
+        label: activeEntry.label,
+        icon: activeEntry.icon,
+      }
+    : null;
 
   // Inspector detail states
   const [detail, setDetail] = useState<DefinitionDetailPayload | null>(null);
@@ -154,66 +171,92 @@ export function App(): ReactNode {
       ? {
           manifestExplorer: true,
           sessionId: active.id,
-          stackIndex: active.stackIndex,
+          historyIndex: active.historyIndex,
         }
       : null;
 
+    if (active) {
+      if (mode === 'push') {
+        maxPushedBySessionRef.current.set(active.id, active.historyIndex);
+      } else if (!maxPushedBySessionRef.current.has(active.id)) {
+        maxPushedBySessionRef.current.set(active.id, active.historyIndex);
+      }
+    }
+
     syncingHashRef.current = true;
+    lastHandledHashRef.current = nextHash;
     if (mode === 'push') {
       window.history.pushState(historyState, '', nextHash);
     } else {
       window.history.replaceState(historyState, '', nextHash);
     }
-    window.queueMicrotask(() => {
+    window.setTimeout(() => {
       syncingHashRef.current = false;
-    });
+    }, 0);
   }, []);
 
-  // Hydrate initial URL hash & intercept browser back/forward while a tab has history
+  // Hydrate initial URL hash & unify browser back/forward with the tab's history/future
   useEffect(() => {
     if (window.location.hash) {
       hydrateFromHashUrl(window.location.hash);
       syncBrowserHistory('replace');
     }
 
+    let popTimer: number | null = null;
+
     const onPopState = (event: PopStateEvent): void => {
       if (syncingHashRef.current) {
         return;
       }
+      flushActiveInspectorDomScroll();
+
+      const currentHash = window.location.hash;
+      lastHandledHashRef.current = currentHash;
+      applyingPopStateRef.current = true;
+      if (popTimer !== null) {
+        window.clearTimeout(popTimer);
+      }
+
       const state = event.state as Partial<HistoryTabState> | null;
+      let restored = false;
       if (
         state &&
         state.manifestExplorer === true &&
         typeof state.sessionId === 'string' &&
-        typeof state.stackIndex === 'number'
+        typeof state.historyIndex === 'number'
       ) {
-        applyingPopStateRef.current = true;
-        const restored = restoreHistoryPoint(state.sessionId, state.stackIndex);
-        window.queueMicrotask(() => {
-          applyingPopStateRef.current = false;
-        });
-        if (restored) {
-          return;
-        }
+        restored = restoreHistoryPoint(state.sessionId, state.historyIndex);
       }
 
-      applyingPopStateRef.current = true;
-      hydrateFromHashUrl(window.location.hash);
-      window.queueMicrotask(() => {
+      if (!restored) {
+        hydrateFromHashUrl(currentHash);
+      }
+
+      // Keep popstate guard active past Chromium's trailing macrotask hashchange event.
+      popTimer = window.setTimeout(() => {
+        popTimer = null;
         applyingPopStateRef.current = false;
-      });
+      }, 50);
     };
 
     const onHashChange = (): void => {
-      if (syncingHashRef.current || applyingPopStateRef.current) {
+      if (
+        syncingHashRef.current ||
+        applyingPopStateRef.current ||
+        window.location.hash === lastHandledHashRef.current
+      ) {
         return;
       }
+      lastHandledHashRef.current = window.location.hash;
       hydrateFromHashUrl(window.location.hash);
     };
 
     window.addEventListener('popstate', onPopState);
     window.addEventListener('hashchange', onHashChange);
     return () => {
+      if (popTimer !== null) {
+        window.clearTimeout(popTimer);
+      }
       window.removeEventListener('popstate', onPopState);
       window.removeEventListener('hashchange', onHashChange);
     };
@@ -231,8 +274,8 @@ export function App(): ReactNode {
   }, [
     sessions,
     activeSessionIndex,
-    stack,
-    stackIndex,
+    history,
+    historyIndex,
     query,
     deepSearch,
     filters.table,
@@ -274,6 +317,53 @@ export function App(): ReactNode {
   useEffect(() => {
     bootManifest(locale, bungieApiKey, false);
   }, [locale, bungieApiKey, bootManifest]);
+
+  const manifestReady =
+    manifestStatus.indexedEntryCount > 0 || manifestStatus.phase === 'ready';
+
+  // Background-resolve display names, icons & co-table flags for EVERY open tab
+  // and EVERY history/future entry (including inactive tabs and hydrated URLs).
+  // Re-runs when new tables finish loading so co-table disambiguation stays accurate.
+  const sessionRefSignature = sessions
+    .map((s) => s.history.map((e) => `${e.table}:${e.hash}`).join(','))
+    .join('|');
+
+  useEffect(() => {
+    if (!manifestReady || !sessionRefSignature) {
+      return;
+    }
+    const currentSessions = useExplorerStore.getState().sessions;
+    const refsMap = new Map<string, { table: string; hash: number }>();
+    for (const session of currentSessions) {
+      for (const entry of session.history) {
+        const key = `${entry.table}:${entry.hash}`;
+        if (!refsMap.has(key)) {
+          refsMap.set(key, { table: entry.table, hash: entry.hash });
+        }
+      }
+    }
+    if (refsMap.size === 0) {
+      return;
+    }
+    let cancelled = false;
+    void manifestClient
+      .resolveSummaries([...refsMap.values()])
+      .then((summaries) => {
+        if (!cancelled && Object.keys(summaries).length > 0) {
+          hydrateEntrySummaries(summaries);
+        }
+      })
+      .catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    sessionRefSignature,
+    manifestReady,
+    manifestStatus.loadedTableCount,
+    hydrateEntrySummaries,
+  ]);
 
   // Run search whenever query, deepSearch, filters, sort, or indexed entry count changes
   useEffect(() => {
@@ -344,29 +434,23 @@ export function App(): ReactNode {
   ]);
 
   // Load selected definition progressively (instant Lite/cached -> background full upgrade)
-  const loadFullForCurrent = useCallback(
-    (ref: DefinitionRef, seq: number) => {
-      setLoadingFull(true);
-      void manifestClient
-        .getDefinition(ref.table, ref.hash, true)
-        .then((full) => {
-          if (seq !== detailSeqRef.current) {
-            return;
-          }
-          setDetail(full);
+  const loadFullForCurrent = useCallback((ref: DefinitionRef, seq: number) => {
+    setLoadingFull(true);
+    void manifestClient
+      .getDefinition(ref.table, ref.hash, true)
+      .then((full) => {
+        if (seq !== detailSeqRef.current) {
+          return;
+        }
+        setDetail(full);
+        setLoadingFull(false);
+      })
+      .catch(() => {
+        if (seq === detailSeqRef.current) {
           setLoadingFull(false);
-        })
-        .catch(() => {
-          if (seq === detailSeqRef.current) {
-            setLoadingFull(false);
-          }
-        });
-    },
-    [],
-  );
-
-  const manifestReady =
-    manifestStatus.indexedEntryCount > 0 || manifestStatus.phase === 'ready';
+        }
+      });
+  }, []);
 
   useEffect(() => {
     if (!currentRef) {
@@ -407,11 +491,14 @@ export function App(): ReactNode {
         const resolvedName =
           (typeof dp?.name === 'string' && dp.name.trim()) ||
           (typeof payload.data.statName === 'string' && payload.data.statName.trim()) ||
-          `${getShortTableName(payload.table)}:${payload.hash}`;
-        updateActiveSessionMeta(
-          resolvedName,
-          typeof dp?.icon === 'string' ? dp.icon : undefined,
-        );
+          (typeof payload.data.progressDescription === 'string' &&
+            payload.data.progressDescription.trim()) ||
+          '';
+        updateEntryMeta(payload.table, payload.hash, {
+          ...(resolvedName ? { label: resolvedName } : {}),
+          ...(typeof dp?.icon === 'string' ? { icon: dp.icon } : {}),
+          hasCoTables: payload.coTables.length > 0,
+        });
         if (payload.isLite) {
           loadFullForCurrent(currentRef, seq);
         }
@@ -475,6 +562,7 @@ export function App(): ReactNode {
     showClarityDescriptions,
     detailReloadCounter,
     loadFullForCurrent,
+    updateEntryMeta,
   ]);
 
   // Lazy reverse references scan when References tab is active
@@ -664,16 +752,20 @@ export function App(): ReactNode {
         return;
       }
 
+      flushActiveInspectorDomScroll();
       const rawFilter = item.deepMatch
         ? useExplorerStore.getState().query.trim().replace(/^deep:\s*/i, '').trim()
         : undefined;
 
       // Clicking any entry in the searchable results pane always opens a new tab on Pretty.
       openInNewTab(
-        { table: item.table, hash: item.hash },
-        item.name || `${getShortTableName(item.table)}:${item.hash}`,
+        {
+          table: item.table,
+          hash: item.hash,
+          label: item.name || undefined,
+          icon: item.icon,
+        },
         true,
-        item.icon,
         rawFilter && rawFilter.length > 0 ? rawFilter : undefined,
       );
       syncBrowserHistory('replace');
@@ -682,9 +774,11 @@ export function App(): ReactNode {
   );
 
   const handleNavigateRef = useCallback(
-    (ref: DefinitionRef, pushToStack = true, inNewTab = false) => {
+    (ref: DefinitionRef, inNewTab = false) => {
+      flushActiveInspectorDomScroll();
+
       if (inNewTab) {
-        openInNewTab(ref, undefined, true);
+        openInNewTab(ref, true);
         syncBrowserHistory('replace');
         return;
       }
@@ -694,20 +788,20 @@ export function App(): ReactNode {
         prevState.activeSessionIndex >= 0
           ? prevState.sessions[prevState.activeSessionIndex]
           : undefined;
-      const prevStackIndex = prevActive?.stackIndex ?? -1;
+      const prevHistoryIndex = prevActive?.historyIndex ?? -1;
 
-      if (pushToStack && prevActive) {
+      if (prevActive) {
         const curHist = window.history.state as Partial<HistoryTabState> | null;
         if (
           !curHist?.manifestExplorer ||
           curHist.sessionId !== prevActive.id ||
-          curHist.stackIndex !== prevActive.stackIndex
+          curHist.historyIndex !== prevActive.historyIndex
         ) {
           syncBrowserHistory('replace');
         }
       }
 
-      openDefinition(ref, pushToStack);
+      navigateInTab(ref);
 
       const nextState = useExplorerStore.getState();
       const nextActive =
@@ -716,77 +810,94 @@ export function App(): ReactNode {
           : undefined;
 
       if (
-        pushToStack &&
         nextActive &&
         prevActive &&
         nextActive.id === prevActive.id &&
-        nextActive.stackIndex !== prevStackIndex
+        nextActive.historyIndex !== prevHistoryIndex
       ) {
         syncBrowserHistory('push');
       } else {
         syncBrowserHistory('replace');
       }
     },
-    [openDefinition, openInNewTab, syncBrowserHistory],
+    [navigateInTab, openInNewTab, syncBrowserHistory],
+  );
+
+  // Unified Back / Forward / Timeline Jump — keeps browser history cursor in lockstep
+  const handleJumpToHistoryIndex = useCallback(
+    (targetIdx: number) => {
+      const st = useExplorerStore.getState();
+      const active =
+        st.activeSessionIndex >= 0 ? st.sessions[st.activeSessionIndex] : undefined;
+      if (
+        !active ||
+        targetIdx < 0 ||
+        targetIdx >= active.history.length ||
+        targetIdx === active.historyIndex
+      ) {
+        return;
+      }
+
+      flushActiveInspectorDomScroll();
+
+      const curHist = window.history.state as Partial<HistoryTabState> | null;
+      const maxPushed = maxPushedBySessionRef.current.get(active.id) ?? -1;
+      if (
+        curHist?.manifestExplorer &&
+        curHist.sessionId === active.id &&
+        curHist.historyIndex === active.historyIndex &&
+        targetIdx <= maxPushed
+      ) {
+        window.history.go(targetIdx - active.historyIndex);
+        return;
+      }
+
+      if (jumpToHistoryIndex(targetIdx)) {
+        syncBrowserHistory('replace');
+      }
+    },
+    [jumpToHistoryIndex, syncBrowserHistory],
   );
 
   const handleNavigateBack = useCallback(() => {
     const st = useExplorerStore.getState();
     const active =
       st.activeSessionIndex >= 0 ? st.sessions[st.activeSessionIndex] : undefined;
-    if (!active || active.stackIndex <= 0) {
+    if (!active || active.historyIndex <= 0) {
       return;
     }
-    const curHist = window.history.state as Partial<HistoryTabState> | null;
-    if (
-      curHist?.manifestExplorer &&
-      curHist.sessionId === active.id &&
-      curHist.stackIndex === active.stackIndex
-    ) {
-      window.history.back();
-      return;
-    }
-    if (navigateBack()) {
-      syncBrowserHistory('replace');
-    }
-  }, [navigateBack, syncBrowserHistory]);
+    handleJumpToHistoryIndex(active.historyIndex - 1);
+  }, [handleJumpToHistoryIndex]);
 
   const handleNavigateForward = useCallback(() => {
     const st = useExplorerStore.getState();
     const active =
       st.activeSessionIndex >= 0 ? st.sessions[st.activeSessionIndex] : undefined;
-    if (!active || active.stackIndex >= active.stack.length - 1) {
+    if (!active || active.historyIndex >= active.history.length - 1) {
       return;
     }
-    if (navigateForward()) {
-      syncBrowserHistory('replace');
-    }
-  }, [navigateForward, syncBrowserHistory]);
-
-  const handleJumpToStackIndex = useCallback(
-    (index: number) => {
-      jumpToStackIndex(index);
-      syncBrowserHistory('replace');
-    },
-    [jumpToStackIndex, syncBrowserHistory],
-  );
+    handleJumpToHistoryIndex(active.historyIndex + 1);
+  }, [handleJumpToHistoryIndex]);
 
   const handleSwitchSession = useCallback(
     (index: number) => {
+      flushActiveInspectorDomScroll();
       switchSession(index);
       syncBrowserHistory('replace');
     },
     [switchSession, syncBrowserHistory],
   );
 
-  // Global keyboard shortcuts (capture phase so '/' always focuses search reliably)
+  // Global keyboard shortcuts (capture phase so '/' reliably jumps to search without typing '/')
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault();
         event.stopPropagation();
-        searchInputRef.current?.focus();
-        searchInputRef.current?.select();
+        window.requestAnimationFrame(() => {
+          searchInputRef.current?.focus();
+          searchInputRef.current?.select();
+        });
         return;
       }
 
@@ -821,8 +932,11 @@ export function App(): ReactNode {
       ) {
         event.preventDefault();
         event.stopPropagation();
-        searchInputRef.current?.focus();
-        searchInputRef.current?.select();
+        // Focus on the next frame so the browser never delivers '/' as text input.
+        window.requestAnimationFrame(() => {
+          searchInputRef.current?.focus();
+          searchInputRef.current?.select();
+        });
         return;
       }
 
@@ -881,6 +995,7 @@ export function App(): ReactNode {
           const tab = TAB_KEYS[digit - 1];
           if (tab) {
             event.preventDefault();
+            flushActiveInspectorDomScroll();
             setActiveTab(tab);
             return;
           }
@@ -997,7 +1112,7 @@ export function App(): ReactNode {
           onNavigateRef={handleNavigateRef}
           onNavigateBack={handleNavigateBack}
           onNavigateForward={handleNavigateForward}
-          onJumpToStackIndex={handleJumpToStackIndex}
+          onJumpToHistoryIndex={handleJumpToHistoryIndex}
           onSwitchSession={handleSwitchSession}
           onLoadFullItem={() => {
             if (currentRef) {

@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 import { useEffect, useState, type ReactNode, type RefObject } from 'react';
-import type { BungieLocale, ImageScalingMode } from '../types/manifest';
+import type { BungieLocale, ImageScalingMode, QueryPrecedence } from '../types/manifest';
 import { BUNGIE_LOCALES } from '../types/manifest';
 import type { CodeFontFamily, ThemeMode, TouchSize } from '../stores/settings';
 import {
@@ -51,6 +51,11 @@ const IMAGE_SCALING_OPTIONS: ReadonlyArray<readonly [ImageScalingMode, string]> 
   ['sharp', 'Sharp'],
   ['integer', 'Integer'],
   ['smooth', 'Smooth'],
+];
+
+const QUERY_PRECEDENCE_OPTIONS: ReadonlyArray<readonly [QueryPrecedence, string]> = [
+  ['dim', 'DIM'],
+  ['standard', 'Standard'],
 ];
 
 interface StepperProps {
@@ -115,6 +120,7 @@ export function SettingsPopover({
   const showClarityDescriptions = useSettingsStore((state) => state.showClarityDescriptions);
   const fuzzySearch = useSettingsStore((state) => state.fuzzySearch);
   const fuzziness = useSettingsStore((state) => state.fuzziness);
+  const queryPrecedence = useSettingsStore((state) => state.queryPrecedence);
 
   const setTheme = useSettingsStore((state) => state.setTheme);
   const setUiScale = useSettingsStore((state) => state.setUiScale);
@@ -126,6 +132,7 @@ export function SettingsPopover({
   const setShowClarityDescriptions = useSettingsStore((state) => state.setShowClarityDescriptions);
   const setFuzzySearch = useSettingsStore((state) => state.setFuzzySearch);
   const setFuzziness = useSettingsStore((state) => state.setFuzziness);
+  const setQueryPrecedence = useSettingsStore((state) => state.setQueryPrecedence);
   const resetSettings = useSettingsStore((state) => state.resetSettings);
 
   const manifestStatus = useExplorerStore((state) => state.manifestStatus);
@@ -276,6 +283,39 @@ export function SettingsPopover({
               <span>Strict</span>
               <span>Loose</span>
             </div>
+          </div>
+          <div className={styles.precedenceBlock}>
+            <div className={styles.row}>
+              <span className={styles.rowLabel}>Query logic</span>
+              <div className={styles.segmented} role="group" aria-label="Query logic">
+                {QUERY_PRECEDENCE_OPTIONS.map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={
+                      value === queryPrecedence ? `${styles.segBtn} ${styles.segOn}` : styles.segBtn
+                    }
+                    aria-pressed={value === queryPrecedence}
+                    onClick={() => setQueryPrecedence(value)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <p className={styles.precedenceHint} aria-live="polite">
+              {queryPrecedence === 'dim' ? (
+                <>
+                  <code>a b or c</code> → <code>a AND (b OR c)</code> — matches DIM.
+                  Explicit &quot;and&quot; binds tighter than &quot;or&quot;.
+                </>
+              ) : (
+                <>
+                  <code>a b or c</code> → <code>(a AND b) OR c</code> — spaces and
+                  &quot;and&quot; both bind tighter than &quot;or&quot;.
+                </>
+              )}
+            </p>
           </div>
         </section>
 

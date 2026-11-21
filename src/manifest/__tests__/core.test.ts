@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { SearchFilters, SearchIndexEntry } from '../../types/manifest';
+import type { QueryPrecedence, SearchFilters, SearchIndexEntry } from '../../types/manifest';
 import { computeJsonDiff } from '../diff';
 import {
   CLASS_FILTER_OPTIONS,
@@ -76,11 +76,16 @@ function rank(
     categories?: Map<number, string>;
     maxResults?: number;
     context?: SearchContext;
+    precedence?: QueryPrecedence;
   } = {},
 ) {
   return scoreAndFilterEntries(
     entries,
-    parseSearchQuery(query, [ITEM_TABLE, 'DestinySandboxPerkDefinition', 'DestinyRecordDefinition']),
+    parseSearchQuery(
+      query,
+      [ITEM_TABLE, 'DestinySandboxPerkDefinition', 'DestinyRecordDefinition'],
+      options.precedence ?? 'dim',
+    ),
     makeFilters(options.filters),
     options.sort ?? 'relevance',
     options.categories ?? new Map(),
@@ -996,9 +1001,13 @@ describe('Boolean expression parsing (DIM-standard AND/OR/NOT)', () => {
         (item) => item.hash,
       ),
     ).toEqual([1, 2, 3, 4]);
-    // solar OR (void AND exotic): solar items plus the Void Exotic (not void legendary).
+    // Under standard precedence, `damage:solar or damage:void tier:exotic` is
+    // solar OR (void AND exotic): solar items plus the Void Exotic.
     expect(
-      rank('damage:solar or damage:void tier:exotic', entries, { sort: 'hash-asc' }).items.map((item) => item.hash),
+      rank('damage:solar or damage:void tier:exotic', entries, {
+        sort: 'hash-asc',
+        precedence: 'standard',
+      }).items.map((item) => item.hash),
     ).toEqual([1, 2, 3]);
   });
 
@@ -1079,6 +1088,169 @@ describe('Boolean expression parsing (DIM-standard AND/OR/NOT)', () => {
     expect(parseSearchQuery('tier:exotic damage:solar', tables).ast?.type).toBe('and');
     expect(parseSearchQuery('-is:ornament', tables).ast?.type).toBe('not');
     expect(parseSearchQuery('table:perk or table:item', tables).tableFilter).toBeUndefined();
+  });
+});
+
+describe('Boolean precedence modes (dim vs standard)', () => {
+  const entries = [
+    makeEntry({ hash: 1, name: 'Solar Exotic', tierType: 6, damageType: 3 }),
+    makeEntry({ hash: 2, name: 'Solar Legendary', tierType: 5, damageType: 3 }),
+    makeEntry({ hash: 3, name: 'Arc Exotic', tierType: 6, damageType: 2 }),
+    makeEntry({ hash: 4, name: 'Arc Legendary', tierType: 5, damageType: 2 }),
+  ];
+
+  it('treats implicit AND as loosest by default (dim)', () => {
+    // exotic AND (solar OR arc)
+    expect(
+      rank('tier:exotic damage:solar or damage:arc', entries, { sort: 'hash-asc' }).items.map((i) => i.hash),
+    ).toEqual([1, 3]);
+    // (exotic AND solar) OR arc
+    expect(
+      rank('tier:exotic and damage:solar or damage:arc', entries, { sort: 'hash-asc' }).items.map((i) => i.hash),
+    ).toEqual([1, 3, 4]);
+  });
+
+  it('binds implicit AND with explicit and above or (standard)', () => {
+    expect(
+      rank('tier:exotic damage:solar or damage:arc', entries, {
+        sort: 'hash-asc',
+        precedence: 'standard',
+      }).items.map((i) => i.hash),
+    ).toEqual([1, 3, 4]);
+    expect(
+      rank('tier:exotic and damage:solar or damage:arc', entries, {
+        sort: 'hash-asc',
+        precedence: 'standard',
+      }).items.map((i) => i.hash),
+    ).toEqual([1, 3, 4]);
+  });
+
+  it('parentheses override either mode', () => {
+    const query = '(damage:solar or damage:arc) tier:exotic';
+    expect(rank(query, entries, { sort: 'hash-asc' }).items.map((i) => i.hash)).toEqual([1, 3]);
+    expect(
+      rank(query, entries, { sort: 'hash-asc', precedence: 'standard' }).items.map((i) => i.hash),
+    ).toEqual([1, 3]);
+  });
+});
+
+describe('invalid known-prefix values', () => {
+  it('returns zero matches instead of silently dropping the filter', () => {
+    const entries = [
+      makeEntry({ hash: 1, name: 'Exotic', tierType: 6 }),
+      makeEntry({ hash: 2, name: 'Legendary', tierType: 5 }),
+      makeEntry({ hash: 3, name: 'Solar', damageType: 3 }),
+    ];
+    expect(rank('tier:mythic', entries).items).toHaveLength(0);
+    expect(rank('is:doesnotexist', entries).items).toHaveLength(0);
+    expect(rank('damage:invalid', entries).items).toHaveLength(0);
+    expect(rank('slot:nope', entries).items).toHaveLength(0);
+    expect(rank('table:nope', entries).items).toHaveLength(0);
+  });
+
+  it('keeps an empty value after a colon graceful', () => {
+    const entries = [makeEntry({ hash: 1, name: 'Exotic', tierType: 6 })];
+    expect(rank('damage:', entries).items.map((i) => i.hash)).toEqual([1]);
+    expect(rank('tier:', entries).items.map((i) => i.hash)).toEqual([1]);
+  });
+});
+
+describe('not: shorthand', () => {
+  it('resolves not:X as -is:X and unwraps double negation', () => {
+    const entries = [
+      makeEntry({ hash: 1, name: 'Adept Weapon', isAdept: true }),
+      makeEntry({ hash: 2, name: 'Exotic', tierType: 6 }),
+      makeEntry({ hash: 3, name: 'Hand Cannon', itemSubType: 9 }),
+      makeEntry({ hash: 4, name: 'Plain' }),
+    ];
+    expect(rank('not:adept', entries, { sort: 'hash-asc' }).items.map((i) => i.hash)).toEqual([2, 3, 4]);
+    expect(rank('not:exotic', entries, { sort: 'hash-asc' }).items.map((i) => i.hash)).toEqual([1, 3, 4]);
+    expect(rank('not:handcannon', entries, { sort: 'hash-asc' }).items.map((i) => i.hash)).toEqual([1, 2, 4]);
+    expect(rank('-not:adept', entries, { sort: 'hash-asc' }).items.map((i) => i.hash)).toEqual([1]);
+  });
+});
+
+describe('quoted-string parsing', () => {
+  it('supports single-quoted phrases and values', () => {
+    const entries = [
+      makeEntry({ hash: 1, name: 'Ace of Spades' }),
+      makeEntry({ hash: 2, name: 'Hand Cannon', itemCategoryHashes: [5] }),
+      makeEntry({ hash: 3, name: 'Iron Banner', sourceTags: ['ironbanner'] }),
+    ];
+    const categories = new Map([[5, 'Hand Cannon']]);
+    const context: SearchContext = { sourceAliasToKey: getD2aiMappings().sourceAliasToKey };
+    expect(rank("'Ace of Spades'", entries).items.map((i) => i.hash)).toEqual([1]);
+    expect(rank("cat:'Hand Cannon'", entries, { categories }).items.map((i) => i.hash)).toEqual([2]);
+    expect(rank("source:'iron banner'", entries, { context }).items.map((i) => i.hash)).toEqual([3]);
+  });
+
+  it('normalizes curly smart quotes', () => {
+    const entries = [makeEntry({ hash: 1, name: 'Hand Cannon', itemCategoryHashes: [5] })];
+    const categories = new Map([[5, 'Hand Cannon']]);
+    expect(rank('cat:\u201CHand Cannon\u201D', entries, { categories }).items).toHaveLength(1);
+    expect(
+      rank('\u2018Ace of Spades\u2019', [makeEntry({ hash: 2, name: 'Ace of Spades' })]).items,
+    ).toHaveLength(1);
+  });
+
+  it('handles escaped quotes inside quoted strings', () => {
+    const tables = [ITEM_TABLE];
+    expect(parseSearchQuery('"\\"test\\""', tables).textTokens).toEqual(['"test"']);
+    expect(parseSearchQuery('cat:"say \\"hi\\""', tables).categoryTokens).toEqual(['say "hi"']);
+  });
+});
+
+describe('comparison operators', () => {
+  it('supports season: comparisons', () => {
+    const entries = [
+      makeEntry({ hash: 1, name: 'S26', seasonNumber: 26 }),
+      makeEntry({ hash: 2, name: 'S25', seasonNumber: 25 }),
+      makeEntry({ hash: 3, name: 'S24', seasonNumber: 24 }),
+      makeEntry({ hash: 4, name: 'No Season' }),
+    ];
+    const context: SearchContext = {
+      latestSeason: 26,
+      seasonNameMap: new Map([[26, 'Episode: Heresy']]),
+      seasonAliases: SEASON_ALIASES,
+    };
+    expect(rank('season:>25', entries, { context }).items.map((i) => i.hash)).toEqual([1]);
+    expect(rank('season:>=26', entries, { context }).items.map((i) => i.hash)).toEqual([1]);
+    expect(rank('season:<24', entries, { context }).items).toHaveLength(0);
+    expect(rank('season:<=24', entries, { context }).items.map((i) => i.hash)).toEqual([3]);
+    expect(rank('season:>=heresy', entries, { context }).items.map((i) => i.hash)).toEqual([1]);
+  });
+
+  it('supports tier: comparisons', () => {
+    const entries = [
+      makeEntry({ hash: 1, name: 'Legendary', tierType: 5 }),
+      makeEntry({ hash: 2, name: 'Exotic', tierType: 6 }),
+      makeEntry({ hash: 3, name: 'Rare', tierType: 4 }),
+      makeEntry({ hash: 4, name: 'Uncommon', tierType: 3 }),
+    ];
+    expect(rank('tier:>=legendary', entries, { sort: 'hash-asc' }).items.map((i) => i.hash)).toEqual([1, 2]);
+    expect(rank('tier:>4', entries, { sort: 'hash-asc' }).items.map((i) => i.hash)).toEqual([1, 2]);
+    expect(rank('tier:<=rare', entries, { sort: 'hash-asc' }).items.map((i) => i.hash)).toEqual([3, 4]);
+    expect(rank('tier:<6', entries, { sort: 'hash-asc' }).items.map((i) => i.hash)).toEqual([1, 3, 4]);
+    expect(rank('tier:=exotic', entries, { sort: 'hash-asc' }).items.map((i) => i.hash)).toEqual([2]);
+  });
+});
+
+describe('expanded is: aliases', () => {
+  it('matches subtypes, slots and item types', () => {
+    const entries = [
+      makeEntry({ hash: 1, name: 'Hand Cannon', itemSubType: 9 }),
+      makeEntry({ hash: 2, name: 'Helmet', bucketHash: 3448274439 }),
+      makeEntry({ hash: 3, name: 'Energy Weapon', bucketHash: 2465295065 }),
+      makeEntry({ hash: 4, name: 'Kinetic Slot', bucketHash: 1498876634, damageType: 3 }),
+      makeEntry({ hash: 5, name: 'Kinetic Damage', damageType: 1, bucketHash: 2465295065 }),
+      makeEntry({ hash: 6, name: 'Emblem', itemType: 14 }),
+    ];
+    expect(rank('is:handcannon', entries).items.map((i) => i.hash)).toEqual([1]);
+    expect(rank('is:helmet', entries).items.map((i) => i.hash)).toEqual([2]);
+    expect(rank('is:energy', entries, { sort: 'hash-asc' }).items.map((i) => i.hash)).toEqual([3, 5]);
+    expect(rank('is:kineticslot', entries).items.map((i) => i.hash)).toEqual([4]);
+    expect(rank('is:kinetic', entries).items.map((i) => i.hash)).toEqual([5]);
+    expect(rank('is:emblem', entries).items.map((i) => i.hash)).toEqual([6]);
   });
 });
 

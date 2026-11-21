@@ -25,6 +25,7 @@ import type {
   OverviewSocketCategory,
   OverviewSocketPlug,
   OverviewStat,
+  QueryPrecedence,
   ResolvedHashSummary,
   ResolvedSummaryEntry,
   ReverseReference,
@@ -106,6 +107,7 @@ export interface SearchRequest {
   sort: SortMode;
   maxResults?: number;
   fuzzy?: FuzzySearchOptions;
+  precedence?: QueryPrecedence;
 }
 
 export interface DeepSearchRequest {
@@ -1305,9 +1307,10 @@ async function search(
   sort: SortMode,
   maxResults?: number,
   fuzzy?: FuzzySearchOptions,
+  precedence?: QueryPrecedence,
 ): Promise<SearchResponse> {
   const availableTables = [...Object.keys(state.componentPaths), ARTIFACT_PERKS_TABLE];
-  const parsed = parseSearchQuery(query, availableTables);
+  const parsed = parseSearchQuery(query, availableTables, precedence);
   const d2ai = getD2aiMappings();
   return scoreAndFilterEntries(
     entries,
@@ -2660,7 +2663,14 @@ async function dispatch(message: WorkerRequest): Promise<unknown> {
     case 'init':
       return init(message.locale, message.apiKey, message.forceRefresh);
     case 'search':
-      return search(message.query, message.filters, message.sort, message.maxResults, message.fuzzy);
+      return search(
+        message.query,
+        message.filters,
+        message.sort,
+        message.maxResults,
+        message.fuzzy,
+        message.precedence,
+      );
     case 'deepSearch':
       return deepSearch(message.query, message.filters, message.maxResults);
     case 'getDefinition':

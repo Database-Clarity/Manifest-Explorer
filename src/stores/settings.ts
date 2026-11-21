@@ -4,6 +4,7 @@ import {
   BUNGIE_LOCALES,
   type BungieLocale,
   type ImageScalingMode,
+  type QueryPrecedence,
   type SortMode,
   type ViewMode,
 } from '../types/manifest';
@@ -31,6 +32,7 @@ export interface SettingsValues {
   inspectorWidth: number;
   fuzzySearch: boolean;
   fuzziness: number;
+  queryPrecedence: QueryPrecedence;
 }
 
 export interface SettingsActions {
@@ -50,6 +52,7 @@ export interface SettingsActions {
   setInspectorWidth: (width: number) => void;
   setFuzzySearch: (enabled: boolean) => void;
   setFuzziness: (value: number) => void;
+  setQueryPrecedence: (mode: QueryPrecedence) => void;
   resetSettings: () => void;
 }
 
@@ -95,6 +98,7 @@ export const DEFAULT_SETTINGS: SettingsValues = {
   inspectorWidth: 620,
   fuzzySearch: false,
   fuzziness: FUZZINESS_DEFAULT,
+  queryPrecedence: 'dim',
 };
 
 export const UI_SCALE_MIN = 85;
@@ -111,6 +115,7 @@ const THEME_MODES: readonly ThemeMode[] = ['system', 'dark', 'light'];
 const TOUCH_SIZES: readonly TouchSize[] = ['compact', 'large'];
 const CODE_FONT_FAMILIES: readonly CodeFontFamily[] = ['system', 'cascadia', 'consolas'];
 const IMAGE_SCALING_MODES: readonly ImageScalingMode[] = ['sharp', 'integer', 'smooth'];
+const QUERY_PRECEDENCE_MODES: readonly QueryPrecedence[] = ['dim', 'standard'];
 const BUNGIE_LOCALE_CODES: readonly BungieLocale[] = BUNGIE_LOCALES.map((locale) => locale.code);
 
 const CODE_FONT_STACKS: Record<CodeFontFamily, string> = {
@@ -242,6 +247,11 @@ function mergePersistedSettings(persistedState: unknown, currentState: SettingsS
     ),
     fuzzySearch: readBoolean(persistedState.fuzzySearch, currentState.fuzzySearch),
     fuzziness: normalizeFuzziness(readNumber(persistedState.fuzziness, currentState.fuzziness)),
+    queryPrecedence: readEnum(
+      persistedState.queryPrecedence,
+      QUERY_PRECEDENCE_MODES,
+      currentState.queryPrecedence,
+    ),
   };
 }
 
@@ -272,6 +282,7 @@ export const useSettingsStore = create<SettingsState>()(
           commit({ inspectorWidth: normalizeInspectorWidth(inspectorWidth) }),
         setFuzzySearch: (fuzzySearch) => commit({ fuzzySearch }),
         setFuzziness: (fuzziness) => commit({ fuzziness: normalizeFuzziness(fuzziness) }),
+        setQueryPrecedence: (queryPrecedence) => commit({ queryPrecedence }),
         resetSettings: () => {
           set(DEFAULT_SETTINGS);
           applySettingsToDom(get());
@@ -299,6 +310,7 @@ export const useSettingsStore = create<SettingsState>()(
         inspectorWidth: state.inspectorWidth,
         fuzzySearch: state.fuzzySearch,
         fuzziness: state.fuzziness,
+        queryPrecedence: state.queryPrecedence,
       }),
       merge: mergePersistedSettings,
       onRehydrateStorage: () => (state) => {

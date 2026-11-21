@@ -1,5 +1,6 @@
 import type {
   FuzzySearchOptions,
+  QueryPrecedence,
   SearchFilters,
   SearchIndexEntry,
   SearchResponse,
@@ -69,6 +70,12 @@ export interface ParsedQuery {
 }
 
 /**
+ * Comparison operator applied to `season:` / `tier:` filter values. `=` is the
+ * default equality/membership test; the rest compare the resolved scalar.
+ */
+export type ComparisonOp = '=' | '>' | '>=' | '<' | '<=';
+
+/**
  * Boolean expression AST produced by `parseSearchQuery`. Atoms are the leaves
  * (one per filter token); `and`/`or`/`not` combine them with DIM-standard
  * Boolean precedence (NOT > AND > OR). Evaluation is deferred so the parser can
@@ -98,6 +105,7 @@ export interface TierQueryAtom {
   type: 'atom';
   kind: 'tier';
   value: number;
+  op: ComparisonOp;
 }
 export interface DamageQueryAtom {
   type: 'atom';
@@ -133,6 +141,7 @@ export interface SeasonQueryAtom {
   type: 'atom';
   kind: 'season';
   value: string;
+  op: ComparisonOp;
 }
 export interface SourceQueryAtom {
   type: 'atom';
@@ -164,6 +173,10 @@ export interface TextQueryAtom {
   kind: 'text';
   value: string;
 }
+export interface NeverQueryAtom {
+  type: 'atom';
+  kind: 'never';
+}
 
 export type QueryAtom =
   | TableQueryAtom
@@ -180,7 +193,8 @@ export type QueryAtom =
   | CategoryQueryAtom
   | FlagQueryAtom
   | HashQueryAtom
-  | TextQueryAtom;
+  | TextQueryAtom
+  | NeverQueryAtom;
 
 export type QueryNode = AndQueryNode | OrQueryNode | NotQueryNode | QueryAtom;
 
@@ -299,7 +313,6 @@ const FLAG_TOKENS: Readonly<Record<string, FlagKey>> = {
   seasonalartifact: 'artifact',
   craftable: 'craftable',
   crafted: 'craftable',
-  pattern: 'craftable',
   catalyst: 'catalyst',
   ornament: 'ornament',
 };
@@ -363,7 +376,7 @@ const SUBTYPE_TOKENS: Readonly<Record<string, number>> = {
   glaive: 33,
 };
 
-type ValueAliasKind = 'tier' | 'damage' | 'class' | 'type' | 'ammo';
+type ValueAliasKind = 'tier' | 'damage' | 'class' | 'type' | 'ammo' | 'slot' | 'subtype';
 
 interface ValueAlias {
   kind: ValueAliasKind;
@@ -383,6 +396,18 @@ const IS_VALUE_ALIASES: Readonly<Record<string, ValueAlias>> = {
   armour: { kind: 'type', value: 2 },
   mod: { kind: 'type', value: 19 },
   shader: { kind: 'type', value: 20 },
+  emblem: { kind: 'type', value: 14 },
+  quest: { kind: 'type', value: 15 },
+  subclass: { kind: 'type', value: 16 },
+  ship: { kind: 'type', value: 21 },
+  sparrow: { kind: 'type', value: 22 },
+  vehicle: { kind: 'type', value: 22 },
+  consumable: { kind: 'type', value: 9 },
+  engram: { kind: 'type', value: 8 },
+  bounty: { kind: 'type', value: 26 },
+  emote: { kind: 'type', value: 23 },
+  finisher: { kind: 'type', value: 29 },
+  pattern: { kind: 'type', value: 30 },
   kinetic: { kind: 'damage', value: 1 },
   arc: { kind: 'damage', value: 2 },
   solar: { kind: 'damage', value: 3 },
@@ -395,12 +420,63 @@ const IS_VALUE_ALIASES: Readonly<Record<string, ValueAlias>> = {
   titan: { kind: 'class', value: 0 },
   hunter: { kind: 'class', value: 1 },
   warlock: { kind: 'class', value: 2 },
+  // Weapon sub-types (DestinyItemSubType).
+  autorifle: { kind: 'subtype', value: 6 },
+  auto: { kind: 'subtype', value: 6 },
+  shotgun: { kind: 'subtype', value: 7 },
+  machinegun: { kind: 'subtype', value: 8 },
+  lmg: { kind: 'subtype', value: 8 },
+  handcannon: { kind: 'subtype', value: 9 },
+  hc: { kind: 'subtype', value: 9 },
+  rocket: { kind: 'subtype', value: 10 },
+  rocketlauncher: { kind: 'subtype', value: 10 },
+  rl: { kind: 'subtype', value: 10 },
+  fusion: { kind: 'subtype', value: 11 },
+  fusionrifle: { kind: 'subtype', value: 11 },
+  sniper: { kind: 'subtype', value: 12 },
+  sniperrifle: { kind: 'subtype', value: 12 },
+  pulse: { kind: 'subtype', value: 13 },
+  pulserifle: { kind: 'subtype', value: 13 },
+  scout: { kind: 'subtype', value: 14 },
+  scoutrifle: { kind: 'subtype', value: 14 },
+  sidearm: { kind: 'subtype', value: 17 },
+  sword: { kind: 'subtype', value: 18 },
+  linear: { kind: 'subtype', value: 22 },
+  lfr: { kind: 'subtype', value: 22 },
+  linearfusion: { kind: 'subtype', value: 22 },
+  linearfusionrifle: { kind: 'subtype', value: 22 },
+  grenade: { kind: 'subtype', value: 23 },
+  gl: { kind: 'subtype', value: 23 },
+  grenadelauncher: { kind: 'subtype', value: 23 },
+  smg: { kind: 'subtype', value: 24 },
+  submachinegun: { kind: 'subtype', value: 24 },
+  trace: { kind: 'subtype', value: 25 },
+  tracerifle: { kind: 'subtype', value: 25 },
+  bow: { kind: 'subtype', value: 31 },
+  glaive: { kind: 'subtype', value: 33 },
+  // Equipment slots (bucket hashes).
+  kineticslot: { kind: 'slot', value: 1498876634 },
+  energy: { kind: 'slot', value: 2465295065 },
+  power: { kind: 'slot', value: 953998645 },
+  helmet: { kind: 'slot', value: 3448274439 },
+  head: { kind: 'slot', value: 3448274439 },
+  gauntlets: { kind: 'slot', value: 3551918588 },
+  arms: { kind: 'slot', value: 3551918588 },
+  chest: { kind: 'slot', value: 14239492 },
+  legs: { kind: 'slot', value: 20886954 },
+  boots: { kind: 'slot', value: 20886954 },
+  classitem: { kind: 'slot', value: 1585787867 },
+  ghost: { kind: 'slot', value: 4023194814 },
 };
 
 function stripQuotes(value: string): string {
   const trimmed = value.trim();
-  if (trimmed.length >= 2 && trimmed.startsWith('"') && trimmed.endsWith('"')) {
-    return trimmed.slice(1, -1);
+  if (trimmed.length >= 2) {
+    const first = trimmed.charAt(0);
+    const last = trimmed.charAt(trimmed.length - 1);
+    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+      return trimmed.slice(1, -1);
+    }
   }
   return trimmed;
 }
@@ -415,6 +491,35 @@ function pushUniqueNumber(target: number[], value: number): void {
 
 function normalizePhrase(value: string): string {
   return stripQuotes(value).replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+/**
+ * Split an optional leading comparison operator off a `season:`/`tier:` value.
+ * `>=`/`<=` are checked before `>`/`<` so `>=` never parses as `>` + `=`.
+ */
+function parseComparisonOp(value: string): { op: ComparisonOp; rest: string } {
+  const trimmed = value.trim();
+  if (trimmed.startsWith('>=')) return { op: '>=', rest: trimmed.slice(2) };
+  if (trimmed.startsWith('<=')) return { op: '<=', rest: trimmed.slice(2) };
+  if (trimmed.startsWith('>')) return { op: '>', rest: trimmed.slice(1) };
+  if (trimmed.startsWith('<')) return { op: '<', rest: trimmed.slice(1) };
+  if (trimmed.startsWith('=')) return { op: '=', rest: trimmed.slice(1) };
+  return { op: '=', rest: trimmed };
+}
+
+function compareValues(left: number, op: ComparisonOp, right: number): boolean {
+  switch (op) {
+    case '=':
+      return left === right;
+    case '>':
+      return left > right;
+    case '>=':
+      return left >= right;
+    case '<':
+      return left < right;
+    case '<=':
+      return left <= right;
+  }
 }
 
 function resolveTier(value: string): number | null {
@@ -527,25 +632,55 @@ type QueryToken =
   | { kind: 'quoted'; value: string }
   | { kind: 'word'; value: string };
 
-/** Read a `"..."` span starting at the opening quote; tolerant of EOF. */
+/** Fold curly smart quotes back to ASCII before lexing. */
+function normalizeSmartQuotes(raw: string): string {
+  return raw
+    .replace(/\u201C|\u201D/g, '"')
+    .replace(/\u2018|\u2019/g, "'");
+}
+
+const isQuoteChar = (ch: string): boolean => ch === '"' || ch === "'";
+
+/**
+ * Read a `"..."` or `'...'` span starting at the opening quote. Handles the
+ * `\"`, `\'` and `\\` escapes, and is tolerant of EOF (an unterminated quote
+ * consumes cleanly to the end of input rather than throwing).
+ */
 function readQuoted(raw: string, start: number): { value: string; end: number } {
+  const quote = raw.charAt(start);
   let index = start + 1;
   let value = '';
-  while (index < raw.length && raw.charAt(index) !== '"') {
-    value += raw.charAt(index);
+  while (index < raw.length) {
+    const ch = raw.charAt(index);
+    if (ch === '\\') {
+      if (index + 1 < raw.length) {
+        value += raw.charAt(index + 1);
+        index += 2;
+      } else {
+        value += ch;
+        index += 1;
+      }
+      continue;
+    }
+    if (ch === quote) {
+      index += 1;
+      break;
+    }
+    value += ch;
     index += 1;
   }
-  const end = index < raw.length ? index + 1 : index;
-  return { value, end };
+  return { value, end: index };
 }
 
 /**
  * Split a raw query into tokens. Parentheses are emitted as their own tokens,
- * quoted strings stay together (folded into a `key:"value"` word when they
- * directly follow a colon), and commas/semicolons act as separators so pasted
- * hash lists keep working.
+ * quoted strings (single or double) stay together (folded into a `key:"value"`
+ * word when they directly follow a colon), and commas/semicolons act as
+ * separators so pasted hash lists keep working. Curly smart quotes are folded
+ * to their ASCII equivalents first.
  */
 function tokenizeQuery(raw: string): QueryToken[] {
+  raw = normalizeSmartQuotes(raw);
   const tokens: QueryToken[] = [];
   const length = raw.length;
   let index = 0;
@@ -565,7 +700,7 @@ function tokenizeQuery(raw: string): QueryToken[] {
       index += 1;
       continue;
     }
-    if (ch === '"') {
+    if (isQuoteChar(ch)) {
       const { value, end } = readQuoted(raw, index);
       tokens.push({ kind: 'quoted', value });
       index = end;
@@ -575,7 +710,7 @@ function tokenizeQuery(raw: string): QueryToken[] {
     while (index < length) {
       const c = raw.charAt(index);
       if (/\s/.test(c) || c === '(' || c === ')' || c === ',' || c === ';') break;
-      if (c === '"') {
+      if (isQuoteChar(c)) {
         if (word.endsWith(':')) {
           const { value, end } = readQuoted(raw, index);
           word += `"${value}"`;
@@ -592,12 +727,46 @@ function tokenizeQuery(raw: string): QueryToken[] {
   return tokens;
 }
 
+/** An atom that never matches; emitted for a recognized-but-invalid value. */
+const NEVER_ATOM: NeverQueryAtom = { type: 'atom', kind: 'never' };
+
+/**
+ * Resolve an `is:`/`has:`/`not:` value to an atom. Known flags and value
+ * aliases map to their scalar match; anything unrecognized is `never` so an
+ * invalid `is:` filter honestly returns zero matches instead of dropping out.
+ */
+function buildIsAtom(value: string): QueryAtom {
+  const normalized = value.toLowerCase().replace(/[^a-z]/g, '');
+  const flagKey = FLAG_TOKENS[normalized];
+  if (flagKey) return { type: 'atom', kind: 'flag', flag: flagKey };
+  const alias = IS_VALUE_ALIASES[normalized];
+  if (alias) {
+    switch (alias.kind) {
+      case 'tier':
+        return { type: 'atom', kind: 'tier', value: alias.value, op: '=' };
+      case 'damage':
+        return { type: 'atom', kind: 'damage', value: alias.value };
+      case 'class':
+        return { type: 'atom', kind: 'class', value: alias.value };
+      case 'type':
+        return { type: 'atom', kind: 'type', value: alias.value };
+      case 'ammo':
+        return { type: 'atom', kind: 'ammo', value: alias.value };
+      case 'slot':
+        return { type: 'atom', kind: 'slot', value: alias.value };
+      case 'subtype':
+        return { type: 'atom', kind: 'subtype', value: alias.value };
+    }
+  }
+  return NEVER_ATOM;
+}
+
 /** Build an operator atom from a known `key` and its already-stripped `value`. */
 function buildOperatorAtom(
   key: string,
   value: string,
   availableTables: string[],
-): QueryAtom | null {
+): QueryAtom {
   switch (key) {
     case 't':
     case 'table': {
@@ -609,99 +778,87 @@ function buildOperatorAtom(
       if (/^Destiny[A-Za-z0-9]+Definition$/.test(value)) {
         return { type: 'atom', kind: 'table', table: value };
       }
-      return null;
+      return NEVER_ATOM;
     }
     case 'tier':
     case 'rarity': {
-      const tier = resolveTier(value);
-      return tier !== null ? { type: 'atom', kind: 'tier', value: tier } : null;
+      const { op, rest } = parseComparisonOp(value);
+      const tier = resolveTier(rest);
+      return tier !== null ? { type: 'atom', kind: 'tier', value: tier, op } : NEVER_ATOM;
     }
     case 'damage':
     case 'element':
     case 'el':
     case 'dmg': {
       const damage = resolveDamage(value);
-      return damage !== null ? { type: 'atom', kind: 'damage', value: damage } : null;
+      return damage !== null ? { type: 'atom', kind: 'damage', value: damage } : NEVER_ATOM;
     }
     case 'class': {
       const classType = resolveClass(value);
-      return classType !== null ? { type: 'atom', kind: 'class', value: classType } : null;
+      return classType !== null ? { type: 'atom', kind: 'class', value: classType } : NEVER_ATOM;
     }
     case 'type': {
       const itemType = resolveItemType(value);
-      return itemType !== null ? { type: 'atom', kind: 'type', value: itemType } : null;
+      return itemType !== null ? { type: 'atom', kind: 'type', value: itemType } : NEVER_ATOM;
     }
     case 'ammo': {
       const ammo = resolveAmmo(value);
-      return ammo !== null ? { type: 'atom', kind: 'ammo', value: ammo } : null;
+      return ammo !== null ? { type: 'atom', kind: 'ammo', value: ammo } : NEVER_ATOM;
     }
     case 'slot': {
       const slot = resolveSlot(value);
-      return slot !== null ? { type: 'atom', kind: 'slot', value: slot } : null;
+      return slot !== null ? { type: 'atom', kind: 'slot', value: slot } : NEVER_ATOM;
     }
     case 'subtype':
     case 'weapon': {
       const subtype = resolveSubtype(value);
-      return subtype !== null ? { type: 'atom', kind: 'subtype', value: subtype } : null;
+      return subtype !== null ? { type: 'atom', kind: 'subtype', value: subtype } : NEVER_ATOM;
     }
     case 'season':
     case 's': {
-      const phrase = normalizePhrase(value);
-      return phrase ? { type: 'atom', kind: 'season', value: phrase } : null;
+      const { op, rest } = parseComparisonOp(value);
+      const phrase = normalizePhrase(rest);
+      return phrase ? { type: 'atom', kind: 'season', value: phrase, op } : NEVER_ATOM;
     }
     case 'source': {
       const phrase = normalizePhrase(value);
-      return phrase ? { type: 'atom', kind: 'source', value: phrase } : null;
+      return phrase ? { type: 'atom', kind: 'source', value: phrase } : NEVER_ATOM;
     }
     case 'trait': {
       const phrase = normalizePhrase(value);
-      return phrase ? { type: 'atom', kind: 'trait', value: phrase } : null;
+      return phrase ? { type: 'atom', kind: 'trait', value: phrase } : NEVER_ATOM;
     }
     case 'cat':
     case 'category':
     case 'categories': {
       const phrase = normalizePhrase(value);
-      return phrase ? { type: 'atom', kind: 'category', value: phrase } : null;
+      return phrase ? { type: 'atom', kind: 'category', value: phrase } : NEVER_ATOM;
     }
     case 'is':
     case 'has': {
-      const normalized = value.toLowerCase().replace(/[^a-z]/g, '');
-      const flagKey = FLAG_TOKENS[normalized];
-      if (flagKey) return { type: 'atom', kind: 'flag', flag: flagKey };
-      const alias = IS_VALUE_ALIASES[normalized];
-      if (alias) {
-        switch (alias.kind) {
-          case 'tier':
-            return { type: 'atom', kind: 'tier', value: alias.value };
-          case 'damage':
-            return { type: 'atom', kind: 'damage', value: alias.value };
-          case 'class':
-            return { type: 'atom', kind: 'class', value: alias.value };
-          case 'type':
-            return { type: 'atom', kind: 'type', value: alias.value };
-          case 'ammo':
-            return { type: 'atom', kind: 'ammo', value: alias.value };
-        }
-      }
-      return null;
+      return buildIsAtom(value);
     }
     case 'hash':
     case 'h': {
       const hash = parseHashInput(value);
-      return hash !== null ? { type: 'atom', kind: 'hash', value: hash } : null;
+      return hash !== null ? { type: 'atom', kind: 'hash', value: hash } : NEVER_ATOM;
     }
     default:
-      return null;
+      return NEVER_ATOM;
   }
 }
 
-/** Turn a single word token (already negation-stripped) into a leaf atom. */
-function buildAtomFromWord(body: string, availableTables: string[]): QueryAtom | null {
+/** Turn a single word token (already negation-stripped) into a leaf node. */
+function buildAtomFromWord(body: string, availableTables: string[]): QueryNode | null {
   const colon = body.indexOf(':');
   if (colon > 0) {
     const key = body.slice(0, colon).trim().toLowerCase();
     const value = stripQuotes(body.slice(colon + 1)).trim();
     if (!value) return null;
+    // `not:X` is shorthand for `-is:X`.
+    if (key === 'not') {
+      return { type: 'not', child: buildIsAtom(value) };
+    }
     if (OPERATOR_KEYS.has(key)) {
       return buildOperatorAtom(key, value, availableTables);
     }
@@ -720,7 +877,20 @@ function buildAtomFromWord(body: string, availableTables: string[]): QueryAtom |
  * dangling operators, empty groups, stray parens and malformed tokens are
  * ignored rather than throwing, so typing mid-query never crashes or zeroes out.
  */
-function parseQueryAst(raw: string, availableTables: string[]): QueryNode | null {
+/**
+ * Recursive-descent parser implementing Boolean precedence with parentheses
+ * highest. Two precedence modes are supported (see `QueryPrecedence`):
+ *  - `dim`:      NOT > explicit `and` > `or` > implicit whitespace AND
+ *  - `standard`: NOT > AND (whitespace + `and`) > OR
+ * Always returns a best-effort AST: dangling operators, empty groups, stray
+ * parens and malformed tokens are ignored rather than throwing, so typing
+ * mid-query never crashes or zeroes out.
+ */
+function parseQueryAst(
+  raw: string,
+  availableTables: string[],
+  precedence: QueryPrecedence,
+): QueryNode | null {
   const tokens = tokenizeQuery(raw);
   let pos = 0;
   let parenDepth = 0;
@@ -731,9 +901,12 @@ function parseQueryAst(raw: string, availableTables: string[]): QueryNode | null
     if (token !== undefined) pos += 1;
     return token;
   };
+  const isWord = (token: QueryToken | undefined, word: string): boolean =>
+    token?.kind === 'word' && token.value.toLowerCase() === word;
 
-  // Skip dangling `and` keywords and stray (unmatched) closing parens.
-  const skipAndAndStrayClose = (): void => {
+  // Skip dangling `and` keywords and stray (unmatched) closing parens. Used at
+  // the AND level where `or` must still delimit the group.
+  function skipAndNoise(): void {
     for (;;) {
       const token = peek();
       if (token === undefined) return;
@@ -741,66 +914,40 @@ function parseQueryAst(raw: string, availableTables: string[]): QueryNode | null
         consume();
         continue;
       }
-      if (token.kind === 'word' && token.value.toLowerCase() === 'and') {
+      if (isWord(token, 'and')) {
         consume();
         continue;
       }
       return;
     }
-  };
+  }
 
-  // Skip dangling leading `or` keywords.
-  const skipLeadingOr = (): void => {
+  // Skip any dangling Boolean keyword and stray closing parens. Used at the
+  // loosest (implicit-AND) level.
+  function skipAnyNoise(): void {
     for (;;) {
       const token = peek();
-      if (token?.kind === 'word' && token.value.toLowerCase() === 'or') {
+      if (token === undefined) return;
+      if (token.kind === 'rparen' && parenDepth === 0) {
+        consume();
+        continue;
+      }
+      if (isWord(token, 'and') || isWord(token, 'or')) {
         consume();
         continue;
       }
       return;
     }
-  };
+  }
 
-  const parseOr = (): QueryNode | null => {
-    const children: QueryNode[] = [];
-    for (;;) {
-      skipLeadingOr();
-      const andNode = parseAnd();
-      if (andNode !== null) children.push(andNode);
-      const token = peek();
-      if (token?.kind === 'word' && token.value.toLowerCase() === 'or') {
-        consume();
-        continue;
-      }
-      break;
-    }
-    if (children.length === 0) return null;
-    return children.length === 1 ? children[0]! : { type: 'or', children };
-  };
-
-  const parseAnd = (): QueryNode | null => {
-    const children: QueryNode[] = [];
-    for (;;) {
-      skipAndAndStrayClose();
-      const token = peek();
-      if (token === undefined) break;
-      if (token.kind === 'rparen') break; // matched close; bubble up to the group
-      if (token.kind === 'word' && token.value.toLowerCase() === 'or') break;
-      const unary = parseUnary();
-      if (unary !== null) children.push(unary);
-    }
-    if (children.length === 0) return null;
-    return children.length === 1 ? children[0]! : { type: 'and', children };
-  };
-
-  const parseUnary = (): QueryNode | null => {
+  function parseUnary(group: () => QueryNode | null): QueryNode | null {
     const token = peek();
     if (token === undefined) return null;
 
     if (token.kind === 'lparen') {
       consume();
       parenDepth += 1;
-      const inner = parseOr();
+      const inner = group();
       if (peek()?.kind === 'rparen') {
         consume();
         parenDepth -= 1;
@@ -812,7 +959,8 @@ function parseQueryAst(raw: string, availableTables: string[]): QueryNode | null
 
     if (token.kind === 'quoted') {
       consume();
-      const phrase = normalizePhrase(token.value);
+      // The tokenizer already removed the delimiters and unescaped the content.
+      const phrase = token.value.replace(/\s+/g, ' ').trim().toLowerCase();
       if (!phrase) return null;
       return { type: 'atom', kind: 'text', value: phrase };
     }
@@ -824,14 +972,16 @@ function parseQueryAst(raw: string, availableTables: string[]): QueryNode | null
 
     if (lower === 'not') {
       consume();
-      const child = parseUnary();
-      return child === null ? null : { type: 'not', child };
+      const child = parseUnary(group);
+      if (child === null) return null;
+      return child.type === 'not' ? child.child : { type: 'not', child };
     }
 
     if (raw === '-') {
       consume();
-      const child = parseUnary();
-      return child === null ? null : { type: 'not', child };
+      const child = parseUnary(group);
+      if (child === null) return null;
+      return child.type === 'not' ? child.child : { type: 'not', child };
     }
 
     // A signed 32-bit hash token (e.g. -1368098261) is a positive hash, not a
@@ -854,10 +1004,93 @@ function parseQueryAst(raw: string, availableTables: string[]): QueryNode | null
     const atom = buildAtomFromWord(body, availableTables);
     consume();
     if (atom === null) return null;
-    return negated ? { type: 'not', child: atom } : atom;
-  };
+    if (negated) {
+      return atom.type === 'not' ? atom.child : { type: 'not', child: atom };
+    }
+    return atom;
+  }
 
-  return parseOr();
+  // --- DIM precedence: NOT > explicit `and` > `or` > implicit AND -----------
+  function parseExplicitAnd(): QueryNode | null {
+    const children: QueryNode[] = [];
+    for (;;) {
+      while (isWord(peek(), 'and')) consume(); // skip dangling leading `and`
+      const unary = parseUnary(parseImplicitAnd);
+      if (unary !== null) children.push(unary);
+      if (isWord(peek(), 'and')) {
+        consume();
+        continue;
+      }
+      break;
+    }
+    if (children.length === 0) return null;
+    return children.length === 1 ? children[0]! : { type: 'and', children };
+  }
+
+  function parseOrDim(): QueryNode | null {
+    const children: QueryNode[] = [];
+    for (;;) {
+      while (isWord(peek(), 'or')) consume(); // skip dangling leading `or`
+      const andNode = parseExplicitAnd();
+      if (andNode !== null) children.push(andNode);
+      if (isWord(peek(), 'or')) {
+        consume();
+        continue;
+      }
+      break;
+    }
+    if (children.length === 0) return null;
+    return children.length === 1 ? children[0]! : { type: 'or', children };
+  }
+
+  function parseImplicitAnd(): QueryNode | null {
+    const children: QueryNode[] = [];
+    for (;;) {
+      skipAnyNoise();
+      const token = peek();
+      if (token === undefined) break;
+      if (token.kind === 'rparen') break; // matched close; bubble up to the group
+      const orNode = parseOrDim();
+      if (orNode === null) break;
+      children.push(orNode);
+    }
+    if (children.length === 0) return null;
+    return children.length === 1 ? children[0]! : { type: 'and', children };
+  }
+
+  // --- Standard precedence: NOT > AND (whitespace + `and`) > OR -------------
+  function parseAndStandard(): QueryNode | null {
+    const children: QueryNode[] = [];
+    for (;;) {
+      skipAndNoise();
+      const token = peek();
+      if (token === undefined) break;
+      if (token.kind === 'rparen') break;
+      if (isWord(token, 'or')) break;
+      const unary = parseUnary(parseOrStandard);
+      if (unary !== null) children.push(unary);
+    }
+    if (children.length === 0) return null;
+    return children.length === 1 ? children[0]! : { type: 'and', children };
+  }
+
+  function parseOrStandard(): QueryNode | null {
+    const children: QueryNode[] = [];
+    for (;;) {
+      while (isWord(peek(), 'or')) consume();
+      const andNode = parseAndStandard();
+      if (andNode !== null) children.push(andNode);
+      if (isWord(peek(), 'or')) {
+        consume();
+        continue;
+      }
+      break;
+    }
+    if (children.length === 0) return null;
+    return children.length === 1 ? children[0]! : { type: 'or', children };
+  }
+
+  return precedence === 'dim' ? parseImplicitAnd() : parseOrStandard();
 }
 
 /* -------------------------------------------------------------------------- */
@@ -916,7 +1149,7 @@ function walkAtomSummary(atom: QueryAtom, negated: boolean, acc: SummaryAccumula
       if (!negated) pushUnique(acc.tableFilterCandidates, atom.table);
       return;
     case 'tier':
-      if (!negated) pushUniqueNumber(acc.tierFilters, atom.value);
+      if (!negated && atom.op === '=') pushUniqueNumber(acc.tierFilters, atom.value);
       return;
     case 'damage':
       if (!negated) pushUniqueNumber(acc.damageFilters, atom.value);
@@ -937,7 +1170,7 @@ function walkAtomSummary(atom: QueryAtom, negated: boolean, acc: SummaryAccumula
       if (!negated) pushUniqueNumber(acc.subtypeFilters, atom.value);
       return;
     case 'season':
-      if (!negated) pushUnique(acc.seasonFilters, atom.value);
+      if (!negated && atom.op === '=') pushUnique(acc.seasonFilters, atom.value);
       return;
     case 'source':
       pushUnique(negated ? acc.negatedSourceTokens : acc.sourceTokens, atom.value);
@@ -951,6 +1184,8 @@ function walkAtomSummary(atom: QueryAtom, negated: boolean, acc: SummaryAccumula
     case 'flag':
       acc.flags[atom.flag] = !negated;
       return;
+    case 'never':
+      return;
   }
 }
 
@@ -959,8 +1194,12 @@ function walkAtomSummary(atom: QueryAtom, negated: boolean, acc: SummaryAccumula
  * AST. Unsupported prefixes are treated as plain text so nothing typed by the
  * user silently disappears.
  */
-export function parseSearchQuery(raw: string, availableTables: string[]): ParsedQuery {
-  const ast = parseQueryAst(raw, availableTables);
+export function parseSearchQuery(
+  raw: string,
+  availableTables: string[],
+  precedence: QueryPrecedence = 'dim',
+): ParsedQuery {
+  const ast = parseQueryAst(raw, availableTables, precedence);
 
   const acc: SummaryAccumulator = {
     textTokens: [],
@@ -1327,6 +1566,44 @@ function resolveSeasonNumbers(
 }
 
 /**
+ * Resolve a single season token to exactly one season number, for comparison
+ * operators like `season:>=heresy`. Falls back to the lowest matching season
+ * when a name fragment matches more than one.
+ */
+function resolveSingleSeasonNumber(
+  token: string,
+  context: SearchContext | undefined,
+): number | undefined {
+  const lower = token.toLowerCase();
+  if (lower === 'latest' || lower === 'current') return context?.latestSeason;
+  const numeric = Number(lower);
+  if (Number.isInteger(numeric) && numeric >= 0) return numeric;
+
+  const candidates: Array<[number, string]> = [];
+  if (context?.seasonNameMap) {
+    for (const [num, name] of context.seasonNameMap) candidates.push([num, name]);
+  }
+  if (context?.seasonAliases) {
+    for (const [seasonStr, alias] of Object.entries(context.seasonAliases)) {
+      const num = Number(seasonStr);
+      if (Number.isNaN(num)) continue;
+      candidates.push([num, alias.fallbackName]);
+      for (const name of alias.aliases) candidates.push([num, name]);
+    }
+  }
+  for (const [num, name] of candidates) {
+    if (name.toLowerCase() === lower) return num;
+  }
+  let best: number | undefined;
+  for (const [num, name] of candidates) {
+    if (name.toLowerCase().includes(lower)) {
+      if (best === undefined || num < best) best = num;
+    }
+  }
+  return best;
+}
+
+/**
  * Filter option 20 means Shader, which lives in the item sub-type because
  * shaders share the Mod item type. Option 19 (Mod) excludes those shaders.
  */
@@ -1411,6 +1688,8 @@ interface EvalContext {
   categoryNameMap: Map<number, string>;
   /** season token -> resolved set of season numbers (undefined = unresolvable). */
   seasonNumbers: Map<string, Set<number> | undefined>;
+  /** season token -> resolved single number for `>`/`>=`/`<`/`<=`. */
+  seasonComparisonNumbers: Map<string, number | undefined>;
 }
 
 function evaluateAtom(atom: QueryAtom, entry: SearchIndexEntry, evalCtx: EvalContext): boolean {
@@ -1418,7 +1697,7 @@ function evaluateAtom(atom: QueryAtom, entry: SearchIndexEntry, evalCtx: EvalCon
     case 'table':
       return matchesTableKey(entry, tableKey(atom.table));
     case 'tier':
-      return entry.tierType !== undefined && entry.tierType === atom.value;
+      return entry.tierType !== undefined && compareValues(entry.tierType, atom.op, atom.value);
     case 'damage':
       return entry.damageType !== undefined && entry.damageType === atom.value;
     case 'class':
@@ -1432,9 +1711,14 @@ function evaluateAtom(atom: QueryAtom, entry: SearchIndexEntry, evalCtx: EvalCon
     case 'subtype':
       return entry.itemSubType !== undefined && entry.itemSubType === atom.value;
     case 'season': {
-      const numbers = evalCtx.seasonNumbers.get(atom.value);
-      if (numbers === undefined || numbers.size === 0) return false;
-      return entry.seasonNumber !== undefined && numbers.has(entry.seasonNumber);
+      if (atom.op === '=') {
+        const numbers = evalCtx.seasonNumbers.get(atom.value);
+        if (numbers === undefined || numbers.size === 0) return false;
+        return entry.seasonNumber !== undefined && numbers.has(entry.seasonNumber);
+      }
+      const target = evalCtx.seasonComparisonNumbers.get(atom.value);
+      if (target === undefined) return false;
+      return entry.seasonNumber !== undefined && compareValues(entry.seasonNumber, atom.op, target);
     }
     case 'source':
       return sourceMatches(entry, atom.value, evalCtx.context);
@@ -1446,6 +1730,8 @@ function evaluateAtom(atom: QueryAtom, entry: SearchIndexEntry, evalCtx: EvalCon
       return entryFlag(entry, atom.flag);
     case 'hash':
       return entry.hash === atom.value;
+    case 'never':
+      return false;
     case 'text':
       if (textMatches(entry, atom.value)) return true;
       if (evalCtx.context?.fuzzy?.enabled) {
@@ -1522,7 +1808,7 @@ function collectSeasonNumbers(
         visit(node.child);
         return;
       case 'atom':
-        if (node.kind === 'season') tokens.add(node.value);
+        if (node.kind === 'season' && node.op === '=') tokens.add(node.value);
         return;
     }
   };
@@ -1530,6 +1816,33 @@ function collectSeasonNumbers(
   const result = new Map<string, Set<number> | undefined>();
   for (const token of tokens) {
     result.set(token, resolveSeasonNumbers([token], context));
+  }
+  return result;
+}
+
+function collectSeasonComparisonNumbers(
+  ast: QueryNode | null,
+  context: SearchContext | undefined,
+): Map<string, number | undefined> {
+  const tokens = new Set<string>();
+  const visit = (node: QueryNode): void => {
+    switch (node.type) {
+      case 'and':
+      case 'or':
+        for (const child of node.children) visit(child);
+        return;
+      case 'not':
+        visit(node.child);
+        return;
+      case 'atom':
+        if (node.kind === 'season' && node.op !== '=') tokens.add(node.value);
+        return;
+    }
+  };
+  if (ast !== null) visit(ast);
+  const result = new Map<string, number | undefined>();
+  for (const token of tokens) {
+    result.set(token, resolveSingleSeasonNumber(token, context));
   }
   return result;
 }
@@ -1555,6 +1868,7 @@ export function scoreAndFilterEntries(
     context,
     categoryNameMap,
     seasonNumbers: collectSeasonNumbers(ast, context),
+    seasonComparisonNumbers: collectSeasonComparisonNumbers(ast, context),
   };
 
   const uiTableKey =

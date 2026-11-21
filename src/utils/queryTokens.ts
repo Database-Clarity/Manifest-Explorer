@@ -7,8 +7,10 @@
  * Tokens follow DIM's search-bar semantics: filters AND together by default,
  * while multiple selections from one filter category are OR-joined inside
  * parentheses — `tier:exotic (damage:solar or damage:arc)` is an exotic that is
- * solar OR arc. Hand-typed `or`/`and`/`not`, `-` negation, and parentheses are
- * preserved and edited in place, never corrupted.
+ * solar OR arc. Hand-typed `or`/`and`/`not`, `-` negation (glued or spaced),
+ * `not:x` shorthand, single- and smart-quoted values, range comparisons
+ * (`season:>=24`), and parentheses are preserved and edited in place, never
+ * corrupted.
  */
 
 /** Filter categories the popover groups its chips into. */
@@ -53,6 +55,7 @@ function buildKeyToGroup(): Readonly<Record<string, FilterGroupId>> {
 /**
  * Keys the manifest query parser recognizes as structured filters (mirrors
  * query.ts; `hash:`/`h:` stay free text so hash jumps survive clearing).
+ * `not:` is DIM shorthand for `-is:` and always reads as a negated filter.
  */
 const FILTER_KEYS: ReadonlySet<string> = new Set([
   'table',
@@ -78,6 +81,7 @@ const FILTER_KEYS: ReadonlySet<string> = new Set([
   'categories',
   'is',
   'has',
+  'not',
 ]);
 
 /**
@@ -152,46 +156,82 @@ function makeParenPart(open: boolean, negated = false): ParenPart {
   return { kind: 'paren', open, negated, dead: false };
 }
 
+/** Maps smart quotes to their ASCII equivalents, like DIM's canonicalizer. */
+function canonicalizeQuotes(raw: string): string {
+  return raw.replace(/[“”]/g, '"').replace(/[‘’]/g, "'");
+}
+
 /**
  * Splits a query into parts: structured filters, free-text words, boolean
- * operators, and parentheses. Quoted segments stay glued together and
- * parentheses may hug their contents (`(damage:solar or damage:arc)`).
+ * operators, and parentheses. Smart quotes are canonicalized first; quoted
+ * segments (double or single) stay glued together — quotes only open at a
+ * token boundary, so plain apostrophes (`Izanagi's`) never glue — and a
+ * standalone `-` before whitespace negates the next token or group, exactly
+ * like the word `not`. Parentheses may hug their contents
+ * (`(damage:solar or damage:arc)`).
  */
-function parseQueryParts(query: string): QueryPart[] {
+function parseQueryParts(raw: string): QueryPart[] {
+  const query = canonicalizeQuotes(raw);
   const parts: QueryPart[] = [];
   let current = '';
-  let inQuotes = false;
+  let quote: '"' | "'" | null = null;
 
-  const flush = (): void => {
+  const flush = (nextIndex: number): void => {
     const atom = current;
     current = '';
-    if (atom.length === 0 || atom === '-') return;
+    if (atom.length === 0) return;
+    if (atom === '-') {
+      // `- is:exotic` negates just like `not is:exotic` — but a stray
+      // trailing dash (or one before a `)`) still drops out as before.
+      let look = nextIndex;
+      while (look < query.length && /\s/.test(query.charAt(look))) look++;
+      if (look < query.length && query.charAt(look) !== ')') parts.push(makeOpPart('not'));
+      return;
+    }
     parts.push(classifyAtom(atom, parts[parts.length - 1]));
   };
 
-  for (const char of query) {
-    if (char === '"') {
-      inQuotes = !inQuotes;
+  for (let i = 0; i < query.length; i++) {
+    const char = query.charAt(i);
+    if (char === '\\' && (query.charAt(i + 1) === '"' || query.charAt(i + 1) === "'")) {
+      // Escaped quotes (`\"`, `\'`) stay literal wherever they appear.
+      current += char + query.charAt(i + 1);
+      i++;
+      continue;
+    }
+    if (quote !== null) {
       current += char;
-    } else if (!inQuotes && (char === '(' || char === ')')) {
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      // Quotes open only at a token boundary (start, after `-`, after `:`)
+      // so apostrophes inside plain words never start a quoted value.
+      if (current.length === 0 || current === '-' || current.endsWith(':')) quote = char;
+      current += char;
+      continue;
+    }
+    if (char === '(' || char === ')') {
       if (char === '(' && current === '-') {
         // `-(...)` folds the dash into the group's opening paren.
         current = '';
         parts.push(makeParenPart(true, true));
       } else {
-        flush();
+        flush(i);
         const prev = parts[parts.length - 1];
         const negated =
           char === '(' && prev !== undefined && prev.kind === 'op' && prev.op === 'not';
         parts.push(makeParenPart(char === '(', negated));
       }
-    } else if (!inQuotes && /\s/.test(char)) {
-      flush();
-    } else {
-      current += char;
+      continue;
     }
+    if (/\s/.test(char)) {
+      flush(i + 1);
+      continue;
+    }
+    current += char;
   }
-  flush();
+  flush(query.length);
   annotateGroupNegation(balanceParens(parts));
   return parts;
 }
@@ -201,9 +241,12 @@ function classifyAtom(atom: string, prev: QueryPart | undefined): QueryPart {
   if (!atom.startsWith('"') && (lower === 'or' || lower === 'and' || lower === 'not')) {
     return makeOpPart(lower);
   }
-  if (tokenKey(atom) !== null) {
+  const key = tokenKey(atom);
+  if (key !== null) {
     const notBefore = prev !== undefined && prev.kind === 'op' && prev.op === 'not' && !prev.dead;
-    return makeFilterPart(atom, atom.startsWith('-') || notBefore);
+    // `not:value` is DIM shorthand for `-is:value`, so it is always negated.
+    const negated = key === 'not' || atom.startsWith('-') || notBefore;
+    return makeFilterPart(atom, negated);
   }
   return makeWordPart(atom);
 }
@@ -271,24 +314,39 @@ function matchParens(parts: QueryPart[]): ParenMatch {
   return { openToClose, enclosing };
 }
 
+/** Unwraps a matching outer pair of double or single quotes, if present. */
+function stripMatchingQuotes(value: string): string {
+  if (value.length >= 2) {
+    const first = value.charAt(0);
+    const last = value.charAt(value.length - 1);
+    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+      return value.slice(1, -1);
+    }
+  }
+  return value;
+}
+
+/** Turns `\"` and `\'` back into literal quote characters. */
+function unescapeQuotes(value: string): string {
+  return value.replace(/\\"/g, '"').replace(/\\'/g, "'");
+}
+
 /**
- * Normalizes a token for comparison: lowercase, with quoted values unwrapped
- * so `cat:"Hand Cannon"` and `cat:Hand Cannon` compare equal. A leading `-`
- * (negation) is kept, so `-is:enhanced` never counts as `is:enhanced`.
+ * Normalizes a token for comparison: lowercase, smart quotes canonicalized,
+ * quoted values unwrapped (double or single) and escaped quotes unescaped, so
+ * `cat:"Hand Cannon"`, `cat:'Hand Cannon'`, and `cat:Hand Cannon` compare
+ * equal. A leading `-` (negation) is kept, so `-is:enhanced` never counts as
+ * `is:enhanced`.
  */
 function normalizeQueryToken(token: string): string {
-  const trimmed = token.trim();
+  const trimmed = canonicalizeQuotes(token).trim();
   if (trimmed.length === 0) return '';
 
   const colon = trimmed.indexOf(':');
-  if (colon <= 0) return trimmed.toLowerCase();
+  if (colon <= 0) return unescapeQuotes(trimmed.toLowerCase());
 
   const key = trimmed.slice(0, colon).toLowerCase();
-  const rawValue = trimmed.slice(colon + 1).trim();
-  const value =
-    rawValue.length >= 2 && rawValue.startsWith('"') && rawValue.endsWith('"')
-      ? rawValue.slice(1, -1)
-      : rawValue;
+  const value = unescapeQuotes(stripMatchingQuotes(trimmed.slice(colon + 1).trim()));
   return `${key}:${value.toLowerCase()}`;
 }
 

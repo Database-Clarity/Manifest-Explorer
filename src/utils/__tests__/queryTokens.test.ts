@@ -315,3 +315,85 @@ describe('filterGroupIdForToken', () => {
     expect(filterGroupIdForToken('deep:wolfpack')).toBeNull();
   });
 });
+
+describe('spaced dash negation', () => {
+  it('negates the next filter like `not`', () => {
+    expect(hasQueryToken('- is:exotic', 'is:exotic')).toBe(false);
+    expect(hasQueryToken('- is:exotic is:exotic', 'is:exotic')).toBe(true);
+  });
+
+  it('negates the next parenthesized group', () => {
+    expect(hasQueryToken('- (damage:solar or damage:arc)', 'damage:solar')).toBe(false);
+    expect(hasQueryToken('- (damage:solar or damage:arc)', 'damage:arc')).toBe(false);
+    expect(hasQueryToken('- (damage:solar or damage:arc) damage:solar', 'damage:solar')).toBe(
+      true,
+    );
+  });
+
+  it('counts and clears spaced-dash negations with their targets', () => {
+    expect(countQueryFilterTokens('- is:exotic')).toBe(1);
+    expect(clearQueryFilterTokens('- is:exotic Gjallarhorn')).toBe('Gjallarhorn');
+    expect(clearQueryFilterTokens('- (damage:solar or damage:arc) Gjallarhorn')).toBe(
+      'Gjallarhorn',
+    );
+  });
+});
+
+describe('not: shorthand', () => {
+  it('reads as a negated is: filter, never a positive chip', () => {
+    expect(hasQueryToken('not:adept', 'is:adept')).toBe(false);
+    expect(hasQueryToken('Gjallarhorn not:adept', 'is:adept')).toBe(false);
+    expect(hasQueryToken('not:adept is:adept', 'is:adept')).toBe(true);
+  });
+
+  it('counts as one structured filter token', () => {
+    expect(countQueryFilterTokens('not:adept')).toBe(1);
+    expect(countQueryFilterTokens('Gjallarhorn not:adept')).toBe(1);
+  });
+
+  it('is stripped by clearing along with other filters', () => {
+    expect(clearQueryFilterTokens('Gjallarhorn not:adept')).toBe('Gjallarhorn');
+    expect(clearQueryFilterTokens('not:ornament tier:exotic')).toBe('');
+  });
+});
+
+describe('single, smart, and escaped quotes', () => {
+  it('matches single-quoted values against double-quoted needles', () => {
+    expect(hasQueryToken("cat:'Hand Cannon'", 'cat:"Hand Cannon"')).toBe(true);
+    expect(countQueryFilterTokens("cat:'Hand Cannon'")).toBe(1);
+    expect(clearQueryFilterTokens("Gjallarhorn cat:'Hand Cannon'")).toBe('Gjallarhorn');
+  });
+
+  it('canonicalizes smart quotes before matching', () => {
+    expect(hasQueryToken('cat:“Hand Cannon”', 'cat:"Hand Cannon"')).toBe(true);
+    expect(hasQueryToken('cat:‘Hand Cannon’', 'cat:"Hand Cannon"')).toBe(true);
+    expect(hasQueryToken('cat:“Hand Cannon”', "cat:'Hand Cannon'")).toBe(true);
+  });
+
+  it('keeps escaped quotes literal', () => {
+    expect(hasQueryToken('cat:"Hand \\"Cannon\\""', 'cat:Hand "Cannon"')).toBe(true);
+    expect(hasQueryToken('cat:"Hand \\"Cannon\\""', 'cat:"Hand Cannon"')).toBe(false);
+    expect(hasQueryToken("cat:'Izanagi\\'s Burden'", "cat:Izanagi's Burden")).toBe(true);
+  });
+
+  it('leaves plain apostrophes inside words alone', () => {
+    expect(hasQueryToken("Izanagi's Burden tier:exotic", 'tier:exotic')).toBe(true);
+    expect(clearQueryFilterTokens("Izanagi's Burden tier:exotic")).toBe("Izanagi's Burden");
+    expect(hasQueryToken('Izanagi’s Burden tier:exotic', 'tier:exotic')).toBe(true);
+  });
+});
+
+describe('range comparison tokens', () => {
+  it('counts and clears like any structured filter', () => {
+    expect(countQueryFilterTokens('season:>=24')).toBe(1);
+    expect(countQueryFilterTokens('tier:>=legendary season:<=20')).toBe(2);
+    expect(clearQueryFilterTokens('Gjallarhorn season:>=24')).toBe('Gjallarhorn');
+    expect(clearQueryFilterTokens('tier:>=legendary season:>=24')).toBe('');
+  });
+
+  it('never matches its plain-value form', () => {
+    expect(hasQueryToken('season:>=24', 'season:24')).toBe(false);
+    expect(hasQueryToken('tier:>=legendary', 'tier:legendary')).toBe(false);
+    expect(hasQueryToken('season:>=24', 'season:>=24')).toBe(true);
+  });
+});

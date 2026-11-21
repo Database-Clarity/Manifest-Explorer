@@ -107,6 +107,7 @@ export function App(): ReactNode {
   const inspectorWidth = useSettingsStore((s) => s.inspectorWidth);
   const fuzzySearch = useSettingsStore((s) => s.fuzzySearch);
   const fuzziness = useSettingsStore((s) => s.fuzziness);
+  const queryPrecedence = useSettingsStore((s) => s.queryPrecedence);
   const setLocale = useSettingsStore((s) => s.setLocale);
   const toggleRail = useSettingsStore((s) => s.toggleRail);
   const setRailWidth = useSettingsStore((s) => s.setRailWidth);
@@ -399,9 +400,9 @@ export function App(): ReactNode {
   }, [query, deepSearch]);
 
   // Run search whenever debouncedQuery, deepSearch, filters, sort, fuzzy
-  // settings, or indexed entry count changes
+  // settings, query logic, or indexed entry count changes
   useEffect(() => {
-    const baseSearchKey = `${debouncedQuery}|${deepSearch ? '1' : '0'}|${sortMode}|${JSON.stringify(filters)}|${fuzzySearch ? '1' : '0'}`;
+    const baseSearchKey = `${debouncedQuery}|${deepSearch ? '1' : '0'}|${sortMode}|${JSON.stringify(filters)}|${fuzzySearch ? '1' : '0'}|${queryPrecedence}`;
     const searchKey = `${baseSearchKey}|${fuzziness}`;
     const baseChanged = baseSearchKey !== lastBaseKeyRef.current;
     lastBaseKeyRef.current = baseSearchKey;
@@ -440,6 +441,7 @@ export function App(): ReactNode {
               sortMode,
               2500,
               fuzzySearch ? { enabled: true, threshold: fuzziness } : undefined,
+              queryPrecedence,
             );
 
       void promise
@@ -469,6 +471,7 @@ export function App(): ReactNode {
     sortMode,
     fuzzySearch,
     fuzziness,
+    queryPrecedence,
     manifestStatus.indexedEntryCount,
     manifestStatus.phase,
     setSearchResults,

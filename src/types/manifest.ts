@@ -347,3 +347,10 @@ export interface FilterCatalog {
 }
 
 export type ImageScalingMode = 'sharp' | 'integer' | 'smooth';
+
+/**
+ * Boolean precedence for unparenthesized search queries:
+ * - `dim`: implicit adjacency is AND, but explicit `and` binds tighter than `or`.
+ * - `standard`: whitespace and `and` both bind tighter than `or`.
+ */
+export type QueryPrecedence = 'dim' | 'standard';

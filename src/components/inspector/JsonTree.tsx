@@ -1,9 +1,21 @@
-import { useCallback, useMemo, useState, type MouseEvent, type ReactNode } from 'react';
-import type { DefinitionRef, ResolvedHashSummary } from '../../types/manifest';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type MouseEvent,
+  type ReactNode,
+} from 'react';
+import type {
+  DefinitionRef,
+  ImageScalingMode,
+  ResolvedHashSummary,
+} from '../../types/manifest';
 import { annotateEnumField } from '../../manifest/enums';
 import {
   bungieAssetUrl,
   getTargetTablesForField,
+  getTargetTablesForObjectKey,
   isBungieImagePath,
   toUnsignedHash,
 } from '../../manifest/hash';
@@ -13,8 +25,9 @@ import {
   ChevronRightIcon,
   CopyIcon,
   ExternalLinkIcon,
-  ImageIcon,
 } from '../../ui/Icons';
+import { ColorSwatchWidget } from './ColorSwatchWidget';
+import { ImageLightbox } from './ImageLightbox';
 import styles from './JsonTree.module.scss';
 
 export interface JsonTreeProps {
@@ -22,6 +35,9 @@ export interface JsonTreeProps {
   resolvedRefs: Record<string, ResolvedHashSummary>;
   onNavigateRef: (ref: DefinitionRef, inNewTab?: boolean) => void;
   onCopy: (text: string, label: string) => void;
+  /** Seed/sync the filter, for example when a Deep Search result is opened. */
+  initialFilter?: string;
+  imageScaling?: ImageScalingMode;
 }
 
 interface ColorSwatch {
@@ -104,20 +120,26 @@ function resolveHashForNode(
   if (!Number.isInteger(value) || value === 0) {
     return null;
   }
+  if (fieldName === 'hash' && parentKey === undefined) {
+    return null;
+  }
   const unsigned = toUnsignedHash(value);
   const targets = getTargetTablesForField(fieldName, parentKey);
 
-  for (const table of targets) {
-    const direct = resolvedRefs[`${table}:${unsigned}`];
-    if (direct) {
-      return direct;
+  if (targets.length > 0) {
+    for (const table of targets) {
+      const direct = resolvedRefs[`${table}:${unsigned}`];
+      if (direct) {
+        return direct;
+      }
     }
+    return null;
   }
 
   const looksLikeHashKey =
     /hash(es)?$/i.test(fieldName) ||
     (parentKey !== undefined && /hash(es)?$/i.test(parentKey));
-  if (looksLikeHashKey || targets.length > 0) {
+  if (looksLikeHashKey) {
     const anyMatch = resolvedRefs[String(unsigned)];
     if (anyMatch) {
       return anyMatch;
@@ -125,6 +147,35 @@ function resolveHashForNode(
   }
 
   return null;
+}
+
+/**
+ * Resolve a numeric object key such as `stats.stats["4284893193"]` against the
+ * definition's resolved refs. The parent property tells us which table the key
+ * belongs to; bare-key entries are the fallback for older payloads.
+ */
+function resolveObjectKeyRef(
+  nodeKey: string,
+  parentKey: string | undefined,
+  resolvedRefs: Record<string, ResolvedHashSummary>,
+): ResolvedHashSummary | null {
+  if (!/^\d+$/.test(nodeKey)) {
+    return null;
+  }
+  const numeric = Number(nodeKey);
+  if (!Number.isSafeInteger(numeric) || numeric <= 0) {
+    return null;
+  }
+
+  const unsigned = toUnsignedHash(numeric);
+  for (const table of getTargetTablesForObjectKey(parentKey)) {
+    const direct = resolvedRefs[`${table}:${unsigned}`] ?? resolvedRefs[`${table}:${nodeKey}`];
+    if (direct) {
+      return direct;
+    }
+  }
+
+  return resolvedRefs[nodeKey] ?? resolvedRefs[String(unsigned)] ?? null;
 }
 
 function matchesFilter(key: string, value: unknown, filterLower: string, depth = 0): boolean {
@@ -168,18 +219,26 @@ function matchesFilter(key: string, value: unknown, filterLower: string, depth =
 
 interface InlineImagePreviewProps {
   path: string;
+  imageScaling: ImageScalingMode;
   onOpenLightbox: (url: string, path: string) => void;
 }
 
-function InlineImagePreview({ path, onOpenLightbox }: InlineImagePreviewProps): ReactNode {
+function InlineImagePreview({
+  path,
+  imageScaling,
+  onOpenLightbox,
+}: InlineImagePreviewProps): ReactNode {
   const [dims, setDims] = useState<{ w: number; h: number } | null>(null);
   const [errored, setErrored] = useState(false);
   const url = bungieAssetUrl(path);
-  const isScreenshot = /screenshot/i.test(path);
+  const isScreenshot = /screenshot|banner|pgcr/i.test(path);
+  const isInteger = imageScaling === 'integer';
 
   if (errored) {
     return null;
   }
+
+  const iconSize = dims ? (dims.w === 96 ? 96 : dims.w) : 96;
 
   return (
     <div className={styles.imagePreview}>
@@ -188,6 +247,7 @@ function InlineImagePreview({ path, onOpenLightbox }: InlineImagePreviewProps): 
         className={isScreenshot ? styles.screenshotBtn : styles.iconPreviewBtn}
         onClick={() => onOpenLightbox(url, path)}
         title="Open full-size image"
+        aria-label={`Open image ${path}`}
       >
         <img
           src={url}
@@ -195,6 +255,16 @@ function InlineImagePreview({ path, onOpenLightbox }: InlineImagePreviewProps): 
           loading="lazy"
           decoding="async"
           className={isScreenshot ? styles.screenshotImg : styles.iconImg}
+          style={
+            isInteger
+              ? {
+                  imageRendering: 'pixelated',
+                  width: isScreenshot ? undefined : iconSize,
+                  height: isScreenshot ? undefined : iconSize,
+                }
+              : undefined
+          }
+          data-scaling={imageScaling}
           onLoad={(e) => {
             const img = e.currentTarget;
             if (img.naturalWidth > 0 && img.naturalHeight > 0) {
@@ -236,6 +306,7 @@ interface NodeProps {
   onNavigateRef: (ref: DefinitionRef, inNewTab?: boolean) => void;
   onCopy: (text: string, label: string) => void;
   onOpenLightbox: (url: string, path: string) => void;
+  imageScaling: ImageScalingMode;
   isArrayItem?: boolean;
 }
 
@@ -251,6 +322,7 @@ function JsonNode({
   onNavigateRef,
   onCopy,
   onOpenLightbox,
+  imageScaling,
   isArrayItem = false,
 }: NodeProps): ReactNode {
   const defaultExpanded =
@@ -288,11 +360,29 @@ function JsonNode({
       : entries;
 
     const swatch = !isArray ? asColorSwatch(value) : null;
+    const objectKeyRef = isArray
+      ? null
+      : resolveObjectKeyRef(nodeKey, parentKey, resolvedRefs);
     const count = entries.length;
     const peek = !isExpanded && count > 0 ? getCollapsedPeek(value as Record<string, unknown>, isArray) : null;
     const summary = isArray
       ? `[${count}]`
       : `{${count}}`;
+
+    const handleObjectRefClick = (event: MouseEvent<HTMLButtonElement>): void => {
+      if (!objectKeyRef) return;
+      onNavigateRef(
+        { table: objectKeyRef.table, hash: objectKeyRef.hash },
+        event.ctrlKey || event.metaKey,
+      );
+    };
+
+    const handleObjectRefAuxClick = (event: MouseEvent<HTMLButtonElement>): void => {
+      if (event.button === 1 && objectKeyRef) {
+        event.preventDefault();
+        onNavigateRef({ table: objectKeyRef.table, hash: objectKeyRef.hash }, true);
+      }
+    };
 
     return (
       <div className={styles.node}>
@@ -319,14 +409,28 @@ function JsonNode({
             <span className={styles.colon}>:</span>
           </button>
           <span className={styles.containerMeta}>{summary}</span>
+          {objectKeyRef && (
+            <span className={styles.comment}>
+              {'// '}
+              <button
+                type="button"
+                className={styles.refLink}
+                onClick={handleObjectRefClick}
+                onAuxClick={handleObjectRefAuxClick}
+                title={`Click to inspect · Ctrl+Click or middle-click for new tab (${objectKeyRef.table}:${objectKeyRef.hash}${objectKeyRef.subtitle ? ` — ${objectKeyRef.subtitle}` : ''})`}
+              >
+                {getShortTableName(objectKeyRef.table)} &quot;{objectKeyRef.name || 'Unnamed'}&quot;
+              </button>
+            </span>
+          )}
           {peek && <span className={styles.peek}>{peek}</span>}
           {swatch && (
-            <span
-              className={styles.swatch}
-              style={{
-                backgroundColor: `rgba(${swatch.r}, ${swatch.g}, ${swatch.b}, ${swatch.a})`,
-              }}
-              title={`rgba(${swatch.r}, ${swatch.g}, ${swatch.b}, ${swatch.a.toFixed(2)})`}
+            <ColorSwatchWidget
+              r={swatch.r}
+              g={swatch.g}
+              b={swatch.b}
+              a={swatch.a}
+              onCopy={onCopy}
             />
           )}
           <div className={styles.rowActions}>
@@ -357,7 +461,7 @@ function JsonNode({
                 <JsonNode
                   key={childKey}
                   nodeKey={childKey}
-                  parentKey={isArray ? nodeKey : undefined}
+                  parentKey={nodeKey}
                   path={childPath}
                   value={childValue}
                   depth={depth + 1}
@@ -367,6 +471,7 @@ function JsonNode({
                   onNavigateRef={onNavigateRef}
                   onCopy={onCopy}
                   onOpenLightbox={onOpenLightbox}
+                  imageScaling={imageScaling}
                   isArrayItem={isArray}
                 />
               );
@@ -383,12 +488,20 @@ function JsonNode({
     typeof value === 'number'
       ? resolveHashForNode(nodeKey, parentKey, value, resolvedRefs)
       : null;
+  const lazyTargetTable =
+    !resolvedRef && typeof value === 'number' && Number.isInteger(value) && value > 0
+      ? getTargetTablesForField(nodeKey, parentKey)[0]
+      : undefined;
+  const lazyHash =
+    lazyTargetTable !== undefined && typeof value === 'number' ? toUnsignedHash(value) : null;
   const isImage = isBungieImagePath(value);
 
   const handleRefClick = (event: MouseEvent<HTMLButtonElement>): void => {
     if (!resolvedRef) return;
-    const inNewTab = event.ctrlKey || event.metaKey || event.shiftKey;
-    onNavigateRef({ table: resolvedRef.table, hash: resolvedRef.hash }, inNewTab);
+    onNavigateRef(
+      { table: resolvedRef.table, hash: resolvedRef.hash },
+      event.ctrlKey || event.metaKey,
+    );
   };
 
   const handleRefAuxClick = (event: MouseEvent<HTMLButtonElement>): void => {
@@ -396,6 +509,20 @@ function JsonNode({
       event.preventDefault();
       onNavigateRef({ table: resolvedRef.table, hash: resolvedRef.hash }, true);
     }
+  };
+
+  const handleLazyRefClick = (event: MouseEvent<HTMLButtonElement>): void => {
+    if (!lazyTargetTable || lazyHash === null) return;
+    onNavigateRef(
+      { table: lazyTargetTable, hash: lazyHash },
+      event.ctrlKey || event.metaKey,
+    );
+  };
+
+  const handleLazyRefAuxClick = (event: MouseEvent<HTMLButtonElement>): void => {
+    if (event.button !== 1 || !lazyTargetTable || lazyHash === null) return;
+    event.preventDefault();
+    onNavigateRef({ table: lazyTargetTable, hash: lazyHash }, true);
   };
 
   return (
@@ -448,6 +575,21 @@ function JsonNode({
           </span>
         )}
 
+        {!resolvedRef && !enumInfo && lazyTargetTable && lazyHash !== null && (
+          <span className={styles.comment}>
+            {'// '}
+            <button
+              type="button"
+              className={`${styles.refLink} ${styles.refLinkLazy}`}
+              onClick={handleLazyRefClick}
+              onAuxClick={handleLazyRefAuxClick}
+              title={`Table not loaded yet — click to load ${lazyTargetTable} and open ${lazyHash} · Ctrl+Click or middle-click for new tab`}
+            >
+              Open {getShortTableName(lazyTargetTable)} {lazyHash}
+            </button>
+          </span>
+        )}
+
         <div className={styles.rowActions}>
           <button
             type="button"
@@ -468,7 +610,13 @@ function JsonNode({
         </div>
       </div>
 
-      {isImage && <InlineImagePreview path={value} onOpenLightbox={onOpenLightbox} />}
+      {isImage && (
+        <InlineImagePreview
+          path={value}
+          imageScaling={imageScaling}
+          onOpenLightbox={onOpenLightbox}
+        />
+      )}
     </div>
   );
 }
@@ -478,13 +626,19 @@ export function JsonTree({
   resolvedRefs,
   onNavigateRef,
   onCopy,
+  initialFilter,
+  imageScaling = 'sharp',
 }: JsonTreeProps): ReactNode {
-  const [filter, setFilter] = useState('');
+  const [filter, setFilter] = useState(initialFilter ?? '');
   const [expandGeneration, setExpandGeneration] = useState<{
     mode: 'default' | 'expand' | 'collapse';
     seq: number;
   }>({ mode: 'default', seq: 0 });
   const [lightbox, setLightbox] = useState<{ url: string; path: string } | null>(null);
+
+  useEffect(() => {
+    setFilter(initialFilter ?? '');
+  }, [initialFilter]);
 
   const filterLower = filter.trim().toLowerCase();
 
@@ -499,6 +653,13 @@ export function JsonTree({
   const handleOpenLightbox = useCallback((url: string, path: string) => {
     setLightbox({ url, path });
   }, []);
+
+  const handleCopy = useCallback(
+    (text: string, label: string) => {
+      onCopy(text, label);
+    },
+    [onCopy],
+  );
 
   return (
     <div className={styles.wrapper}>
@@ -546,50 +707,22 @@ export function JsonTree({
               expandGeneration={expandGeneration}
               resolvedRefs={resolvedRefs}
               onNavigateRef={onNavigateRef}
-              onCopy={onCopy}
+              onCopy={handleCopy}
               onOpenLightbox={handleOpenLightbox}
+              imageScaling={imageScaling}
             />
           ))
         )}
       </div>
 
       {lightbox && (
-        <div
-          className={styles.lightboxBackdrop}
-          role="dialog"
-          aria-modal="true"
-          aria-label="Asset preview"
-          onClick={() => setLightbox(null)}
-        >
-          <div className={styles.lightboxCard} onClick={(e) => e.stopPropagation()}>
-            <div className={styles.lightboxHeader}>
-              <span className={styles.lightboxTitle}>
-                <ImageIcon size={14} />
-                <span className="mono">{lightbox.path}</span>
-              </span>
-              <div className={styles.lightboxActions}>
-                <a
-                  href={lightbox.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className={styles.toolBtn}
-                >
-                  Open original
-                </a>
-                <button
-                  type="button"
-                  className={styles.toolBtn}
-                  onClick={() => setLightbox(null)}
-                >
-                  Close
-                </button>
-              </div>
-            </div>
-            <div className={styles.lightboxBody}>
-              <img src={lightbox.url} alt="" className={styles.lightboxImg} />
-            </div>
-          </div>
-        </div>
+        <ImageLightbox
+          url={lightbox.url}
+          path={lightbox.path}
+          defaultScaling={imageScaling}
+          onClose={() => setLightbox(null)}
+          onCopy={handleCopy}
+        />
       )}
     </div>
   );

@@ -20,20 +20,25 @@ import { useCollectorStore } from '../stores/collector';
 import { useExplorerStore } from '../stores/explorer';
 import { useSettingsStore } from '../stores/settings';
 import { CheckIcon, CloseIcon, GridIcon, ListIcon, PlusIcon } from '../ui/Icons';
+import { getTierColorVar } from '../ui/rarity';
 import { Skeleton } from '../ui/Skeleton';
 import { BungieIcon } from './BungieIcon';
 import styles from './ResultsPane.module.scss';
 
 export interface ResultsPaneProps {
-  onOpenItem: (item: SearchResultItem, inNewTab?: boolean) => void;
+  onOpenItem: (item: SearchResultItem) => void;
   onRetryBoot: () => void;
 }
 
 const OVERSCAN_ROWS = 10;
 const LIST_ROW_REM = 3;
 const LIST_ROW_REM_COARSE = 3.375;
+const LIST_ROW_DEEP_REM = 4;
+const LIST_ROW_DEEP_REM_COARSE = 4.375;
 const GRID_ROW_REM = 5;
 const GRID_ROW_REM_COARSE = 5.5;
+const GRID_ROW_DEEP_REM = 6;
+const GRID_ROW_DEEP_REM_COARSE = 6.5;
 const GRID_MIN_CELL_PX = 220;
 const GRID_GUTTER_PX = 16;
 const MOBILE_QUERY = '(max-width: 700px)';
@@ -177,7 +182,7 @@ interface ResultRowProps {
   collected: boolean;
   collectMode: boolean;
   showTableColumn: boolean;
-  onActivate: (item: SearchResultItem, index: number, inNewTab?: boolean) => void;
+  onActivate: (item: SearchResultItem, index: number) => void;
   onToggleCollect: (item: SearchResultItem) => void;
   onCopyHash: (hash: number) => void;
 }
@@ -196,6 +201,8 @@ const ListRow = memo(function ListRow({
   onToggleCollect,
   onCopyHash,
 }: ResultRowProps): ReactNode {
+  const tierColor = getTierColorVar(item.tierType);
+
   return (
     <div
       id={`results-option-${index}`}
@@ -209,24 +216,38 @@ const ListRow = memo(function ListRow({
       aria-selected={cursor}
       aria-posinset={index + 1}
       aria-setsize={setSize}
-      title="Click to inspect · Ctrl+Click or middle-click for new tab"
-      onClick={(event) => onActivate(item, index, event.ctrlKey || event.metaKey || event.shiftKey)}
+      title="Click to open in a new tab"
+      onClick={() => onActivate(item, index)}
       onAuxClick={(event) => {
         if (event.button === 1) {
           event.preventDefault();
-          onActivate(item, index, true);
+          onActivate(item, index);
         }
       }}
     >
       <BungieIcon
         icon={item.icon}
         watermark={item.iconWatermark}
-        tierType={item.tierType}
+        isEnhanced={item.isEnhanced}
         size={34}
       />
       <span className={styles.rowText}>
         <span className={styles.rowName}>{itemLabel(item)}</span>
-        <span className={styles.rowSub}>{itemSubtitle(item)}</span>
+        <span
+          className={styles.rowSub}
+          style={tierColor ? { color: tierColor } : undefined}
+        >
+          {itemSubtitle(item)}
+        </span>
+        {item.deepMatch && (
+          <span
+            className={styles.rowDeepMatch}
+            title={`${item.deepMatch.path}: ${item.deepMatch.preview}`}
+          >
+            <span className={styles.rowDeepPath}>{item.deepMatch.path}</span>
+            <span className={styles.rowDeepPreview}>{item.deepMatch.preview}</span>
+          </span>
+        )}
       </span>
       {showTableColumn && (
         <span className={styles.rowTable}>{getShortTableName(item.table)}</span>
@@ -264,6 +285,8 @@ const GridCell = memo(function GridCell({
   onActivate,
   onToggleCollect,
 }: ResultRowProps): ReactNode {
+  const tierColor = getTierColorVar(item.tierType);
+
   return (
     <div
       id={`results-option-${index}`}
@@ -276,25 +299,39 @@ const GridCell = memo(function GridCell({
       aria-selected={cursor}
       aria-posinset={index + 1}
       aria-setsize={setSize}
-      title="Click to inspect · Ctrl+Click or middle-click for new tab"
-      onClick={(event) => onActivate(item, index, event.ctrlKey || event.metaKey || event.shiftKey)}
+      title="Click to open in a new tab"
+      onClick={() => onActivate(item, index)}
       onAuxClick={(event) => {
         if (event.button === 1) {
           event.preventDefault();
-          onActivate(item, index, true);
+          onActivate(item, index);
         }
       }}
     >
       <BungieIcon
         icon={item.icon}
         watermark={item.iconWatermark}
-        tierType={item.tierType}
+        isEnhanced={item.isEnhanced}
         size={40}
       />
       <span className={styles.gridText}>
         <span className={styles.gridName}>{itemLabel(item)}</span>
-        <span className={styles.gridSub}>{itemSubtitle(item)}</span>
-        <span className={styles.gridHash}>{item.hash}</span>
+        <span
+          className={styles.gridSub}
+          style={tierColor ? { color: tierColor } : undefined}
+        >
+          {itemSubtitle(item)}
+        </span>
+        {item.deepMatch ? (
+          <span
+            className={styles.gridDeepMatch}
+            title={`${item.deepMatch.path}: ${item.deepMatch.preview}`}
+          >
+            {item.deepMatch.path}
+          </span>
+        ) : (
+          <span className={styles.gridHash}>{item.hash}</span>
+        )}
       </span>
       <CollectButton
         item={item}
@@ -319,6 +356,8 @@ export function ResultsPane({ onOpenItem, onRetryBoot }: ResultsPaneProps): Reac
   const phase = useExplorerStore((state) => state.manifestStatus.phase);
   const manifestError = useExplorerStore((state) => state.manifestStatus.error);
   const query = useExplorerStore((state) => state.query);
+  const deepSearch = useExplorerStore((state) => state.deepSearch);
+  const setDeepSearch = useExplorerStore((state) => state.setDeepSearch);
   const filters = useExplorerStore((state) => state.filters);
   const selectedResultIndex = useExplorerStore((state) => state.selectedResultIndex);
   const setSelectedResultIndex = useExplorerStore((state) => state.setSelectedResultIndex);
@@ -440,6 +479,7 @@ export function ResultsPane({ onOpenItem, onRetryBoot }: ResultsPaneProps): Reac
   }, [collectedItems]);
 
   const viewMode: ViewMode = isNarrowPhone ? (narrowViewChoice ?? 'list') : storedViewMode;
+  const hasDeepMatches = results.length > 0 && results[0]?.deepMatch !== undefined;
   const columns =
     viewMode === 'grid'
       ? Math.max(1, Math.floor((viewportWidth - GRID_GUTTER_PX) / GRID_MIN_CELL_PX))
@@ -447,17 +487,26 @@ export function ResultsPane({ onOpenItem, onRetryBoot }: ResultsPaneProps): Reac
   const rowHeight =
     remPx *
     (viewMode === 'grid'
-      ? isCoarse
-        ? GRID_ROW_REM_COARSE
-        : GRID_ROW_REM
-      : isCoarse
-        ? LIST_ROW_REM_COARSE
-        : LIST_ROW_REM);
+      ? hasDeepMatches
+        ? isCoarse
+          ? GRID_ROW_DEEP_REM_COARSE
+          : GRID_ROW_DEEP_REM
+        : isCoarse
+          ? GRID_ROW_REM_COARSE
+          : GRID_ROW_REM
+      : hasDeepMatches
+        ? isCoarse
+          ? LIST_ROW_DEEP_REM_COARSE
+          : LIST_ROW_DEEP_REM
+        : isCoarse
+          ? LIST_ROW_REM_COARSE
+          : LIST_ROW_REM);
 
   const trimmedQuery = query.trim();
   const advancedFilterCount = countAdvancedFilters(filters);
   const hasTableFilter = filters.table !== 'all' && filters.table.length > 0;
-  const hasActiveFilters = trimmedQuery.length > 0 || hasTableFilter || advancedFilterCount > 0;
+  const hasActiveFilters =
+    trimmedQuery.length > 0 || deepSearch || hasTableFilter || advancedFilterCount > 0;
   const hasResults = results.length > 0;
 
   const showError = phase === 'error' && !hasResults;
@@ -471,14 +520,19 @@ export function ResultsPane({ onOpenItem, onRetryBoot }: ResultsPaneProps): Reac
       : phase === 'loading-core'
         ? 'Indexing core definitions…'
         : searching
-          ? 'Searching definitions…'
+          ? deepSearch
+            ? 'Scanning raw JSON definitions…'
+            : 'Searching definitions…'
           : 'Preparing Destiny 2 manifest…';
 
-  const summaryText = searching
-    ? 'Searching…'
-    : hasActiveFilters
-      ? `${formatCount(totalMatches)} matches · ${formatDuration(searchDurationMs)}`
-      : `${formatCount(totalMatches)} results`;
+  const summaryText =
+    searching && !hasResults
+      ? deepSearch
+        ? 'Scanning JSON…'
+        : 'Searching…'
+      : hasActiveFilters
+        ? `${formatCount(totalMatches)} matches · ${formatDuration(searchDurationMs)}`
+        : `${formatCount(totalMatches)} results`;
 
   const clampedSelectedIndex =
     results.length > 0
@@ -532,9 +586,9 @@ export function ResultsPane({ onOpenItem, onRetryBoot }: ResultsPaneProps): Reac
   );
 
   const handleActivate = useCallback(
-    (item: SearchResultItem, index: number, inNewTab = false) => {
+    (item: SearchResultItem, index: number) => {
       setSelectedResultIndex(index);
-      onOpenItem(item, inNewTab);
+      onOpenItem(item);
     },
     [onOpenItem, setSelectedResultIndex],
   );
@@ -690,6 +744,22 @@ export function ResultsPane({ onOpenItem, onRetryBoot }: ResultsPaneProps): Reac
 
           {hasActiveFilters ? (
             <div className={styles.chips} role="group" aria-label="Active filters">
+              {deepSearch ? (
+                <span className={styles.chip}>
+                  <span className={styles.chipLabel}>Deep JSON</span>
+                  <button
+                    type="button"
+                    className={styles.chipClear}
+                    aria-label="Disable deep JSON search"
+                    title="Disable deep JSON search"
+                    onClick={() => setDeepSearch(false)}
+                    onKeyDown={stopActivationKeys}
+                  >
+                    <CloseIcon size={10} />
+                  </button>
+                </span>
+              ) : null}
+
               {trimmedQuery.length > 0 ? (
                 <span className={styles.chip}>
                   <span className={styles.chipLabel} title={trimmedQuery}>

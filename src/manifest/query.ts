@@ -19,6 +19,7 @@ export interface SearchFlags {
   holofoil?: boolean;
   featured?: boolean;
   dummy?: boolean;
+  enhanced?: boolean;
   hasLore?: boolean;
   hasIcon?: boolean;
   hasScreenshot?: boolean;
@@ -124,6 +125,7 @@ const FLAG_TOKENS: Readonly<Record<string, FlagKey>> = {
   adept: 'adept',
   holofoil: 'holofoil',
   featured: 'featured',
+  enhanced: 'enhanced',
   dummy: 'dummy',
   lore: 'hasLore',
   haslore: 'hasLore',
@@ -406,6 +408,8 @@ function entryFlag(entry: SearchIndexEntry, key: FlagKey): boolean {
       return entry.isHolofoil === true;
     case 'featured':
       return entry.isFeatured === true;
+    case 'enhanced':
+      return entry.isEnhanced === true;
     case 'dummy':
       return entry.isDummy === true;
     case 'hasLore':
@@ -477,6 +481,7 @@ function toResult(entry: SearchIndexEntry): SearchResultItem {
   if (entry.damageType !== undefined) item.damageType = entry.damageType;
   if (entry.classType !== undefined) item.classType = entry.classType;
   if (entry.isRedacted !== undefined) item.isRedacted = entry.isRedacted;
+  if (entry.isEnhanced !== undefined) item.isEnhanced = entry.isEnhanced;
   if (entry.index !== undefined) item.index = entry.index;
   return item;
 }

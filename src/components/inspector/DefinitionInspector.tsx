@@ -11,6 +11,7 @@ import { toSignedHash, toUnsignedHash } from '../../manifest/hash';
 import { getShortTableName } from '../../manifest/tables';
 import { useCollectorStore } from '../../stores/collector';
 import { useExplorerStore } from '../../stores/explorer';
+import { useSettingsStore } from '../../stores/settings';
 import {
   ArrowLeftIcon,
   ArrowRightIcon,
@@ -24,6 +25,7 @@ import {
   MinimizeIcon,
   PlusIcon,
 } from '../../ui/Icons';
+import { getTierColorVar } from '../../ui/rarity';
 import { Skeleton } from '../../ui/Skeleton';
 import { BungieIcon } from '../BungieIcon';
 import { DiffTab } from './DiffTab';
@@ -32,6 +34,36 @@ import { OverviewTab } from './OverviewTab';
 import { ReferencesTab } from './ReferencesTab';
 import { VariantsTab } from './VariantsTab';
 import styles from './DefinitionInspector.module.scss';
+
+function isDefinitionEnhanced(data: Record<string, unknown> | undefined): boolean {
+  if (!data) {
+    return false;
+  }
+  const plug = data.plug as { plugCategoryIdentifier?: unknown } | undefined;
+  if (
+    typeof plug?.plugCategoryIdentifier === 'string' &&
+    plug.plugCategoryIdentifier.toLowerCase().includes('enhanced')
+  ) {
+    return true;
+  }
+  if (
+    typeof data.itemTypeAndTierDisplayName === 'string' &&
+    /\benhanced\b/i.test(data.itemTypeAndTierDisplayName)
+  ) {
+    return true;
+  }
+  if (
+    typeof data.itemTypeDisplayName === 'string' &&
+    /\benhanced\b/i.test(data.itemTypeDisplayName)
+  ) {
+    return true;
+  }
+  const dp = data.displayProperties as { name?: unknown } | undefined;
+  if (typeof dp?.name === 'string' && /^enhanced\s/i.test(dp.name)) {
+    return true;
+  }
+  return false;
+}
 
 export interface DefinitionInspectorProps {
   width: number;
@@ -51,6 +83,10 @@ export interface DefinitionInspectorProps {
   clarityLoading: boolean;
   showClarity: boolean;
   onNavigateRef: (ref: DefinitionRef, pushToStack?: boolean, inNewTab?: boolean) => void;
+  onNavigateBack: () => void;
+  onNavigateForward: () => void;
+  onJumpToStackIndex: (index: number) => void;
+  onSwitchSession: (index: number) => void;
   onLoadFullItem: () => void;
   onLoadPriorityTable: (table: string) => void;
   onRetry: () => void;
@@ -83,6 +119,10 @@ export function DefinitionInspector({
   clarityLoading,
   showClarity,
   onNavigateRef,
+  onNavigateBack,
+  onNavigateForward,
+  onJumpToStackIndex,
+  onSwitchSession,
   onLoadFullItem,
   onLoadPriorityTable,
   onRetry,
@@ -94,20 +134,22 @@ export function DefinitionInspector({
   const activeTab = useExplorerStore((s) => s.activeTab);
   const pinnedDiffRef = useExplorerStore((s) => s.pinnedDiffRef);
   const inspectorMaximized = useExplorerStore((s) => s.inspectorMaximized);
-  const switchSession = useExplorerStore((s) => s.switchSession);
   const closeSession = useExplorerStore((s) => s.closeSession);
   const toggleInspectorMaximized = useExplorerStore((s) => s.toggleInspectorMaximized);
-  const navigateBack = useExplorerStore((s) => s.navigateBack);
-  const navigateForward = useExplorerStore((s) => s.navigateForward);
-  const jumpToStackIndex = useExplorerStore((s) => s.jumpToStackIndex);
   const closeInspector = useExplorerStore((s) => s.closeInspector);
   const setActiveTab = useExplorerStore((s) => s.setActiveTab);
   const pinForDiff = useExplorerStore((s) => s.pinForDiff);
   const clearPinnedDiff = useExplorerStore((s) => s.clearPinnedDiff);
   const pushNotice = useExplorerStore((s) => s.pushNotice);
+  const buildTabGroupShareUrl = useExplorerStore((s) => s.buildTabGroupShareUrl);
+
+  const imageScaling = useSettingsStore((s) => s.imageScaling);
 
   const collectedItems = useCollectorStore((s) => s.items);
   const toggleCollectItem = useCollectorStore((s) => s.toggleItem);
+
+  const activeSession =
+    activeSessionIndex >= 0 ? sessions[activeSessionIndex] : undefined;
 
   const dragStartRef = useRef<{ x: number; startWidth: number } | null>(null);
 
@@ -174,6 +216,8 @@ export function DefinitionInspector({
     'number'
       ? ((detail?.data.inventory as { tierType: number }).tierType)
       : undefined;
+  const tierColor = getTierColorVar(tierType);
+  const isEnhanced = isDefinitionEnhanced(detail?.data);
 
   const unsignedHash = currentRef ? toUnsignedHash(currentRef.hash) : 0;
   const signedHash = currentRef ? toSignedHash(currentRef.hash) : 0;
@@ -240,48 +284,73 @@ export function DefinitionInspector({
         />
       )}
 
-      {/* Desktop open-definitions tab strip (VS Code style) */}
-      {sessions.length > 1 && (
+      {/* Open-definitions tab strip with per-tab history & tab-group sharing */}
+      {sessions.length >= 1 && (
         <div className={styles.sessionBar} role="tablist" aria-label="Open definitions">
-          {sessions.map((session, idx) => {
-            const isActive = idx === activeSessionIndex;
-            const cur = session.stack[session.stackIndex];
-            return (
-              <div
-                key={session.id}
-                className={`${styles.sessionTab} ${isActive ? styles.sessionTabActive : ''}`}
-                onAuxClick={(e) => {
-                  if (e.button === 1) {
-                    e.preventDefault();
-                    closeSession(idx);
-                  }
-                }}
-              >
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={isActive}
-                  className={styles.sessionTabBtn}
-                  onClick={() => switchSession(idx)}
-                  title={cur ? `${cur.table}:${cur.hash}` : session.label}
-                >
-                  <span className={styles.sessionTabLabel}>{session.label}</span>
-                </button>
-                <button
-                  type="button"
-                  className={styles.sessionCloseBtn}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    closeSession(idx);
+          <div className={styles.sessionTabsScroll}>
+            {sessions.map((session, idx) => {
+              const isActive = idx === activeSessionIndex;
+              const cur = session.stack[session.stackIndex];
+              return (
+                <div
+                  key={session.id}
+                  className={`${styles.sessionTab} ${isActive ? styles.sessionTabActive : ''}`}
+                  onAuxClick={(e) => {
+                    if (e.button === 1) {
+                      e.preventDefault();
+                      closeSession(idx);
+                    }
                   }}
-                  aria-label={`Close ${session.label}`}
-                  title="Close tab"
                 >
-                  <CloseIcon size={11} />
-                </button>
-              </div>
-            );
-          })}
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={isActive}
+                    className={styles.sessionTabBtn}
+                    onClick={() => onSwitchSession(idx)}
+                    title={cur ? `${cur.table}:${cur.hash}` : session.label}
+                  >
+                    {session.icon && (
+                      <BungieIcon icon={session.icon} size={16} />
+                    )}
+                    <span className={styles.sessionTabLabel}>{session.label}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.sessionCloseBtn}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      closeSession(idx);
+                    }}
+                    aria-label={`Close ${session.label}`}
+                    title="Close tab"
+                  >
+                    <CloseIcon size={11} />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+          <button
+            type="button"
+            className={styles.sessionShareBtn}
+            onClick={() =>
+              copyText(
+                buildTabGroupShareUrl(),
+                sessions.length > 1
+                  ? `Copied shareable link for ${sessions.length} open tabs`
+                  : 'Copied shareable tab link',
+              )
+            }
+            title={
+              sessions.length > 1
+                ? `Copy shareable link for all ${sessions.length} open tabs`
+                : 'Copy shareable link for this tab'
+            }
+          >
+            <LinkIcon size={12} />
+            <span>{sessions.length > 1 ? `Share tabs (${sessions.length})` : 'Share'}</span>
+          </button>
         </div>
       )}
 
@@ -301,26 +370,26 @@ export function DefinitionInspector({
           <button
             type="button"
             className={styles.iconBtn}
-            onClick={navigateBack}
+            onClick={onNavigateBack}
             disabled={stackIndex <= 0}
-            aria-label="Previous definition"
-            title="Back in stack (Alt+Left)"
+            aria-label="Previous definition in this tab"
+            title="Back in tab history (Alt+Left or Browser Back)"
           >
             <ArrowLeftIcon size={14} />
           </button>
           <button
             type="button"
             className={styles.iconBtn}
-            onClick={navigateForward}
+            onClick={onNavigateForward}
             disabled={stackIndex < 0 || stackIndex >= stack.length - 1}
-            aria-label="Next definition"
-            title="Forward in stack (Alt+Right)"
+            aria-label="Next definition in this tab"
+            title="Forward in tab history (Alt+Right or Browser Forward)"
           >
             <ArrowRightIcon size={14} />
           </button>
         </div>
 
-        <nav className={styles.breadcrumbs} aria-label="Inspection stack">
+        <nav className={styles.breadcrumbs} aria-label="Tab history">
           {stack.slice(0, stackIndex + 1).map((entry, idx) => {
             const isLast = idx === stackIndex;
             return (
@@ -329,7 +398,7 @@ export function DefinitionInspector({
                 <button
                   type="button"
                   className={`${styles.crumbBtn} ${isLast ? styles.crumbCurrent : ''}`}
-                  onClick={() => jumpToStackIndex(idx)}
+                  onClick={() => onJumpToStackIndex(idx)}
                   aria-current={isLast ? 'page' : undefined}
                 >
                   {getShortTableName(entry.table)}:{entry.hash}
@@ -368,7 +437,7 @@ export function DefinitionInspector({
           <BungieIcon
             icon={iconPath}
             watermark={watermarkPath}
-            tierType={tierType}
+            isEnhanced={isEnhanced}
             size={44}
           />
           <div className={styles.entityTitleGroup}>
@@ -383,7 +452,12 @@ export function DefinitionInspector({
             <div className={styles.entityMetaRow}>
               <span className={styles.tableLabel}>{currentRef.table}</span>
               {itemSubtitle && itemSubtitle !== getShortTableName(currentRef.table) && (
-                <span className={styles.subLabel}>{itemSubtitle}</span>
+                <span
+                  className={styles.subLabel}
+                  style={tierColor ? { color: tierColor } : undefined}
+                >
+                  {itemSubtitle}
+                </span>
               )}
             </div>
             <div className={styles.hashRow}>
@@ -481,7 +555,19 @@ export function DefinitionInspector({
                 key={table}
                 type="button"
                 className={styles.coTableBtn}
-                onClick={() => onNavigateRef({ table, hash: unsignedHash }, false)}
+                onClick={(e) =>
+                  onNavigateRef(
+                    { table, hash: unsignedHash },
+                    true,
+                    e.ctrlKey || e.metaKey || e.shiftKey,
+                  )
+                }
+                onAuxClick={(e) => {
+                  if (e.button === 1) {
+                    e.preventDefault();
+                    onNavigateRef({ table, hash: unsignedHash }, true, true);
+                  }
+                }}
               >
                 {getShortTableName(table)}
               </button>
@@ -543,8 +629,11 @@ export function DefinitionInspector({
           <>
             {activeTab === 'pretty' && (
               <JsonTree
+                key={`${currentRef.table}:${currentRef.hash}:${activeSession?.id ?? ''}`}
                 data={detail.data}
                 resolvedRefs={detail.resolvedRefs}
+                initialFilter={activeSession?.initialJsonFilter}
+                imageScaling={imageScaling}
                 onNavigateRef={(ref, inNewTab) => onNavigateRef(ref, true, inNewTab)}
                 onCopy={copyText}
               />
@@ -556,7 +645,7 @@ export function DefinitionInspector({
                 clarityEntry={clarityEntry}
                 clarityLoading={clarityLoading}
                 showClarity={showClarity}
-                onNavigateRef={(ref) => onNavigateRef(ref, true)}
+                onNavigateRef={(ref, inNewTab) => onNavigateRef(ref, true, inNewTab)}
                 onLoadFullItem={onLoadFullItem}
               />
             )}
@@ -565,10 +654,10 @@ export function DefinitionInspector({
                 currentRef={currentRef}
                 variants={variants}
                 loading={variantsLoading}
-                onNavigateRef={(ref) => onNavigateRef(ref, true)}
+                onNavigateRef={(ref, inNewTab) => onNavigateRef(ref, true, inNewTab)}
                 onDiffVariant={(variantRef) => {
                   pinForDiff(currentRef);
-                  onNavigateRef(variantRef, true);
+                  onNavigateRef(variantRef, true, false);
                   setActiveTab('diff');
                 }}
               />
@@ -577,7 +666,7 @@ export function DefinitionInspector({
               <ReferencesTab
                 response={references}
                 loading={referencesLoading}
-                onNavigateRef={(ref) => onNavigateRef(ref, true)}
+                onNavigateRef={(ref, inNewTab) => onNavigateRef(ref, true, inNewTab)}
                 onLoadPriorityTable={onLoadPriorityTable}
               />
             )}

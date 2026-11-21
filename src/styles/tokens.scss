@@ -94,12 +94,12 @@
   --el-strand: #35e366;
   --el-prismatic: #f075c3;
 
-  // Destiny item tier strips (encode tier without neon clutter)
-  --tier-exotic: #ceae33;
-  --tier-legendary: #9c6ade;
-  --tier-rare: #5076a3;
-  --tier-uncommon: #366f42;
-  --tier-common: #9aa2ac;
+  // Destiny item rarity tier text colours (WCAG AA >= 4.5:1 on dark --page / --col)
+  --tier-exotic: #e5c64b;
+  --tier-legendary: #c298f5;
+  --tier-rare: #7eb2eb;
+  --tier-uncommon: #68cc82;
+  --tier-common: #b4bec8;
 
   // Overlays (the ONLY shadow in the entire app)
   --shadow: 0 12px 32px rgb(0 0 0 / 0.5);
@@ -197,12 +197,12 @@
   --el-strand: #147a33;
   --el-prismatic: #a32766;
 
-  // Destiny item tier strips
-  --tier-exotic: #997400;
-  --tier-legendary: #6d3fa6;
-  --tier-rare: #2c5b8f;
-  --tier-uncommon: #1e6b34;
-  --tier-common: #5b6672;
+  // Destiny item rarity tier text colours (WCAG AA >= 4.5:1 on Europa Ice --page / --col)
+  --tier-exotic: #735700;
+  --tier-legendary: #603198;
+  --tier-rare: #1c538a;
+  --tier-uncommon: #16612d;
+  --tier-common: #475461;
 
   // Overlays
   --shadow: 0 8px 24px rgb(15 21 27 / 0.22);

@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 import { useEffect, useState, type ReactNode, type RefObject } from 'react';
-import type { BungieLocale } from '../types/manifest';
+import type { BungieLocale, ImageScalingMode } from '../types/manifest';
 import { BUNGIE_LOCALES } from '../types/manifest';
 import type { CodeFontFamily, ThemeMode, TouchSize } from '../stores/settings';
 import {
@@ -41,6 +41,12 @@ const CODE_FONT_OPTIONS: ReadonlyArray<readonly [CodeFontFamily, string]> = [
   ['system', 'System'],
   ['cascadia', 'Cascadia'],
   ['consolas', 'Consolas'],
+];
+
+const IMAGE_SCALING_OPTIONS: ReadonlyArray<readonly [ImageScalingMode, string]> = [
+  ['sharp', 'Sharp'],
+  ['integer', 'Integer'],
+  ['smooth', 'Smooth'],
 ];
 
 interface StepperProps {
@@ -99,6 +105,7 @@ export function SettingsPopover({
   const touchSize = useSettingsStore((state) => state.touchSize);
   const codeFontSize = useSettingsStore((state) => state.codeFontSize);
   const codeFontFamily = useSettingsStore((state) => state.codeFontFamily);
+  const imageScaling = useSettingsStore((state) => state.imageScaling);
   const locale = useSettingsStore((state) => state.locale);
   const bungieApiKey = useSettingsStore((state) => state.bungieApiKey);
   const showClarityDescriptions = useSettingsStore((state) => state.showClarityDescriptions);
@@ -108,6 +115,7 @@ export function SettingsPopover({
   const setTouchSize = useSettingsStore((state) => state.setTouchSize);
   const setCodeFontSize = useSettingsStore((state) => state.setCodeFontSize);
   const setCodeFontFamily = useSettingsStore((state) => state.setCodeFontFamily);
+  const setImageScaling = useSettingsStore((state) => state.setImageScaling);
   const setBungieApiKey = useSettingsStore((state) => state.setBungieApiKey);
   const setShowClarityDescriptions = useSettingsStore((state) => state.setShowClarityDescriptions);
   const resetSettings = useSettingsStore((state) => state.resetSettings);
@@ -168,6 +176,24 @@ export function SettingsPopover({
               step={UI_SCALE_STEP}
               onChange={setUiScale}
             />
+          </div>
+          <div className={styles.row}>
+            <span className={styles.rowLabel}>Image scaling</span>
+            <div className={styles.segmented} role="group" aria-label="Image scaling">
+              {IMAGE_SCALING_OPTIONS.map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={
+                    value === imageScaling ? `${styles.segBtn} ${styles.segOn}` : styles.segBtn
+                  }
+                  aria-pressed={value === imageScaling}
+                  onClick={() => setImageScaling(value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
         </section>
 

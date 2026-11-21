@@ -495,6 +495,194 @@ export const DestinyObjectiveUiStyle: EnumMap = {
 };
 
 /* -------------------------------------------------------------------------- */
+/* Records / collectibles / vendors / misc                                    */
+/* -------------------------------------------------------------------------- */
+
+/** Flags: redemption and visibility state of a record. */
+export const DestinyRecordState: EnumMap = {
+  0: 'None',
+  1: 'RecordRedeemed',
+  2: 'RewardUnavailable',
+  4: 'ObjectiveNotCompleted',
+  8: 'Obscured',
+  16: 'Invisible',
+  32: 'EntitlementUnowned',
+  64: 'CanEquipTitle',
+};
+
+/** Flags: acquisition and availability state of a collectible. */
+export const DestinyCollectibleState: EnumMap = {
+  0: 'None',
+  1: 'NotAcquired',
+  2: 'Obscured',
+  4: 'Invisible',
+  8: 'CannotAffordMaterialRequirements',
+  16: 'InventorySpaceUnavailable',
+  32: 'UniquenessViolation',
+  64: 'PurchaseDisabled',
+};
+
+export const DestinyItemSortType: EnumMap = {
+  0: 'ItemId',
+  1: 'Timestamp',
+  2: 'DisplayName',
+};
+
+export const DestinyVendorItemRefundPolicy: EnumMap = {
+  0: 'NotRefundable',
+  1: 'DeletesItem',
+  2: 'RevokesLicense',
+};
+
+export const DestinyActivityNavPointType: EnumMap = {
+  0: 'Inactive',
+  1: 'Primary',
+  2: 'Secondary',
+};
+
+export const DestinyRewardSourceCategory: EnumMap = {
+  0: 'None',
+  1: 'Activity',
+  2: 'Vendor',
+  3: 'Aggregate',
+};
+
+export const DestinyRace: EnumMap = {
+  0: 'Human',
+  1: 'Awoken',
+  2: 'Exo',
+  3: 'Unknown',
+};
+
+export const DestinyGender: EnumMap = {
+  0: 'Male',
+  1: 'Female',
+  2: 'Unknown',
+};
+
+export const DestinyGraphNodeState: EnumMap = {
+  0: 'Hidden',
+  1: 'Visible',
+  2: 'Teaser',
+  3: 'Incomplete',
+  4: 'Completed',
+};
+
+export const DestinyProgressionRewardItemAcquisitionBehavior: EnumMap = {
+  0: 'Instant',
+  1: 'PlayerClaimRequired',
+};
+
+export const DestinyUnlockStatus: EnumMap = {
+  0: 'None',
+  1: 'NotUnlocked',
+  2: 'Unlocked',
+};
+
+/** Flags: reasons an item cannot be equipped. */
+export const EquipFailureReason: EnumMap = {
+  0: 'None',
+  1: 'ItemUnequippable',
+  2: 'ItemUniqueEquipRestricted',
+  4: 'ItemFailedUnlockCheck',
+  8: 'ItemFailedLevelCheck',
+  16: 'ItemWornOut',
+  32: 'ItemNotOnCharacter',
+};
+
+/** Flags: reasons an activity join is closed. */
+export const DestinyJoinClosedReasons: EnumMap = {
+  0: 'None',
+  1: 'InMatchmaking',
+  2: 'LoadingDisallowed',
+  4: 'SolosDisallowed',
+  8: 'ReachedMaxFireteamSize',
+  16: 'ReachedMaxNumMembers',
+};
+
+export const DestinyVendorFilter: EnumMap = {
+  0: 'None',
+  1: 'ApiPurchasable',
+};
+
+export const BungieMembershipType: EnumMap = {
+  0: 'None',
+  1: 'TigerXbox',
+  2: 'TigerPsn',
+  4: 'TigerBlizzard',
+  10: 'TigerDemon',
+  254: 'BungieNext',
+  [-1]: 'All',
+};
+
+/** Flags: weapon performance attributes affected by a talent node step. */
+export const DestinyTalentNodeStepWeaponPerformances: EnumMap = {
+  0: 'None',
+  1: 'RateOfFire',
+  2: 'Damage',
+  4: 'Accuracy',
+  8: 'Range',
+  16: 'Zoom',
+  32: 'Recoil',
+  64: 'Ready',
+  128: 'Reload',
+  256: 'HairTrigger',
+  512: 'AmmoAndMagazine',
+  1024: 'TrackingAndDetonation',
+  2048: 'ShotgunSpread',
+  4096: 'ChargeTime',
+  8191: 'All',
+};
+
+/** Flags: impact effects a talent node step applies. */
+export const DestinyTalentNodeStepImpactEffects: EnumMap = {
+  0: 'None',
+  1: 'ArmorPiercing',
+  2: 'Ricochet',
+  4: 'Flinch',
+  8: 'CollateralDamage',
+  16: 'Disorient',
+  32: 'HighlightEnemy',
+  63: 'All',
+};
+
+/** Flags: guardian attributes affected by a talent node step. */
+export const DestinyTalentNodeStepGuardianAttributes: EnumMap = {
+  0: 'None',
+  1: 'Stats',
+  2: 'Shields',
+  4: 'Health',
+  8: 'Revive',
+  16: 'AimUnderFire',
+  32: 'Radar',
+  64: 'Invisibility',
+  128: 'Reputations',
+  255: 'All',
+};
+
+/** Flags: light abilities affected by a talent node step. */
+export const DestinyTalentNodeStepLightAbilities: EnumMap = {
+  0: 'None',
+  1: 'Grenades',
+  2: 'Melee',
+  4: 'MovementModes',
+  8: 'Orbs',
+  16: 'SuperEnergy',
+  32: 'SuperMods',
+  63: 'All',
+};
+
+/** Flags: damage types affected by a talent node step. */
+export const DestinyTalentNodeStepDamageTypes: EnumMap = {
+  0: 'None',
+  1: 'Kinetic',
+  2: 'Arc',
+  4: 'Solar',
+  8: 'Void',
+  15: 'All',
+};
+
+/* -------------------------------------------------------------------------- */
 /* Annotation lookup                                                          */
 /* -------------------------------------------------------------------------- */
 
@@ -585,6 +773,83 @@ const ANNOTATION_FIELDS: Readonly<Record<string, EnumDefinition>> = {
   grantstyle: definition('DestinyObjectiveGrantStyle', DestinyObjectiveGrantStyle),
   objectivegrantstyle: definition('DestinyObjectiveGrantStyle', DestinyObjectiveGrantStyle),
   objectiveuistyle: definition('DestinyObjectiveUiStyle', DestinyObjectiveUiStyle),
+  aggregationtype: definition('DestinyStatAggregationType', DestinyStatAggregationType),
+  refundpolicy: definition('DestinyVendorItemRefundPolicy', DestinyVendorItemRefundPolicy),
+  vendoritemrefundpolicy: definition('DestinyVendorItemRefundPolicy', DestinyVendorItemRefundPolicy),
+  racetype: definition('DestinyRace', DestinyRace),
+  destinyrace: definition('DestinyRace', DestinyRace),
+  gendertype: definition('DestinyGender', DestinyGender),
+  destinygender: definition('DestinyGender', DestinyGender),
+  membershiptype: definition('BungieMembershipType', BungieMembershipType),
+  bungiemembershiptype: definition('BungieMembershipType', BungieMembershipType),
+  attributes: definition('EquippingItemBlockAttributes', EquippingItemBlockAttributes, true),
+  plugavailability: definition('PlugAvailabilityMode', PlugAvailabilityMode),
+  recordstate: definition('DestinyRecordState', DestinyRecordState, true),
+  collectiblestate: definition('DestinyCollectibleState', DestinyCollectibleState, true),
+  itemsorttype: definition('DestinyItemSortType', DestinyItemSortType),
+  navpointtype: definition('DestinyActivityNavPointType', DestinyActivityNavPointType),
+  activitynavpointtype: definition('DestinyActivityNavPointType', DestinyActivityNavPointType),
+  rewardsourcecategory: definition('DestinyRewardSourceCategory', DestinyRewardSourceCategory),
+  graphnodestate: definition('DestinyGraphNodeState', DestinyGraphNodeState),
+  nodestate: definition('DestinyGraphNodeState', DestinyGraphNodeState),
+  rewarditemacquisitionbehavior: definition(
+    'DestinyProgressionRewardItemAcquisitionBehavior',
+    DestinyProgressionRewardItemAcquisitionBehavior,
+  ),
+  acquisitionbehavior: definition(
+    'DestinyProgressionRewardItemAcquisitionBehavior',
+    DestinyProgressionRewardItemAcquisitionBehavior,
+  ),
+  unlockstatus: definition('DestinyUnlockStatus', DestinyUnlockStatus),
+  equipfailurereason: definition('EquipFailureReason', EquipFailureReason, true),
+  equipfailurereasons: definition('EquipFailureReason', EquipFailureReason, true),
+  joinclosedreasons: definition('DestinyJoinClosedReasons', DestinyJoinClosedReasons, true),
+  vendorfilter: definition('DestinyVendorFilter', DestinyVendorFilter),
+  weaponperformances: definition(
+    'DestinyTalentNodeStepWeaponPerformances',
+    DestinyTalentNodeStepWeaponPerformances,
+    true,
+  ),
+  impacteffects: definition(
+    'DestinyTalentNodeStepImpactEffects',
+    DestinyTalentNodeStepImpactEffects,
+    true,
+  ),
+  guardianattributes: definition(
+    'DestinyTalentNodeStepGuardianAttributes',
+    DestinyTalentNodeStepGuardianAttributes,
+    true,
+  ),
+  lightabilities: definition(
+    'DestinyTalentNodeStepLightAbilities',
+    DestinyTalentNodeStepLightAbilities,
+    true,
+  ),
+  talentnodestepweaponperformances: definition(
+    'DestinyTalentNodeStepWeaponPerformances',
+    DestinyTalentNodeStepWeaponPerformances,
+    true,
+  ),
+  talentnodestepimpacteffects: definition(
+    'DestinyTalentNodeStepImpactEffects',
+    DestinyTalentNodeStepImpactEffects,
+    true,
+  ),
+  talentnodestepguardianattributes: definition(
+    'DestinyTalentNodeStepGuardianAttributes',
+    DestinyTalentNodeStepGuardianAttributes,
+    true,
+  ),
+  talentnodesteplightabilities: definition(
+    'DestinyTalentNodeStepLightAbilities',
+    DestinyTalentNodeStepLightAbilities,
+    true,
+  ),
+  talentnodestepdamagetypes: definition(
+    'DestinyTalentNodeStepDamageTypes',
+    DestinyTalentNodeStepDamageTypes,
+    true,
+  ),
 };
 
 function normalizeKey(value: string): string {
@@ -648,6 +913,34 @@ function resolveContextualField(field: string, parent: string): EnumDefinition |
   if (field === 'style') {
     if (parent.includes('socketcategory')) {
       return definition('SocketCategoryStyle', SocketCategoryStyle);
+    }
+    return null;
+  }
+
+  if (field === 'state') {
+    if (parent.includes('collectible')) {
+      return definition('DestinyCollectibleState', DestinyCollectibleState, true);
+    }
+    if (parent.includes('record')) {
+      return definition('DestinyRecordState', DestinyRecordState, true);
+    }
+    if (parent.includes('graphnode')) {
+      return definition('DestinyGraphNodeState', DestinyGraphNodeState);
+    }
+    return null;
+  }
+
+  if (field === 'category') {
+    if (parent.includes('bucket')) return definition('BucketCategory', BucketCategory);
+    if (parent.includes('rewardsource')) {
+      return definition('DestinyRewardSourceCategory', DestinyRewardSourceCategory);
+    }
+    return null;
+  }
+
+  if (field === 'mode') {
+    if (parent.includes('activitymode') || parent.includes('activity')) {
+      return definition('DestinyActivityModeType', DestinyActivityModeType);
     }
     return null;
   }

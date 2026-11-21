@@ -52,12 +52,18 @@ export interface SearchIndexEntry {
   itemCategoryHashes?: number[];
   isRedacted?: boolean;
   isAdept?: boolean;
+  isEnhanced?: boolean;
   isHolofoil?: boolean;
   isFeatured?: boolean;
   isDummy?: boolean;
   hasLore?: boolean;
   hasScreenshot?: boolean;
   plugCategoryIdentifier?: string;
+}
+
+export interface DeepMatchSnippet {
+  path: string;
+  preview: string;
 }
 
 export interface SearchResultItem {
@@ -71,7 +77,9 @@ export interface SearchResultItem {
   damageType?: number;
   classType?: number;
   isRedacted?: boolean;
+  isEnhanced?: boolean;
   index?: number;
+  deepMatch?: DeepMatchSnippet;
 }
 
 export interface SearchFilters {
@@ -152,6 +160,7 @@ export interface OverviewSocketPlug {
   description: string;
   icon?: string;
   tierType?: number;
+  isEnhanced?: boolean;
   isDefault?: boolean;
   isCurated?: boolean;
   currentlyCanRoll?: boolean;
@@ -248,6 +257,7 @@ export interface VariantItem {
   tierType?: number;
   damageType?: number;
   isAdept?: boolean;
+  isEnhanced?: boolean;
   isHolofoil?: boolean;
   isRedacted?: boolean;
   index?: number;
@@ -271,3 +281,5 @@ export interface FilterOption {
 export interface FilterCatalog {
   categories: FilterOption[];
 }
+
+export type ImageScalingMode = 'sharp' | 'integer' | 'smooth';

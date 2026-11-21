@@ -23,6 +23,7 @@ import type {
   CacheStatsResult,
   CheckForUpdatesRequest,
   ClearCacheRequest,
+  DeepSearchRequest,
   GetCacheStatsRequest,
   GetClarityDescriptionRequest,
   GetDefinitionRequest,
@@ -143,6 +144,21 @@ export function search(
   return send<SearchRequest, SearchResponse>(request);
 }
 
+export function deepSearch(
+  query: string,
+  filters: SearchFilters,
+  maxResults?: number,
+): Promise<SearchResponse> {
+  const request: DeepSearchRequest = {
+    type: 'deepSearch',
+    id: ++nextId,
+    query,
+    filters,
+    maxResults,
+  };
+  return send<DeepSearchRequest, SearchResponse>(request);
+}
+
 export function getDefinition(
   table: string,
   hash: number,
@@ -175,12 +191,14 @@ export function getVariants(table: string, hash: number): Promise<VariantItem[]>
 
 export function getReverseReferences(
   targetHash: number,
+  targetTable?: string,
   tablesToScan?: string[],
 ): Promise<ReverseReferenceResponse> {
   const request: GetReverseReferencesRequest = {
     type: 'getReverseReferences',
     id: ++nextId,
     targetHash,
+    targetTable,
     tablesToScan,
   };
   return send<GetReverseReferencesRequest, ReverseReferenceResponse>(request);

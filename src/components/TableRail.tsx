@@ -140,12 +140,7 @@ export function TableRail({
           (table.group === group || (group === 'gameplay' && table.group === 'primary')) &&
           matchesFilter(table, normalizedFilter),
       )
-      .sort((a, b) => {
-        if (a.loaded !== b.loaded) {
-          return a.loaded ? -1 : 1;
-        }
-        return a.shortName.localeCompare(b.shortName);
-      }),
+      .sort((a, b) => a.shortName.localeCompare(b.shortName)),
   })).filter((entry) => entry.tables.length > 0);
 
   const groups = [

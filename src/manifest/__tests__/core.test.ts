@@ -4,7 +4,9 @@ import { computeJsonDiff } from '../diff';
 import {
   CLASS_FILTER_OPTIONS,
   DAMAGE_FILTER_OPTIONS,
+  DamageType,
   DestinyItemSubType,
+  DestinyItemType,
   SocketPlugSources,
   TIER_FILTER_OPTIONS,
   annotateEnumField,
@@ -14,6 +16,7 @@ import {
   bungieAssetUrl,
   extractAllHashesFromQuery,
   getTargetTablesForField,
+  getTargetTablesForObjectKey,
   isBungieImagePath,
   parseHashInput,
   toSignedHash,
@@ -145,6 +148,25 @@ describe('hash utilities', () => {
     expect(getTargetTablesForField('hash', 'unknownContext')).toEqual([]);
   });
 
+  it('maps hash-keyed collection keys to target tables', () => {
+    expect(getTargetTablesForObjectKey('stats')).toEqual(['DestinyStatDefinition']);
+    expect(getTargetTablesForObjectKey('stat')).toEqual(['DestinyStatDefinition']);
+    expect(getTargetTablesForObjectKey('objectives')).toEqual(['DestinyObjectiveDefinition']);
+    expect(getTargetTablesForObjectKey('perks')).toEqual([
+      'DestinySandboxPerkDefinition',
+      'DestinyInventoryItemDefinition',
+    ]);
+    expect(getTargetTablesForObjectKey('items')).toEqual(['DestinyInventoryItemDefinition']);
+    expect(getTargetTablesForObjectKey('nodes')).toEqual(['DestinyPresentationNodeDefinition']);
+    expect(getTargetTablesForObjectKey('progressions')).toEqual(['DestinyProgressionDefinition']);
+    expect(getTargetTablesForObjectKey('vendors')).toEqual(['DestinyVendorDefinition']);
+    expect(getTargetTablesForObjectKey('activities')).toEqual(['DestinyActivityDefinition']);
+    expect(getTargetTablesForObjectKey('records')).toEqual(['DestinyRecordDefinition']);
+    expect(getTargetTablesForObjectKey('collectibles')).toEqual(['DestinyCollectibleDefinition']);
+    expect(getTargetTablesForObjectKey(undefined)).toEqual([]);
+    expect(getTargetTablesForObjectKey('unknown')).toEqual([]);
+  });
+
   it('detects and resolves Bungie asset paths', () => {
     expect(isBungieImagePath('/common/destiny2_content/icons/a.png')).toBe(true);
     expect(isBungieImagePath('/img/theme/bungienet/icon.PNG')).toBe(true);
@@ -211,6 +233,49 @@ describe('enum annotations', () => {
     expect(TIER_FILTER_OPTIONS.find((option) => option.label === 'Exotic')?.value).toBe(6);
     expect(DAMAGE_FILTER_OPTIONS.find((option) => option.label === 'Solar')?.value).toBe(3);
     expect(CLASS_FILTER_OPTIONS.find((option) => option.label === 'Titan')?.value).toBe(0);
+  });
+
+  it('ships recent item type, sub-type and damage type values', () => {
+    expect(DestinyItemSubType[33]).toBe('Glaive');
+    expect(DestinyItemType[30]).toBe('Pattern');
+    expect(DamageType[7]).toBe('Strand');
+    expect(DamageType[6]).toBe('Stasis');
+  });
+
+  it('annotates newly added Destiny 2 enums', () => {
+    expect(annotateEnumField('refundPolicy', 1)?.label).toBe('DeletesItem');
+    expect(annotateEnumField('raceType', 2)?.label).toBe('Exo');
+    expect(annotateEnumField('genderType', 1)?.label).toBe('Female');
+    expect(annotateEnumField('membershipType', 1)?.label).toBe('TigerXbox');
+    expect(annotateEnumField('unlockStatus', 2)?.label).toBe('Unlocked');
+    expect(annotateEnumField('itemSortType', 1)?.label).toBe('Timestamp');
+    expect(annotateEnumField('navPointType', 1)?.label).toBe('Primary');
+    expect(annotateEnumField('rewardSourceCategory', 2)?.label).toBe('Vendor');
+  });
+
+  it('annotates bitmask enums for records, collectibles, equips and talent nodes', () => {
+    expect(annotateEnumField('recordState', 1 | 64)).toEqual({
+      enumName: 'DestinyRecordState',
+      label: 'CanEquipTitle | RecordRedeemed',
+      isBitmask: true,
+    });
+    expect(annotateEnumField('collectibleState', 1)?.label).toBe('NotAcquired');
+    expect(annotateEnumField('equipFailureReason', 1)?.label).toBe('ItemUnequippable');
+    expect(annotateEnumField('joinClosedReasons', 1)?.label).toBe('InMatchmaking');
+    expect(annotateEnumField('weaponPerformances', 1)?.label).toBe('RateOfFire');
+    expect(annotateEnumField('impactEffects', 1)?.label).toBe('ArmorPiercing');
+    expect(annotateEnumField('guardianAttributes', 1)?.label).toBe('Stats');
+    expect(annotateEnumField('lightAbilities', 1)?.label).toBe('Grenades');
+    expect(annotateEnumField('talentNodeStepDamageTypes', 2)?.label).toBe('Arc');
+  });
+
+  it('resolves contextual state, category and mode fields', () => {
+    expect(annotateEnumField('state', 1, 'record')?.label).toBe('RecordRedeemed');
+    expect(annotateEnumField('state', 1, 'collectible')?.label).toBe('NotAcquired');
+    expect(annotateEnumField('state', 1, 'graphNode')?.label).toBe('Visible');
+    expect(annotateEnumField('category', 1, 'bucket')?.label).toBe('Item');
+    expect(annotateEnumField('category', 1, 'rewardSource')?.label).toBe('Activity');
+    expect(annotateEnumField('mode', 63, 'activityMode')?.label).toBe('Gambit');
   });
 });
 
@@ -322,6 +387,38 @@ describe('table metadata and summaries', () => {
       questlineItemHash: 42,
     });
     expect(questline.name).toBe('Questline');
+  });
+
+  it('detects enhanced items from display names, plug category and name suffix', () => {
+    const byTierAndType = extractTableEntrySummary(ITEM_TABLE, '1', {
+      displayProperties: { name: 'Some Perk' },
+      itemTypeAndTierDisplayName: 'Enhanced Trait',
+      inventory: { tierType: 5 },
+    });
+    expect(byTierAndType.isEnhanced).toBe(true);
+
+    const byType = extractTableEntrySummary(ITEM_TABLE, '2', {
+      displayProperties: { name: 'Some Perk' },
+      itemTypeDisplayName: 'Enhanced Intrinsic',
+    });
+    expect(byType.isEnhanced).toBe(true);
+
+    const byPlug = extractTableEntrySummary(ITEM_TABLE, '3', {
+      displayProperties: { name: 'Some Perk' },
+      plug: { plugCategoryIdentifier: 'enhanced_origin_trait' },
+    });
+    expect(byPlug.isEnhanced).toBe(true);
+
+    const bySuffix = extractTableEntrySummary(ITEM_TABLE, '4', {
+      displayProperties: { name: "Zaouli's Bane (Enhanced)" },
+    });
+    expect(bySuffix.isEnhanced).toBe(true);
+
+    const notEnhanced = extractTableEntrySummary(ITEM_TABLE, '5', {
+      displayProperties: { name: "Zaouli's Bane" },
+      itemTypeDisplayName: 'Hand Cannon',
+    });
+    expect(notEnhanced.isEnhanced).toBe(false);
   });
 });
 
@@ -489,6 +586,18 @@ describe('ranking and filtering', () => {
     expect(rank('is:redacted', entries).items.map((item) => item.hash)).toEqual([40]);
     expect(rank('-is:dummy', entries).items.map((item) => item.hash)).toEqual([40, 41]);
     expect(rank('cat:"auto rifle"', entries, { categories: new Map([[1, 'Auto Rifle']]) }).items).toHaveLength(3);
+  });
+
+  it('filters by the is:enhanced flag and copies it onto results', () => {
+    const entries = [
+      makeEntry({ hash: 70, name: 'Enhanced Perk', isEnhanced: true }),
+      makeEntry({ hash: 71, name: 'Regular Perk' }),
+      makeEntry({ hash: 72, name: 'Other Enhanced', isEnhanced: true }),
+    ];
+    const enhanced = rank('is:enhanced', entries);
+    expect(enhanced.items.map((item) => item.hash)).toEqual([70, 72]);
+    expect(enhanced.items.every((item) => item.isEnhanced === true)).toBe(true);
+    expect(rank('-is:enhanced', entries).items.map((item) => item.hash)).toEqual([71]);
   });
 
   it('applies the UI filter popover', () => {

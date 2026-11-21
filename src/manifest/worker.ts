@@ -11,6 +11,7 @@
 import type {
   BungieLocale,
   ClarityDescriptionEntry,
+  DeepMatchSnippet,
   DefinitionDetailPayload,
   DefinitionOverview,
   FilterCatalog,
@@ -29,6 +30,7 @@ import type {
   SearchFilters,
   SearchIndexEntry,
   SearchResponse,
+  SearchResultItem,
   SortMode,
   TableStatus,
   VariantItem,
@@ -42,7 +44,7 @@ import {
   getShortTableName,
   getTableGroup,
 } from './tables';
-import { bungieAssetUrl, getTargetTablesForField, toUnsignedHash } from './hash';
+import { bungieAssetUrl, getTargetTablesForField, getTargetTablesForObjectKey, toUnsignedHash } from './hash';
 import { annotateEnumField } from './enums';
 import { parseSearchQuery, scoreAndFilterEntries } from './query';
 import { streamTopLevelJsonObject } from './streamJson';
@@ -99,6 +101,14 @@ export interface SearchRequest {
   maxResults?: number;
 }
 
+export interface DeepSearchRequest {
+  type: 'deepSearch';
+  id: number;
+  query: string;
+  filters: SearchFilters;
+  maxResults?: number;
+}
+
 export interface GetDefinitionRequest {
   type: 'getDefinition';
   id: number;
@@ -129,6 +139,7 @@ export interface GetReverseReferencesRequest {
   type: 'getReverseReferences';
   id: number;
   targetHash: number;
+  targetTable?: string;
   tablesToScan?: string[];
 }
 
@@ -161,6 +172,7 @@ export interface GetFilterCatalogRequest {
 export type WorkerRequest =
   | InitRequest
   | SearchRequest
+  | DeepSearchRequest
   | GetDefinitionRequest
   | LoadTableRequest
   | LoadAllTablesRequest
@@ -429,12 +441,62 @@ function currentStatus(): ManifestStatus {
   };
 }
 
-function emitStatus(): void {
-  post({ type: 'status', status: currentStatus() });
+// During rapid background loading many tables finish in quick succession and
+// each one triggers status/table emits. Throttle those non-phase-change emits
+// to avoid UI flicker, while always flushing immediately on phase transitions
+// and explicit load completion.
+const EMIT_THROTTLE_MS = 300;
+let loadAllInProgress = false;
+
+interface EmitThrottle {
+  timer: ReturnType<typeof setTimeout> | null;
+  last: number;
 }
 
-function emitTables(): void {
-  post({ type: 'tables', tables: [...tableStatuses.values()] });
+const statusThrottle: EmitThrottle = { timer: null, last: 0 };
+const tablesThrottle: EmitThrottle = { timer: null, last: 0 };
+
+function shouldThrottleEmits(): boolean {
+  return state.phase === 'indexing-secondary' || loadAllInProgress;
+}
+
+function throttleEmit(throttle: EmitThrottle, emit: () => void, force: boolean): void {
+  if (force || !shouldThrottleEmits()) {
+    if (throttle.timer !== null) {
+      clearTimeout(throttle.timer);
+      throttle.timer = null;
+    }
+    throttle.last = Date.now();
+    emit();
+    return;
+  }
+
+  const now = Date.now();
+  const elapsed = now - throttle.last;
+  if (elapsed >= EMIT_THROTTLE_MS) {
+    throttle.last = now;
+    emit();
+    return;
+  }
+  if (throttle.timer === null) {
+    throttle.timer = setTimeout(() => {
+      throttle.timer = null;
+      throttle.last = Date.now();
+      emit();
+    }, EMIT_THROTTLE_MS - elapsed);
+  }
+}
+
+function emitStatus(force = false): void {
+  throttleEmit(statusThrottle, () => {
+    post({ type: 'status', status: currentStatus() });
+  }, force);
+}
+
+function emitTables(force = false): void {
+  throttleEmit(tablesThrottle, () => {
+    post({ type: 'tables', tables: [...tableStatuses.values()] });
+  }, force);
 }
 
 function currentCatalog(): FilterCatalog {
@@ -569,8 +631,8 @@ async function init(
     if (meta && cached) {
       applyCachedState(meta, cached);
       state.phase = 'ready';
-      emitStatus();
-      emitTables();
+      emitStatus(true);
+      emitTables(true);
       emitCatalog();
       void backgroundUpdateCheck();
       return currentStatus();
@@ -581,7 +643,7 @@ async function init(
   resetEngineState();
   state.phase = 'fetching-index';
   state.currentTable = undefined;
-  emitStatus();
+  emitStatus(true);
 
   const index = await fetchManifestIndex(locale, apiKey);
   const paths = index.Response.jsonWorldComponentContentPaths[locale] ?? {};
@@ -605,8 +667,8 @@ async function init(
   for (const table of Object.keys(paths)) getOrCreateTableStatus(table);
 
   state.phase = 'loading-core';
-  emitStatus();
-  emitTables();
+  emitStatus(true);
+  emitTables(true);
 
   // Item categories are required for search filtering, so load them up front.
   const coreTables = [...CORE_BOOT_TABLES];
@@ -614,14 +676,14 @@ async function init(
   await loadTablesInParallel(coreTables, 4);
 
   state.phase = 'ready';
-  emitStatus();
-  emitTables();
+  emitStatus(true);
+  emitTables(true);
   emitCatalog();
   await persistSearchIndex();
 
   // Stage 3: background secondary indexing.
   state.phase = 'indexing-secondary';
-  emitStatus();
+  emitStatus(true);
   void (async () => {
     try {
       await loadTablesInParallel(SECONDARY_INDEX_TABLES, 4);
@@ -629,8 +691,8 @@ async function init(
     } finally {
       state.phase = 'ready';
       state.currentTable = undefined;
-      emitStatus();
-      emitTables();
+      emitStatus(true);
+      emitTables(true);
     }
   })();
 
@@ -670,7 +732,7 @@ async function loadTablesInParallel(
   await Promise.all(workers);
 }
 
-async function loadTable(table: string): Promise<void> {
+async function loadTable(table: string, explicit = false): Promise<void> {
   const status = getOrCreateTableStatus(table);
   if (status.hasFullData) return;
   const inFlight = loadingPromises.get(table);
@@ -680,18 +742,18 @@ async function loadTable(table: string): Promise<void> {
   }
   status.loading = true;
   emitTables();
-  const promise = doLoadTable(table);
+  const promise = doLoadTable(table, explicit);
   loadingPromises.set(table, promise);
   try {
     await promise;
   } finally {
     loadingPromises.delete(table);
     status.loading = false;
-    emitTables();
+    emitTables(explicit);
   }
 }
 
-async function doLoadTable(table: string): Promise<void> {
+async function doLoadTable(table: string, explicit: boolean): Promise<void> {
   const status = getOrCreateTableStatus(table);
   const path = state.componentPaths[table];
   if (!path) throw new Error(`No component path for table ${table}`);
@@ -727,8 +789,8 @@ async function doLoadTable(table: string): Promise<void> {
       status.indexed = true;
     }
   }
-  emitTables();
-  emitStatus();
+  emitTables(explicit);
+  emitStatus(explicit);
 }
 
 function buildEntries(
@@ -789,9 +851,16 @@ async function streamIntoBuckets(body: ReadableStream<Uint8Array>): Promise<void
 }
 
 async function loadAllTables(): Promise<void> {
-  const all = Object.keys(state.componentPaths);
-  const remaining = all.filter((table) => !getOrCreateTableStatus(table).loaded);
-  await loadTablesInParallel(remaining, 4);
+  loadAllInProgress = true;
+  try {
+    const all = Object.keys(state.componentPaths);
+    const remaining = all.filter((table) => !getOrCreateTableStatus(table).loaded);
+    await loadTablesInParallel(remaining, 4);
+  } finally {
+    loadAllInProgress = false;
+    emitStatus(true);
+    emitTables(true);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -818,6 +887,187 @@ async function search(
 
 async function getFilterCatalog(): Promise<FilterCatalog> {
   return currentCatalog();
+}
+
+// ---------------------------------------------------------------------------
+// Deep JSON search
+// ---------------------------------------------------------------------------
+
+const DEEP_SEARCH_TERM_RE = /(?:[^\s",;]+|"[^"]*")+/g;
+const DEEP_MATCH_PREVIEW_MAX = 120;
+
+function parseDeepSearchTerms(query: string): string[] {
+  const terms: string[] = [];
+  const matches = query.match(DEEP_SEARCH_TERM_RE) ?? [];
+  for (const raw of matches) {
+    const token = raw.trim();
+    if (!token) continue;
+    let body = token;
+    if (body.startsWith('-') && body.length > 1) body = body.slice(1);
+    if (body.length >= 2 && body.startsWith('"') && body.endsWith('"')) {
+      body = body.slice(1, -1);
+    }
+    const phrase = body.replace(/\s+/g, ' ').trim().toLowerCase();
+    if (!phrase) continue;
+    if (!terms.includes(phrase)) terms.push(phrase);
+  }
+  return terms;
+}
+
+function matchesAllTerms(haystack: string, terms: string[]): boolean {
+  const lower = haystack.toLowerCase();
+  for (const term of terms) {
+    if (!lower.includes(term)) return false;
+  }
+  return true;
+}
+
+function truncateString(value: string, max: number): string {
+  return value.length > max ? value.slice(0, max) : value;
+}
+
+/** Walk a parsed definition and return the first path whose value matches all terms. */
+function findDeepMatch(value: unknown, terms: string[], path: string): DeepMatchSnippet | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    const text = String(value).toLowerCase();
+    if (terms.every((term) => text.includes(term))) {
+      return { path, preview: truncateString(String(value), DEEP_MATCH_PREVIEW_MAX) };
+    }
+    return undefined;
+  }
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      const childPath = path ? `${path}[${i}]` : `[${i}]`;
+      const found = findDeepMatch(value[i], terms, childPath);
+      if (found) return found;
+    }
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  for (const [key, child] of Object.entries(record)) {
+    const childPath = path ? `${path}.${key}` : key;
+    const found = findDeepMatch(child, terms, childPath);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+function entryToResult(entry: SearchIndexEntry): SearchResultItem {
+  const item: SearchResultItem = {
+    hash: entry.hash,
+    table: entry.table,
+    name: entry.name,
+    subtitle: entry.subtitle,
+  };
+  if (entry.icon !== undefined) item.icon = entry.icon;
+  if (entry.iconWatermark !== undefined) item.iconWatermark = entry.iconWatermark;
+  if (entry.tierType !== undefined) item.tierType = entry.tierType;
+  if (entry.damageType !== undefined) item.damageType = entry.damageType;
+  if (entry.classType !== undefined) item.classType = entry.classType;
+  if (entry.isRedacted !== undefined) item.isRedacted = entry.isRedacted;
+  if (entry.isEnhanced !== undefined) item.isEnhanced = entry.isEnhanced;
+  if (entry.index !== undefined) item.index = entry.index;
+  return item;
+}
+
+interface DeepScanState {
+  items: SearchResultItem[];
+  totalMatches: number;
+  cap: number;
+}
+
+function scanTableForDeepSearch(
+  table: string,
+  data: Record<string, Record<string, unknown>>,
+  terms: string[],
+  scan: DeepScanState,
+): void {
+  for (const [hashKey, raw] of Object.entries(data)) {
+    // Fast pre-filter on the serialized definition before walking the object.
+    if (!matchesAllTerms(JSON.stringify(raw), terms)) continue;
+    scan.totalMatches += 1;
+    if (scan.items.length >= scan.cap) continue;
+    const entry = extractTableEntrySummary(table, hashKey, raw);
+    const item = entryToResult(entry);
+    const deepMatch = findDeepMatch(raw, terms, '');
+    if (deepMatch) item.deepMatch = deepMatch;
+    scan.items.push(item);
+  }
+}
+
+async function scanFullItemsForDeepSearch(terms: string[], scan: DeepScanState): Promise<void> {
+  await iterateFullItems(state.locale, state.versionSignature, (hash, rawJson) => {
+    if (!matchesAllTerms(rawJson, terms)) return;
+    scan.totalMatches += 1;
+    if (scan.items.length >= scan.cap) return;
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(rawJson) as Record<string, unknown>;
+    } catch {
+      return;
+    }
+    const entry = extractTableEntrySummary(INVENTORY_ITEM_TABLE, String(hash), parsed);
+    const item = entryToResult(entry);
+    const deepMatch = findDeepMatch(parsed, terms, '');
+    if (deepMatch) item.deepMatch = deepMatch;
+    scan.items.push(item);
+  });
+}
+
+async function deepSearch(
+  query: string,
+  filters: SearchFilters,
+  maxResults?: number,
+): Promise<SearchResponse> {
+  const startedAt = Date.now();
+  const terms = parseDeepSearchTerms(query);
+  const cap =
+    maxResults !== undefined && maxResults > 0 ? Math.floor(maxResults) : 200;
+  const scan: DeepScanState = { items: [], totalMatches: 0, cap };
+
+  if (terms.length === 0) {
+    return { items: [], totalMatches: 0, durationMs: Date.now() - startedAt };
+  }
+
+  const requestedTable =
+    filters.table && filters.table !== 'all' && filters.table !== '' ? filters.table : undefined;
+
+  if (requestedTable) {
+    if (requestedTable === INVENTORY_ITEM_TABLE) {
+      if (await hasFullItemsCached(state.locale, state.versionSignature)) {
+        await scanFullItemsForDeepSearch(terms, scan);
+      } else {
+        const lite = tableDataMap.get('DestinyInventoryItemLiteDefinition');
+        if (lite) scanTableForDeepSearch('DestinyInventoryItemLiteDefinition', lite, terms, scan);
+      }
+    } else {
+      const mem = tableDataMap.get(requestedTable);
+      if (mem) {
+        scanTableForDeepSearch(requestedTable, mem, terms, scan);
+      } else {
+        const idb = await getTableData(state.locale, state.versionSignature, requestedTable);
+        if (idb) {
+          tableDataMap.set(requestedTable, idb);
+          scanTableForDeepSearch(requestedTable, idb, terms, scan);
+        }
+      }
+    }
+  } else {
+    const hasFull = await hasFullItemsCached(state.locale, state.versionSignature);
+    for (const [table, data] of tableDataMap) {
+      // Prefer the full item buckets over the reduced Lite table when available.
+      if (table === 'DestinyInventoryItemLiteDefinition' && hasFull) continue;
+      scanTableForDeepSearch(table, data, terms, scan);
+    }
+    if (hasFull) await scanFullItemsForDeepSearch(terms, scan);
+  }
+
+  return {
+    items: scan.items,
+    totalMatches: scan.totalMatches,
+    durationMs: Date.now() - startedAt,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -932,9 +1182,28 @@ async function getDefinition(
       if (reloaded) return buildDetail(table, hash, reloaded, false);
     }
 
-    const entry =
+    let entry =
       entriesByTableAndHash.get(`${INVENTORY_ITEM_TABLE}:${hash}`) ?? entryByHash.get(hash);
-    if (!entry) throw new Error(`Unknown item hash ${hash}`);
+    if (!entry) {
+      const liteTable = 'DestinyInventoryItemLiteDefinition';
+      const liteInFlight = loadingPromises.get(liteTable);
+      if (liteInFlight) {
+        await liteInFlight;
+      } else if (
+        !indexedTables.has(INVENTORY_ITEM_TABLE) &&
+        state.componentPaths[liteTable]
+      ) {
+        await loadTable(liteTable);
+      }
+      entry =
+        entriesByTableAndHash.get(`${INVENTORY_ITEM_TABLE}:${hash}`) ?? entryByHash.get(hash);
+    }
+    if (!entry) {
+      await ensureFullItem(hash);
+      const reloaded = await tryReadFullItem(hash);
+      if (reloaded) return buildDetail(table, hash, reloaded, false);
+      throw new Error(`Unknown item hash ${hash}`);
+    }
     maybeLoadFullTableInBackground();
     return buildDetail(table, hash, buildLiteData(entry), true);
   }
@@ -995,13 +1264,28 @@ function toSummary(entry: SearchIndexEntry): ResolvedHashSummary {
 }
 
 function resolveHash(hash: number, targetTables: string[]): ResolvedHashSummary | undefined {
-  for (const table of targetTables) {
-    const entry = entriesByTableAndHash.get(`${table}:${hash}`);
-    if (entry) return toSummary(entry);
+  if (targetTables.length > 0) {
+    for (const table of targetTables) {
+      const entry = entriesByTableAndHash.get(`${table}:${hash}`);
+      if (entry) return toSummary(entry);
+    }
+    return undefined;
   }
   const fallback = entryByHash.get(hash);
   if (fallback) return toSummary(fallback);
   return undefined;
+}
+
+function recordResolvedRef(
+  refs: Record<string, ResolvedHashSummary>,
+  summary: ResolvedHashSummary,
+): void {
+  refs[`${summary.table}:${summary.hash}`] = summary;
+  // Bare-hash fallback so the JSON inspector can resolve every hash even when
+  // the target table is unknown. Keep the first/primary match under the bare key.
+  if (refs[String(summary.hash)] === undefined) {
+    refs[String(summary.hash)] = summary;
+  }
 }
 
 function recordRef(
@@ -1012,41 +1296,70 @@ function recordRef(
 ): void {
   const targetTables = getTargetTablesForField(fieldName, parentKey);
   const summary = resolveHash(hash, targetTables);
-  if (summary) refs[`${summary.table}:${hash}`] = summary;
+  if (summary) recordResolvedRef(refs, summary);
+}
+
+function recordObjectKeyRef(
+  refs: Record<string, ResolvedHashSummary>,
+  parentKey: string | undefined,
+  hash: number,
+): void {
+  const targetTables = getTargetTablesForObjectKey(parentKey);
+  const summary = resolveHash(hash, targetTables);
+  if (summary) recordResolvedRef(refs, summary);
 }
 
 function walkForRefs(
   value: unknown,
-  fieldName: string | undefined,
   parentKey: string | undefined,
   refs: Record<string, ResolvedHashSummary>,
   depth: number,
 ): void {
   if (depth > 24 || value === null || value === undefined) return;
   if (Array.isArray(value)) {
-    for (const item of value) walkForRefs(item, fieldName, parentKey, refs, depth + 1);
+    for (const item of value) walkForRefs(item, parentKey, refs, depth + 1);
     return;
   }
   if (typeof value !== 'object') return;
   const record = value as Record<string, unknown>;
   for (const [key, child] of Object.entries(record)) {
-    if (key.endsWith('Hash')) {
-      const hash = asUnsigned(child);
-      if (hash !== undefined) recordRef(refs, key, parentKey, hash);
-    } else if (key.endsWith('Hashes') && Array.isArray(child)) {
-      for (const item of child) {
-        const hash = asUnsigned(item);
-        if (hash !== undefined) recordRef(refs, key, parentKey, hash);
+    // Numeric object keys identify hash-keyed collections
+    // (`stats.stats["..."], objectives, perks, items, nodes, ...`).
+    if (/^\d+$/.test(key)) {
+      const numericKey = Number(key);
+      if (numericKey > 1000) recordObjectKeyRef(refs, parentKey, toUnsignedHash(numericKey));
+      if (typeof child === 'object' && child !== null) {
+        walkForRefs(child, parentKey, refs, depth + 1);
       }
-    } else if (typeof child === 'object' && child !== null) {
-      walkForRefs(child, key, key, refs, depth + 1);
+      continue;
+    }
+
+    // Resolve every numeric field that maps to a known target table — not just
+    // fields ending in Hash/Hashes (covers `setItems`, hash arrays, ...).
+    const targetTables = getTargetTablesForField(key, parentKey);
+    if (targetTables.length > 0) {
+      if (typeof child === 'number' && Number.isFinite(child)) {
+        recordRef(refs, key, parentKey, toUnsignedHash(child));
+        continue;
+      }
+      if (Array.isArray(child)) {
+        for (const item of child) {
+          const hash = asUnsigned(item);
+          if (hash !== undefined) recordRef(refs, key, parentKey, hash);
+        }
+        continue;
+      }
+    }
+
+    if (typeof child === 'object' && child !== null) {
+      walkForRefs(child, key, refs, depth + 1);
     }
   }
 }
 
 function collectResolvedRefs(data: Record<string, unknown>): Record<string, ResolvedHashSummary> {
   const refs: Record<string, ResolvedHashSummary> = {};
-  walkForRefs(data, undefined, undefined, refs, 0);
+  walkForRefs(data, undefined, refs, 0);
   return refs;
 }
 
@@ -1325,6 +1638,7 @@ async function buildPlug(
   else if (entry?.icon) plug.icon = entry.icon;
   const tierType = asNumber(asRecord(definition?.inventory)?.tierType) ?? entry?.tierType;
   if (tierType !== undefined) plug.tierType = tierType;
+  if (entry?.isEnhanced !== undefined) plug.isEnhanced = entry.isEnhanced;
   if (options.isDefault !== undefined) plug.isDefault = options.isDefault;
   if (options.currentlyCanRoll !== undefined) plug.currentlyCanRoll = options.currentlyCanRoll;
   return plug;
@@ -1471,6 +1785,7 @@ function toVariantItem(entry: SearchIndexEntry): VariantItem {
   if (entry.damageType !== undefined) item.damageType = entry.damageType;
   if (entry.isAdept !== undefined) item.isAdept = entry.isAdept;
   if (entry.isHolofoil !== undefined) item.isHolofoil = entry.isHolofoil;
+  if (entry.isEnhanced !== undefined) item.isEnhanced = entry.isEnhanced;
   if (entry.isRedacted !== undefined) item.isRedacted = entry.isRedacted;
   if (entry.index !== undefined) item.index = entry.index;
   return item;
@@ -1505,6 +1820,7 @@ async function getVariants(table: string, hashInput: number): Promise<VariantIte
 function scanForHash(
   value: unknown,
   target: number,
+  sourceHash: number,
   path: string,
   paths: string[],
 ): void {
@@ -1515,13 +1831,16 @@ function scanForHash(
   }
   if (Array.isArray(value)) {
     for (let i = 0; i < value.length; i++) {
-      scanForHash(value[i], target, `${path}[${i}]`, paths);
+      scanForHash(value[i], target, sourceHash, `${path}[${i}]`, paths);
     }
     return;
   }
   if (typeof value === 'object') {
     for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-      scanForHash(child, target, path ? `${path}.${key}` : key, paths);
+      const childPath = path ? `${path}.${key}` : key;
+      // A definition's own root `hash` field must never count as a self-reference.
+      if (childPath === 'hash' && sourceHash === target) continue;
+      scanForHash(child, target, sourceHash, childPath, paths);
     }
   }
 }
@@ -1551,6 +1870,7 @@ function groupReference(
 
 async function getReverseReferences(
   targetHashInput: number,
+  targetTable?: string,
   tablesToScan?: string[],
 ): Promise<ReverseReferenceResponse> {
   const start = performance.now();
@@ -1566,8 +1886,10 @@ async function getReverseReferences(
     scannedTables.push(table);
     for (const [hashKey, raw] of Object.entries(data)) {
       const sourceHash = toUnsignedHash(Number(hashKey));
+      // Skip the definition being inspected so it never lists itself.
+      if (table === targetTable && sourceHash === target) continue;
       const paths: string[] = [];
-      scanForHash(raw, target, '', paths);
+      scanForHash(raw, target, sourceHash, '', paths);
       if (paths.length > 0) groupReference(groups, table, sourceHash, paths);
     }
   };
@@ -1576,6 +1898,7 @@ async function getReverseReferences(
     scannedTables.push(INVENTORY_ITEM_TABLE);
     const targetNeedle = String(target);
     await iterateFullItems(state.locale, state.versionSignature, (sourceHash, rawJson) => {
+      if (INVENTORY_ITEM_TABLE === targetTable && sourceHash === target) return;
       if (!rawJson.includes(targetNeedle)) return;
       let parsed: Record<string, unknown>;
       try {
@@ -1584,7 +1907,7 @@ async function getReverseReferences(
         return;
       }
       const paths: string[] = [];
-      scanForHash(parsed, target, '', paths);
+      scanForHash(parsed, target, sourceHash, '', paths);
       if (paths.length > 0) {
         groupReference(groups, INVENTORY_ITEM_TABLE, sourceHash, paths);
       }
@@ -1740,8 +2063,8 @@ async function clearCache(): Promise<void> {
   state.fromCache = false;
   state.phase = 'idle';
   state.initialized = false;
-  emitStatus();
-  emitTables();
+  emitStatus(true);
+  emitTables(true);
 }
 
 async function getCacheStats(): Promise<CacheStatsResult> {
@@ -1772,16 +2095,18 @@ async function dispatch(message: WorkerRequest): Promise<unknown> {
       return init(message.locale, message.apiKey, message.forceRefresh);
     case 'search':
       return search(message.query, message.filters, message.sort, message.maxResults);
+    case 'deepSearch':
+      return deepSearch(message.query, message.filters, message.maxResults);
     case 'getDefinition':
       return getDefinition(message.table, message.hash, message.preferFull);
     case 'loadTable':
-      return loadTable(message.table);
+      return loadTable(message.table, true);
     case 'loadAllTables':
       return loadAllTables();
     case 'getVariants':
       return getVariants(message.table, message.hash);
     case 'getReverseReferences':
-      return getReverseReferences(message.targetHash, message.tablesToScan);
+      return getReverseReferences(message.targetHash, message.targetTable, message.tablesToScan);
     case 'getClarityDescription':
       return getClarityDescription(message.hash);
     case 'checkForUpdates':

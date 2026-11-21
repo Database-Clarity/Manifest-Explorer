@@ -32,17 +32,33 @@ const TAB_KEYS: readonly InspectorTab[] = [
   'diff',
 ];
 
-function isEditableTarget(target: EventTarget | null): boolean {
+interface HistoryTabState {
+  manifestExplorer: true;
+  sessionId: string;
+  stackIndex: number;
+}
+
+function isTextInputTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
     return false;
   }
   const tag = target.tagName;
-  return (
-    tag === 'INPUT' ||
-    tag === 'TEXTAREA' ||
-    tag === 'SELECT' ||
-    target.isContentEditable
-  );
+  if (tag === 'TEXTAREA' || target.isContentEditable) {
+    return true;
+  }
+  if (tag === 'INPUT') {
+    const input = target as HTMLInputElement;
+    const nonTextTypes = new Set(['checkbox', 'radio', 'button', 'submit', 'reset', 'range']);
+    return !nonTextTypes.has(input.type);
+  }
+  return Boolean(target.closest('[contenteditable="true"]'));
+}
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (isTextInputTarget(target)) {
+    return true;
+  }
+  return target instanceof HTMLElement && target.tagName === 'SELECT';
 }
 
 export function App(): ReactNode {
@@ -50,6 +66,8 @@ export function App(): ReactNode {
   const searchSeqRef = useRef(0);
   const detailSeqRef = useRef(0);
   const syncingHashRef = useRef(false);
+  const applyingPopStateRef = useRef(false);
+  const lastSearchKeyRef = useRef('');
 
   const [helpOpen, setHelpOpen] = useState(false);
 
@@ -68,10 +86,12 @@ export function App(): ReactNode {
 
   // Explorer state
   const query = useExplorerStore((s) => s.query);
+  const deepSearch = useExplorerStore((s) => s.deepSearch);
   const filters = useExplorerStore((s) => s.filters);
   const manifestStatus = useExplorerStore((s) => s.manifestStatus);
   const results = useExplorerStore((s) => s.results);
   const selectedResultIndex = useExplorerStore((s) => s.selectedResultIndex);
+  const sessions = useExplorerStore((s) => s.sessions);
   const stack = useExplorerStore((s) => s.stack);
   const stackIndex = useExplorerStore((s) => s.stackIndex);
   const activeTab = useExplorerStore((s) => s.activeTab);
@@ -86,13 +106,16 @@ export function App(): ReactNode {
   const setSelectedResultIndex = useExplorerStore((s) => s.setSelectedResultIndex);
   const openDefinition = useExplorerStore((s) => s.openDefinition);
   const openInNewTab = useExplorerStore((s) => s.openInNewTab);
+  const switchSession = useExplorerStore((s) => s.switchSession);
   const closeSession = useExplorerStore((s) => s.closeSession);
-  const updateActiveSessionLabel = useExplorerStore((s) => s.updateActiveSessionLabel);
+  const updateActiveSessionMeta = useExplorerStore((s) => s.updateActiveSessionMeta);
   const inspectorMaximized = useExplorerStore((s) => s.inspectorMaximized);
   const activeSessionIndex = useExplorerStore((s) => s.activeSessionIndex);
-  const sessionsCount = useExplorerStore((s) => s.sessions.length);
+  const sessionsCount = sessions.length;
   const navigateBack = useExplorerStore((s) => s.navigateBack);
   const navigateForward = useExplorerStore((s) => s.navigateForward);
+  const jumpToStackIndex = useExplorerStore((s) => s.jumpToStackIndex);
+  const restoreHistoryPoint = useExplorerStore((s) => s.restoreHistoryPoint);
   const closeInspector = useExplorerStore((s) => s.closeInspector);
   const setActiveTab = useExplorerStore((s) => s.setActiveTab);
   const pushNotice = useExplorerStore((s) => s.pushNotice);
@@ -122,32 +145,100 @@ export function App(): ReactNode {
   const [clarityLoading, setClarityLoading] = useState(false);
   const [detailReloadCounter, setDetailReloadCounter] = useState(0);
 
-  // Hydrate initial URL hash & listen to browser back/forward
+  const syncBrowserHistory = useCallback((mode: 'replace' | 'push') => {
+    const st = useExplorerStore.getState();
+    const nextHash = st.buildHashUrl();
+    const active =
+      st.activeSessionIndex >= 0 ? st.sessions[st.activeSessionIndex] : undefined;
+    const historyState: HistoryTabState | null = active
+      ? {
+          manifestExplorer: true,
+          sessionId: active.id,
+          stackIndex: active.stackIndex,
+        }
+      : null;
+
+    syncingHashRef.current = true;
+    if (mode === 'push') {
+      window.history.pushState(historyState, '', nextHash);
+    } else {
+      window.history.replaceState(historyState, '', nextHash);
+    }
+    window.queueMicrotask(() => {
+      syncingHashRef.current = false;
+    });
+  }, []);
+
+  // Hydrate initial URL hash & intercept browser back/forward while a tab has history
   useEffect(() => {
     if (window.location.hash) {
       hydrateFromHashUrl(window.location.hash);
+      syncBrowserHistory('replace');
     }
-    const onHashChange = (): void => {
+
+    const onPopState = (event: PopStateEvent): void => {
       if (syncingHashRef.current) {
+        return;
+      }
+      const state = event.state as Partial<HistoryTabState> | null;
+      if (
+        state &&
+        state.manifestExplorer === true &&
+        typeof state.sessionId === 'string' &&
+        typeof state.stackIndex === 'number'
+      ) {
+        applyingPopStateRef.current = true;
+        const restored = restoreHistoryPoint(state.sessionId, state.stackIndex);
+        window.queueMicrotask(() => {
+          applyingPopStateRef.current = false;
+        });
+        if (restored) {
+          return;
+        }
+      }
+
+      applyingPopStateRef.current = true;
+      hydrateFromHashUrl(window.location.hash);
+      window.queueMicrotask(() => {
+        applyingPopStateRef.current = false;
+      });
+    };
+
+    const onHashChange = (): void => {
+      if (syncingHashRef.current || applyingPopStateRef.current) {
         return;
       }
       hydrateFromHashUrl(window.location.hash);
     };
-    window.addEventListener('hashchange', onHashChange);
-    return () => window.removeEventListener('hashchange', onHashChange);
-  }, [hydrateFromHashUrl]);
 
-  // Keep URL hash synchronized with inspector stack, query, and table filter
+    window.addEventListener('popstate', onPopState);
+    window.addEventListener('hashchange', onHashChange);
+    return () => {
+      window.removeEventListener('popstate', onPopState);
+      window.removeEventListener('hashchange', onHashChange);
+    };
+  }, [hydrateFromHashUrl, restoreHistoryPoint, syncBrowserHistory]);
+
+  // Keep URL hash synchronized without clobbering pushed tab history entries
   useEffect(() => {
+    if (applyingPopStateRef.current) {
+      return;
+    }
     const nextHash = buildHashUrl();
     if (window.location.hash !== nextHash) {
-      syncingHashRef.current = true;
-      window.history.replaceState(null, '', nextHash);
-      window.queueMicrotask(() => {
-        syncingHashRef.current = false;
-      });
+      syncBrowserHistory('replace');
     }
-  }, [stack, stackIndex, query, filters.table, buildHashUrl]);
+  }, [
+    sessions,
+    activeSessionIndex,
+    stack,
+    stackIndex,
+    query,
+    deepSearch,
+    filters.table,
+    buildHashUrl,
+    syncBrowserHistory,
+  ]);
 
   // Worker subscriptions + boot
   const bootManifest = useCallback(
@@ -184,24 +275,54 @@ export function App(): ReactNode {
     bootManifest(locale, bungieApiKey, false);
   }, [locale, bungieApiKey, bootManifest]);
 
-  // Run search whenever query, filters, sort, or indexed entry count changes
+  // Run search whenever query, deepSearch, filters, sort, or indexed entry count changes
   useEffect(() => {
     if (manifestStatus.indexedEntryCount === 0 && manifestStatus.phase !== 'ready') {
       return;
     }
 
+    const searchKey = `${query}|${deepSearch ? '1' : '0'}|${sortMode}|${JSON.stringify(filters)}`;
+    const isBackgroundIndexRefresh = searchKey === lastSearchKeyRef.current;
+    lastSearchKeyRef.current = searchKey;
+
+    const trimmed = query.trim();
+    const hasDeepPrefix = /^deep:/i.test(trimmed);
+    const useDeep = (deepSearch || hasDeepPrefix) && trimmed.length > 0;
+    const effectiveDeepQuery = hasDeepPrefix
+      ? trimmed.replace(/^deep:\s*/i, '').trim()
+      : trimmed;
+
     const seq = ++searchSeqRef.current;
-    const delay = query.length > 0 ? 25 : 0;
+    const delay = isBackgroundIndexRefresh
+      ? 450
+      : useDeep
+        ? 140
+        : query.length > 0
+          ? 25
+          : 0;
 
     const timer = window.setTimeout(() => {
-      setSearching(true);
-      void manifestClient
-        .search(query, filters, sortMode, 2500)
+      const hasExistingResults = useExplorerStore.getState().results.length > 0;
+      if (!isBackgroundIndexRefresh && (useDeep || !hasExistingResults)) {
+        setSearching(true);
+      }
+
+      const promise =
+        useDeep && effectiveDeepQuery.length > 0
+          ? manifestClient.deepSearch(effectiveDeepQuery, filters, 400)
+          : manifestClient.search(query, filters, sortMode, 2500);
+
+      void promise
         .then((res) => {
           if (seq !== searchSeqRef.current) {
             return;
           }
-          setSearchResults(res.items, res.totalMatches, res.durationMs);
+          setSearchResults(
+            res.items,
+            res.totalMatches,
+            res.durationMs,
+            isBackgroundIndexRefresh,
+          );
         })
         .catch(() => {
           if (seq === searchSeqRef.current) {
@@ -213,6 +334,7 @@ export function App(): ReactNode {
     return () => window.clearTimeout(timer);
   }, [
     query,
+    deepSearch,
     filters,
     sortMode,
     manifestStatus.indexedEntryCount,
@@ -264,6 +386,7 @@ export function App(): ReactNode {
     }
 
     const seq = ++detailSeqRef.current;
+    setDetail(null);
     setDetailLoading(true);
     setDetailError(null);
     setLoadingFull(false);
@@ -278,12 +401,17 @@ export function App(): ReactNode {
         }
         setDetail(payload);
         setDetailLoading(false);
-        const dp = payload.data.displayProperties as { name?: string } | undefined;
+        const dp = payload.data.displayProperties as
+          | { name?: string; icon?: string }
+          | undefined;
         const resolvedName =
           (typeof dp?.name === 'string' && dp.name.trim()) ||
           (typeof payload.data.statName === 'string' && payload.data.statName.trim()) ||
           `${getShortTableName(payload.table)}:${payload.hash}`;
-        updateActiveSessionLabel(resolvedName);
+        updateActiveSessionMeta(
+          resolvedName,
+          typeof dp?.icon === 'string' ? dp.icon : undefined,
+        );
         if (payload.isLite) {
           loadFullForCurrent(currentRef, seq);
         }
@@ -357,7 +485,7 @@ export function App(): ReactNode {
     let cancelled = false;
     setReferencesLoading(true);
     void manifestClient
-      .getReverseReferences(currentRef.hash)
+      .getReverseReferences(currentRef.hash, currentRef.table)
       .then((res) => {
         if (!cancelled) {
           setReferences(res);
@@ -516,9 +644,9 @@ export function App(): ReactNode {
   );
 
   const handleOpenResult = useCallback(
-    (item: SearchResultItem, inNewTab = false) => {
+    (item: SearchResultItem) => {
       const collector = useCollectorStore.getState();
-      if (collector.collectMode && !inNewTab) {
+      if (collector.collectMode) {
         const existed = collector.hasItem(item.table, item.hash);
         collector.toggleItem({
           table: item.table,
@@ -535,28 +663,128 @@ export function App(): ReactNode {
         });
         return;
       }
-      if (inNewTab) {
-        openInNewTab(
-          { table: item.table, hash: item.hash },
-          item.name || `${getShortTableName(item.table)}:${item.hash}`,
-          true,
-        );
-      } else {
-        openDefinition(
-          { table: item.table, hash: item.hash },
-          true,
-          item.name || `${getShortTableName(item.table)}:${item.hash}`,
-        );
-      }
+
+      const rawFilter = item.deepMatch
+        ? useExplorerStore.getState().query.trim().replace(/^deep:\s*/i, '').trim()
+        : undefined;
+
+      // Clicking any entry in the searchable results pane always opens a new tab on Pretty.
+      openInNewTab(
+        { table: item.table, hash: item.hash },
+        item.name || `${getShortTableName(item.table)}:${item.hash}`,
+        true,
+        item.icon,
+        rawFilter && rawFilter.length > 0 ? rawFilter : undefined,
+      );
+      syncBrowserHistory('replace');
     },
-    [openDefinition, openInNewTab, pushNotice],
+    [openInNewTab, pushNotice, syncBrowserHistory],
   );
 
-  // Global keyboard shortcuts
+  const handleNavigateRef = useCallback(
+    (ref: DefinitionRef, pushToStack = true, inNewTab = false) => {
+      if (inNewTab) {
+        openInNewTab(ref, undefined, true);
+        syncBrowserHistory('replace');
+        return;
+      }
+
+      const prevState = useExplorerStore.getState();
+      const prevActive =
+        prevState.activeSessionIndex >= 0
+          ? prevState.sessions[prevState.activeSessionIndex]
+          : undefined;
+      const prevStackIndex = prevActive?.stackIndex ?? -1;
+
+      if (pushToStack && prevActive) {
+        const curHist = window.history.state as Partial<HistoryTabState> | null;
+        if (
+          !curHist?.manifestExplorer ||
+          curHist.sessionId !== prevActive.id ||
+          curHist.stackIndex !== prevActive.stackIndex
+        ) {
+          syncBrowserHistory('replace');
+        }
+      }
+
+      openDefinition(ref, pushToStack);
+
+      const nextState = useExplorerStore.getState();
+      const nextActive =
+        nextState.activeSessionIndex >= 0
+          ? nextState.sessions[nextState.activeSessionIndex]
+          : undefined;
+
+      if (
+        pushToStack &&
+        nextActive &&
+        prevActive &&
+        nextActive.id === prevActive.id &&
+        nextActive.stackIndex !== prevStackIndex
+      ) {
+        syncBrowserHistory('push');
+      } else {
+        syncBrowserHistory('replace');
+      }
+    },
+    [openDefinition, openInNewTab, syncBrowserHistory],
+  );
+
+  const handleNavigateBack = useCallback(() => {
+    const st = useExplorerStore.getState();
+    const active =
+      st.activeSessionIndex >= 0 ? st.sessions[st.activeSessionIndex] : undefined;
+    if (!active || active.stackIndex <= 0) {
+      return;
+    }
+    const curHist = window.history.state as Partial<HistoryTabState> | null;
+    if (
+      curHist?.manifestExplorer &&
+      curHist.sessionId === active.id &&
+      curHist.stackIndex === active.stackIndex
+    ) {
+      window.history.back();
+      return;
+    }
+    if (navigateBack()) {
+      syncBrowserHistory('replace');
+    }
+  }, [navigateBack, syncBrowserHistory]);
+
+  const handleNavigateForward = useCallback(() => {
+    const st = useExplorerStore.getState();
+    const active =
+      st.activeSessionIndex >= 0 ? st.sessions[st.activeSessionIndex] : undefined;
+    if (!active || active.stackIndex >= active.stack.length - 1) {
+      return;
+    }
+    if (navigateForward()) {
+      syncBrowserHistory('replace');
+    }
+  }, [navigateForward, syncBrowserHistory]);
+
+  const handleJumpToStackIndex = useCallback(
+    (index: number) => {
+      jumpToStackIndex(index);
+      syncBrowserHistory('replace');
+    },
+    [jumpToStackIndex, syncBrowserHistory],
+  );
+
+  const handleSwitchSession = useCallback(
+    (index: number) => {
+      switchSession(index);
+      syncBrowserHistory('replace');
+    },
+    [switchSession, syncBrowserHistory],
+  );
+
+  // Global keyboard shortcuts (capture phase so '/' always focuses search reliably)
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault();
+        event.stopPropagation();
         searchInputRef.current?.focus();
         searchInputRef.current?.select();
         return;
@@ -564,13 +792,13 @@ export function App(): ReactNode {
 
       if (event.altKey && event.key === 'ArrowLeft') {
         event.preventDefault();
-        navigateBack();
+        handleNavigateBack();
         return;
       }
 
       if (event.altKey && event.key === 'ArrowRight') {
         event.preventDefault();
-        navigateForward();
+        handleNavigateForward();
         return;
       }
 
@@ -584,16 +812,24 @@ export function App(): ReactNode {
         return;
       }
 
+      if (
+        (event.key === '/' || event.code === 'NumpadDivide') &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey &&
+        !isTextInputTarget(event.target)
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+        return;
+      }
+
       if (isEditableTarget(event.target)) {
         if (event.key === 'Escape') {
           (event.target as HTMLElement).blur();
         }
-        return;
-      }
-
-      if (event.key === '/' && !event.ctrlKey && !event.metaKey && !event.altKey) {
-        event.preventDefault();
-        searchInputRef.current?.focus();
         return;
       }
 
@@ -606,7 +842,12 @@ export function App(): ReactNode {
       if (event.key === 'Escape') {
         if (helpOpen) {
           setHelpOpen(false);
-        } else if (currentRef) {
+          return;
+        }
+        if (document.querySelector('[role="dialog"]')) {
+          return;
+        }
+        if (currentRef) {
           closeInspector();
         }
         return;
@@ -686,18 +927,18 @@ export function App(): ReactNode {
       }
     };
 
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
   }, [
     activeSessionIndex,
     closeInspector,
     closeSession,
     currentRef,
     detail,
+    handleNavigateBack,
+    handleNavigateForward,
     handleOpenResult,
     helpOpen,
-    navigateBack,
-    navigateForward,
     pushNotice,
     results,
     selectedResultIndex,
@@ -753,9 +994,11 @@ export function App(): ReactNode {
           clarityEntry={clarityEntry}
           clarityLoading={clarityLoading}
           showClarity={showClarityDescriptions}
-          onNavigateRef={(ref, push = true, inNewTab = false) =>
-            inNewTab ? openInNewTab(ref, undefined, true) : openDefinition(ref, push)
-          }
+          onNavigateRef={handleNavigateRef}
+          onNavigateBack={handleNavigateBack}
+          onNavigateForward={handleNavigateForward}
+          onJumpToStackIndex={handleJumpToStackIndex}
+          onSwitchSession={handleSwitchSession}
           onLoadFullItem={() => {
             if (currentRef) {
               loadFullForCurrent(currentRef, detailSeqRef.current);

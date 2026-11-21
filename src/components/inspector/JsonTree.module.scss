@@ -192,14 +192,15 @@
   }
 }
 
-.swatch {
-  display: inline-block;
-  width: 0.875rem;
-  height: 0.875rem;
-  border: 1px solid var(--pop-edge);
-  border-radius: 0.1875rem;
-  vertical-align: middle;
-  margin-left: 0.25rem;
+.refLinkLazy {
+  color: var(--syn-comment);
+  text-decoration-style: dotted;
+
+  @media (hover: hover) {
+    &:hover {
+      color: var(--link);
+    }
+  }
 }
 
 .rowActions {
@@ -314,69 +315,4 @@
   color: var(--text2);
   font-family: Arial, Helvetica, sans-serif;
   font-size: 0.8125rem;
-}
-
-.lightboxBackdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 200;
-  background: var(--scrim);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 1rem;
-}
-
-.lightboxCard {
-  @include ctl.overlay-surface;
-  border-radius: 0.5rem;
-  max-width: min(60rem, calc(100vw - 2rem));
-  max-height: calc(100dvh - 2rem);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.lightboxHeader {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  padding: 0.5rem 0.75rem;
-  background: var(--chrome);
-  border-bottom: 1px solid var(--line);
-}
-
-.lightboxTitle {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-  min-width: 0;
-  font-size: 0.75rem;
-  color: var(--text2);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.lightboxActions {
-  display: flex;
-  align-items: center;
-  gap: 0.375rem;
-  flex-shrink: 0;
-}
-
-.lightboxBody {
-  padding: 1rem;
-  overflow: auto;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--editor);
-}
-
-.lightboxImg {
-  max-width: 100%;
-  max-height: calc(100dvh - 8rem);
-  object-fit: contain;
 }

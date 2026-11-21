@@ -1,5 +1,7 @@
 import { useState, type ReactNode } from 'react';
 import { bungieAssetUrl } from '../manifest/hash';
+import type { ImageScalingMode } from '../types/manifest';
+import { useSettingsStore } from '../stores/settings';
 import styles from './BungieIcon.module.scss';
 
 export interface BungieIconProps {
@@ -7,27 +9,28 @@ export interface BungieIconProps {
   icon?: string;
   /** Relative Bungie watermark path rendered behind the icon. */
   watermark?: string;
-  /** Destiny item tier: 6 Exotic, 5 Legendary, 4 Rare, 3 Uncommon, 2 Common. */
+  /**
+   * Retained for backwards compatibility with existing call sites.
+   * Rarity is rendered on text via `getTierColorVar`, never as an edge on the tile.
+   */
   tierType?: number;
   /** Rendered square edge length in pixels. Defaults to 36. */
   size?: number;
   /** Accessible text. Omit when the icon is decorative next to a name. */
   alt?: string;
   className?: string;
+  /** Draws Destiny 2's enhanced-weapon arrow plus a warm upward glow. */
+  isEnhanced?: boolean;
+  /** Per-tile override for the Image scaling setting. */
+  imageScaling?: ImageScalingMode;
 }
 
-function tierClassName(tierType: number | undefined): string {
-  switch (tierType) {
-    case 6:
-      return styles.tierExotic ?? '';
-    case 5:
-      return styles.tierLegendary ?? '';
-    case 4:
-      return styles.tierRare ?? '';
-    case 3:
-      return styles.tierUncommon ?? '';
-    case 2:
-      return styles.tierCommon ?? '';
+function scalingClassName(mode: ImageScalingMode): string {
+  switch (mode) {
+    case 'integer':
+      return styles.imageInteger ?? '';
+    case 'smooth':
+      return styles.imageSmooth ?? '';
     default:
       return '';
   }
@@ -41,12 +44,15 @@ function tierClassName(tierType: number | undefined): string {
 export function BungieIcon({
   icon,
   watermark,
-  tierType,
   size = 36,
   alt,
   className,
+  isEnhanced = false,
+  imageScaling,
 }: BungieIconProps): ReactNode {
   const dimension = Number.isFinite(size) && size > 0 ? size : 36;
+  const settingScaling = useSettingsStore((state) => state.imageScaling);
+  const scaling = imageScaling ?? settingScaling;
 
   const [brokenIcon, setBrokenIcon] = useState<string | null>(null);
   const [brokenWatermark, setBrokenWatermark] = useState<string | null>(null);
@@ -59,7 +65,11 @@ export function BungieIcon({
 
   const showIcon = iconSrc !== null && brokenIcon !== iconSrc;
   const showWatermark = watermarkSrc !== null && brokenWatermark !== watermarkSrc;
-  const tierEdgeClass = tierClassName(tierType);
+
+  const scalingClass = scalingClassName(scaling);
+  const imageClass = scalingClass
+    ? `${styles.image ?? ''} ${scalingClass}`
+    : (styles.image ?? '');
 
   const frameClass = className
     ? `${styles.frame ?? ''} ${className}`
@@ -85,7 +95,7 @@ export function BungieIcon({
 
       {showIcon ? (
         <img
-          className={styles.image}
+          className={imageClass}
           src={iconSrc}
           alt={alt ?? ''}
           loading="lazy"
@@ -115,8 +125,21 @@ export function BungieIcon({
         </span>
       )}
 
-      {tierEdgeClass ? (
-        <span className={`${styles.tierEdge ?? ''} ${tierEdgeClass}`} aria-hidden="true" />
+      {isEnhanced ? (
+        <>
+          <span className={styles.enhancedGlow} aria-hidden="true" />
+          <span className={styles.enhancedBadge} aria-hidden="true">
+            <svg
+              className={styles.enhancedArrow}
+              viewBox="0 0 10 32"
+              fill="currentColor"
+              aria-hidden="true"
+              focusable="false"
+            >
+              <path d="M5 1 9.2 8.2H6.15V31H3.85V8.2H.8Z" />
+            </svg>
+          </span>
+        </>
       ) : null}
     </div>
   );

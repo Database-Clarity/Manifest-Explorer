@@ -40,12 +40,21 @@ type ThemeName = 'dark' | 'light';
 const THEMES: readonly ThemeName[] = ['dark', 'light'];
 
 const TEXT_TOKENS = ['--text', '--text2', '--link', '--accent-ink'] as const;
+const RARITY_TOKENS = [
+  '--tier-exotic',
+  '--tier-legendary',
+  '--tier-rare',
+  '--tier-uncommon',
+  '--tier-common',
+] as const;
 const SURFACES = ['--page', '--col', '--raised', '--chrome'] as const;
+const RARITY_SURFACES = ['--page', '--col'] as const;
 const EDGE_TOKENS = ['--ctl-edge', '--fld-edge'] as const;
 const EDGE_SURFACES = ['--page', '--chrome', '--raised'] as const;
 
 const AUDITED_TOKENS: readonly string[] = [
   ...TEXT_TOKENS,
+  ...RARITY_TOKENS,
   ...SURFACES,
   ...EDGE_TOKENS,
   ...EDGE_SURFACES,
@@ -249,6 +258,15 @@ describe('WCAG AA token contrast', () => {
           tokens,
           'Text contrast',
           crossProduct(TEXT_TOKENS, SURFACES, 4.5),
+        );
+      });
+
+      it('keeps rarity tier text at 4.5:1 on page and column surfaces', () => {
+        assertContrast(
+          theme,
+          tokens,
+          'Rarity text contrast',
+          crossProduct(RARITY_TOKENS, RARITY_SURFACES, 4.5),
         );
       });
 

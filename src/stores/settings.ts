@@ -1,6 +1,12 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
-import { BUNGIE_LOCALES, type BungieLocale, type SortMode, type ViewMode } from '../types/manifest';
+import {
+  BUNGIE_LOCALES,
+  type BungieLocale,
+  type ImageScalingMode,
+  type SortMode,
+  type ViewMode,
+} from '../types/manifest';
 
 export const SETTINGS_STORAGE_KEY = 'clarity-manifest-settings';
 
@@ -19,6 +25,7 @@ export interface SettingsValues {
   showClarityDescriptions: boolean;
   viewMode: ViewMode;
   sortMode: SortMode;
+  imageScaling: ImageScalingMode;
   railCollapsed: boolean;
   railWidth: number;
   inspectorWidth: number;
@@ -35,6 +42,7 @@ export interface SettingsActions {
   setShowClarityDescriptions: (show: boolean) => void;
   setViewMode: (mode: ViewMode) => void;
   setSortMode: (mode: SortMode) => void;
+  setImageScaling: (mode: ImageScalingMode) => void;
   toggleRail: () => void;
   setRailWidth: (width: number) => void;
   setInspectorWidth: (width: number) => void;
@@ -54,6 +62,7 @@ export const DEFAULT_SETTINGS: SettingsValues = {
   showClarityDescriptions: true,
   viewMode: 'list',
   sortMode: 'relevance',
+  imageScaling: 'sharp',
   railCollapsed: false,
   railWidth: 224,
   inspectorWidth: 620,
@@ -72,6 +81,7 @@ export const INSPECTOR_WIDTH_MAX = 1280;
 const THEME_MODES: readonly ThemeMode[] = ['system', 'dark', 'light'];
 const TOUCH_SIZES: readonly TouchSize[] = ['compact', 'large'];
 const CODE_FONT_FAMILIES: readonly CodeFontFamily[] = ['system', 'cascadia', 'consolas'];
+const IMAGE_SCALING_MODES: readonly ImageScalingMode[] = ['sharp', 'integer', 'smooth'];
 const BUNGIE_LOCALE_CODES: readonly BungieLocale[] = BUNGIE_LOCALES.map((locale) => locale.code);
 
 const CODE_FONT_STACKS: Record<CodeFontFamily, string> = {
@@ -187,6 +197,11 @@ function mergePersistedSettings(persistedState: unknown, currentState: SettingsS
       ['relevance', 'name-asc', 'name-desc', 'hash-asc', 'hash-desc', 'index-desc'] as const,
       currentState.sortMode,
     ),
+    imageScaling: readEnum(
+      persistedState.imageScaling,
+      IMAGE_SCALING_MODES,
+      currentState.imageScaling,
+    ),
     railCollapsed: readBoolean(persistedState.railCollapsed, currentState.railCollapsed),
     railWidth: normalizeRailWidth(readNumber(persistedState.railWidth, currentState.railWidth)),
     inspectorWidth: normalizeInspectorWidth(
@@ -215,6 +230,7 @@ export const useSettingsStore = create<SettingsState>()(
         setShowClarityDescriptions: (showClarityDescriptions) => commit({ showClarityDescriptions }),
         setViewMode: (viewMode) => commit({ viewMode }),
         setSortMode: (sortMode) => commit({ sortMode }),
+        setImageScaling: (imageScaling) => commit({ imageScaling }),
         toggleRail: () => set((state) => ({ railCollapsed: !state.railCollapsed })),
         setRailWidth: (railWidth) => commit({ railWidth: normalizeRailWidth(railWidth) }),
         setInspectorWidth: (inspectorWidth) =>
@@ -240,6 +256,7 @@ export const useSettingsStore = create<SettingsState>()(
         showClarityDescriptions: state.showClarityDescriptions,
         viewMode: state.viewMode,
         sortMode: state.sortMode,
+        imageScaling: state.imageScaling,
         railCollapsed: state.railCollapsed,
         railWidth: state.railWidth,
         inspectorWidth: state.inspectorWidth,

@@ -8,7 +8,7 @@ import styles from './InspectorTabs.module.scss';
 export interface ReferencesTabProps {
   response: ReverseReferenceResponse | null;
   loading: boolean;
-  onNavigateRef: (ref: DefinitionRef) => void;
+  onNavigateRef: (ref: DefinitionRef, inNewTab?: boolean) => void;
   onLoadPriorityTable: (table: string) => void;
 }
 
@@ -94,14 +94,25 @@ export function ReferencesTab({
                   key={`${ref.sourceTable}:${ref.sourceHash}`}
                   type="button"
                   className={styles.entityRow}
-                  onClick={() =>
-                    onNavigateRef({ table: ref.sourceTable, hash: ref.sourceHash })
+                  title="Click to open in tab · Ctrl+Click or middle-click for new tab"
+                  onClick={(event) =>
+                    onNavigateRef(
+                      { table: ref.sourceTable, hash: ref.sourceHash },
+                      event.ctrlKey || event.metaKey || event.shiftKey,
+                    )
                   }
+                  onAuxClick={(event) => {
+                    if (event.button === 1) {
+                      event.preventDefault();
+                      onNavigateRef({ table: ref.sourceTable, hash: ref.sourceHash }, true);
+                    }
+                  }}
                 >
                   <BungieIcon icon={ref.sourceIcon} size={28} />
                   <span className={styles.entityText}>
                     <span className={styles.entityName}>
-                      {ref.sourceName || `${getShortTableName(ref.sourceTable)} ${ref.sourceHash}`}
+                      {ref.sourceName ||
+                        `${getShortTableName(ref.sourceTable)} ${ref.sourceHash}`}
                     </span>
                     <span className={`${styles.entitySub} mono`}>
                       {ref.paths.slice(0, 3).join(', ')}

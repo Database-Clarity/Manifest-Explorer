@@ -121,6 +121,8 @@ export function Header({
 
   const query = useExplorerStore((state) => state.query);
   const setQuery = useExplorerStore((state) => state.setQuery);
+  const deepSearch = useExplorerStore((state) => state.deepSearch);
+  const toggleDeepSearch = useExplorerStore((state) => state.toggleDeepSearch);
   const filters = useExplorerStore((state) => state.filters);
   const setTableFilter = useExplorerStore((state) => state.setTableFilter);
   const setMobileInspectorOpen = useExplorerStore((state) => state.setMobileInspectorOpen);
@@ -217,8 +219,12 @@ export function Header({
               className={styles.searchInput}
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search name, hash, tier:exotic, table:perk…"
-              aria-label="Search the manifest"
+              placeholder={
+                deepSearch
+                  ? 'Deep search inside JSON keys & values…'
+                  : 'Search name, hash, tier:exotic, table:perk…'
+              }
+              aria-label={deepSearch ? 'Deep search inside manifest JSON' : 'Search the manifest'}
               autoComplete="off"
               autoCorrect="off"
               spellCheck={false}
@@ -235,11 +241,27 @@ export function Header({
                 <CloseIcon size={12} />
               </button>
             ) : (
-              <kbd className={styles.kbd} aria-hidden="true">
+              <button
+                type="button"
+                className={styles.kbd}
+                onClick={() => searchInputRef.current?.focus()}
+                tabIndex={-1}
+                title="Press / to focus search"
+              >
                 /
-              </kbd>
+              </button>
             )}
           </div>
+
+          <button
+            type="button"
+            className={cx(styles.deepBtn, deepSearch && styles.iconBtnOn)}
+            onClick={toggleDeepSearch}
+            aria-pressed={deepSearch}
+            title="Deep search: match text inside raw JSON keys & values"
+          >
+            Deep
+          </button>
 
           <select
             className={cx(styles.locale, styles.desktopOnly)}

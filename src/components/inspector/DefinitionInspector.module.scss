@@ -38,8 +38,16 @@
   align-items: stretch;
   background: var(--col);
   border-bottom: 1px solid var(--line);
-  overflow-x: auto;
   flex-shrink: 0;
+  min-width: 0;
+}
+
+.sessionTabsScroll {
+  display: flex;
+  align-items: stretch;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
   scrollbar-width: none;
 
   &::-webkit-scrollbar {
@@ -50,8 +58,8 @@
 .sessionTab {
   display: inline-flex;
   align-items: center;
-  max-width: 13rem;
-  min-height: 1.75rem;
+  max-width: 14rem;
+  min-height: 1.875rem;
   border-right: 1px solid var(--hair);
   border-top: 2px solid transparent;
   background: transparent;
@@ -72,9 +80,10 @@
 .sessionTabBtn {
   display: inline-flex;
   align-items: center;
+  gap: 0.375rem;
   min-width: 0;
   height: 100%;
-  padding: 0 0.375rem 0 0.625rem;
+  padding: 0 0.375rem 0 0.5rem;
   border: 0;
   background: transparent;
   color: var(--tab);
@@ -85,6 +94,34 @@
   .sessionTabActive & {
     color: var(--text);
     font-weight: 600;
+  }
+
+  &:focus-visible {
+    @include ctl.focus-ring;
+  }
+}
+
+.sessionShareBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-shrink: 0;
+  padding: 0 0.5rem;
+  border: 0;
+  border-left: 1px solid var(--hair);
+  background: var(--col);
+  color: var(--text2);
+  font: inherit;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+
+  @media (hover: hover) {
+    &:hover {
+      color: var(--text);
+      background: var(--hover);
+    }
   }
 
   &:focus-visible {
@@ -328,7 +365,8 @@
 }
 
 .subLabel {
-  color: var(--text3);
+  color: var(--text2);
+  font-weight: 500;
 }
 
 .hashRow {

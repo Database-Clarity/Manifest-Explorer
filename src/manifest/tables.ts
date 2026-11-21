@@ -572,6 +572,8 @@ export function extractTableEntrySummary(
 
     const tierTypeName = normalizeText(asString(inventory?.tierTypeName) ?? '');
     const typeDisplay = normalizeText(asString(raw.itemTypeDisplayName) ?? '');
+    const tierAndTypeDisplay = normalizeText(asString(raw.itemTypeAndTierDisplayName) ?? '');
+    const plugCategoryLower = normalizeText(plugCategoryIdentifier ?? '');
     const isAdept =
       asBoolean(raw.isAdept) === true ||
       tierTypeName.includes('adept') ||
@@ -584,6 +586,13 @@ export function extractTableEntrySummary(
       typeDisplay.includes('holofoil') ||
       nameLower.includes('holofoil');
     entry.isHolofoil = isHolofoil;
+
+    const isEnhanced =
+      typeDisplay.includes('enhanced') ||
+      tierAndTypeDisplay.includes('enhanced') ||
+      plugCategoryLower.includes('enhanced') ||
+      nameLower.endsWith('(enhanced)');
+    entry.isEnhanced = isEnhanced;
 
     const isFeatured = asBoolean(raw.isFeatured) === true || asBoolean(raw.featured) === true;
     entry.isFeatured = isFeatured;

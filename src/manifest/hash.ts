@@ -260,6 +260,58 @@ export function getTargetTablesForField(fieldName: string, parentKey?: string): 
   return direct ? [...direct] : [];
 }
 
+/**
+ * Target tables for the numeric keys of a hash-keyed map. Manifest definitions
+ * often store collections as `{ "<hash>": { ... } }` (e.g. `stats.stats`,
+ * `objectives`, `perks`, `items`, `nodes`, `progressions`, `vendors`,
+ * `activities`, `records`, `collectibles`). Resolving the parent field name
+ * lets the JSON inspector map those bare numeric keys to a definition table.
+ */
+const OBJECT_KEY_TARGET_TABLE: Readonly<Record<string, readonly string[]>> = {
+  stat: ['DestinyStatDefinition'],
+  stats: ['DestinyStatDefinition'],
+  objective: ['DestinyObjectiveDefinition'],
+  objectives: ['DestinyObjectiveDefinition'],
+  perk: ['DestinySandboxPerkDefinition', 'DestinyInventoryItemDefinition'],
+  perks: ['DestinySandboxPerkDefinition', 'DestinyInventoryItemDefinition'],
+  item: ['DestinyInventoryItemDefinition'],
+  items: ['DestinyInventoryItemDefinition'],
+  node: ['DestinyPresentationNodeDefinition'],
+  nodes: ['DestinyPresentationNodeDefinition'],
+  progression: ['DestinyProgressionDefinition'],
+  progressions: ['DestinyProgressionDefinition'],
+  vendor: ['DestinyVendorDefinition'],
+  vendors: ['DestinyVendorDefinition'],
+  activity: ['DestinyActivityDefinition'],
+  activities: ['DestinyActivityDefinition'],
+  record: ['DestinyRecordDefinition'],
+  records: ['DestinyRecordDefinition'],
+  collectible: ['DestinyCollectibleDefinition'],
+  collectibles: ['DestinyCollectibleDefinition'],
+};
+
+/**
+ * Resolve the tables that the numeric keys of an object keyed by `parentKey`
+ * point at. Returns an empty array when the parent key is not a known
+ * hash-keyed collection.
+ */
+export function getTargetTablesForObjectKey(parentKey: string | undefined): string[] {
+  if (!parentKey) return [];
+  const normalized = normalizeFieldName(parentKey);
+  if (!normalized) return [];
+  const direct = OBJECT_KEY_TARGET_TABLE[normalized];
+  if (direct) return [...direct];
+  // Pluralize / singularize common collection names.
+  if (normalized.endsWith('s')) {
+    const singular = OBJECT_KEY_TARGET_TABLE[normalized.slice(0, -1)];
+    if (singular) return [...singular];
+  } else {
+    const plural = OBJECT_KEY_TARGET_TABLE[`${normalized}s`];
+    if (plural) return [...plural];
+  }
+  return [];
+}
+
 /** True when a string looks like a relative Bungie image asset path. */
 export function isBungieImagePath(value: unknown): value is string {
   if (typeof value !== 'string') return false;

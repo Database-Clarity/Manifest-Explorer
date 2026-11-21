@@ -1,14 +1,21 @@
-import type { ReactNode } from 'react';
+import { useState, type MouseEvent, type ReactNode } from 'react';
 import type {
   ClarityDescriptionEntry,
   DefinitionDetailPayload,
   DefinitionRef,
+  OverviewSocket,
+  OverviewSocketCategory,
+  OverviewSocketPlug,
 } from '../../types/manifest';
 import { bungieAssetUrl } from '../../manifest/hash';
 import { getShortTableName } from '../../manifest/tables';
 import { BungieIcon } from '../BungieIcon';
 import { Skeleton } from '../../ui/Skeleton';
+import { ChevronDownIcon, ChevronRightIcon } from '../../ui/Icons';
+import { getTierColorVar } from '../../ui/rarity';
 import styles from './InspectorTabs.module.scss';
+
+export type NavigateRef = (ref: DefinitionRef, inNewTab?: boolean) => void;
 
 export interface OverviewTabProps {
   detail: DefinitionDetailPayload;
@@ -16,7 +23,7 @@ export interface OverviewTabProps {
   clarityEntry: ClarityDescriptionEntry | null;
   clarityLoading: boolean;
   showClarity: boolean;
-  onNavigateRef: (ref: DefinitionRef) => void;
+  onNavigateRef: NavigateRef;
   onLoadFullItem: () => void;
 }
 
@@ -28,6 +35,339 @@ const ELEMENT_TOKEN_BY_ENUM: Record<number, string> = {
   6: 'var(--el-stasis)',
   7: 'var(--el-strand)',
 };
+
+/** Categories that are core to combat stay open even when their pools are large. */
+const CORE_SOCKET_CATEGORY_PATTERN =
+  /intrinsic|trait|masterwork|weapon perks?|armor perks?|armor mods?|weapon mods?|abilities|aspects|fragments|subclass/i;
+
+const LARGE_CATEGORY_PLUG_COUNT = 40;
+const LARGE_SOCKET_PLUG_COUNT = 6;
+const FILTERED_POOL_PLUG_COUNT = 10;
+const DEFAULT_ICON_SIZE = 28;
+
+interface RefButtonProps {
+  ref: DefinitionRef;
+  className: string | undefined;
+  title?: string;
+  onNavigate: NavigateRef;
+  children: ReactNode;
+}
+
+/**
+ * Every definition link opens in place on a plain click and in a new inspector
+ * tab on Ctrl/Cmd+Click or middle-click.
+ */
+function RefButton({ ref, className, title, onNavigate, children }: RefButtonProps): ReactNode {
+  return (
+    <button
+      type="button"
+      className={className}
+      title={title}
+      onClick={(event: MouseEvent<HTMLButtonElement>) =>
+        onNavigate(ref, event.ctrlKey || event.metaKey)
+      }
+      onAuxClick={(event: MouseEvent<HTMLButtonElement>) => {
+        if (event.button !== 1) {
+          return;
+        }
+        event.preventDefault();
+        onNavigate(ref, true);
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function tierStyle(tierType?: number): { color: string } | undefined {
+  const color = getTierColorVar(tierType);
+  return color ? { color } : undefined;
+}
+
+function itemRef(hash: number): DefinitionRef {
+  return { table: 'DestinyInventoryItemDefinition', hash };
+}
+
+function totalPlugs(category: OverviewSocketCategory): number {
+  return category.sockets.reduce((sum, socket) => sum + socket.plugs.length, 0);
+}
+
+function categoryStartsExpanded(category: OverviewSocketCategory): boolean {
+  if (CORE_SOCKET_CATEGORY_PATTERN.test(category.name)) {
+    return true;
+  }
+  return totalPlugs(category) <= LARGE_CATEGORY_PLUG_COUNT;
+}
+
+interface PlugPoolProps {
+  plugs: OverviewSocketPlug[];
+  onNavigate: NavigateRef;
+}
+
+function PlugPool({ plugs, onNavigate }: PlugPoolProps): ReactNode {
+  const [filter, setFilter] = useState('');
+  const needle = filter.trim().toLowerCase();
+  const visible =
+    needle.length === 0
+      ? plugs
+      : plugs.filter(
+          (plug) =>
+            plug.name.toLowerCase().includes(needle) ||
+            plug.itemTypeDisplayName.toLowerCase().includes(needle),
+        );
+
+  return (
+    <div className={styles.socketPool}>
+      {plugs.length > FILTERED_POOL_PLUG_COUNT ? (
+        <input
+          type="search"
+          className={styles.poolFilter}
+          value={filter}
+          onChange={(event) => setFilter(event.target.value)}
+          placeholder={`Filter ${plugs.length} plugs…`}
+          aria-label={`Filter ${plugs.length} plugs`}
+          autoComplete="off"
+          spellCheck={false}
+        />
+      ) : null}
+
+      {visible.length === 0 ? (
+        <p className={styles.poolEmpty}>No plugs match “{filter.trim()}”.</p>
+      ) : (
+        <div className={styles.plugGrid}>
+          {visible.map((plug, index) => (
+            <RefButton
+              key={`${plug.hash}-${index}`}
+              ref={itemRef(plug.hash)}
+              className={styles.plugCell}
+              title={plug.description || plug.name}
+              onNavigate={onNavigate}
+            >
+              <BungieIcon icon={plug.icon} isEnhanced={plug.isEnhanced} size={28} />
+              <span className={styles.entityText}>
+                <span className={styles.entityName}>
+                  {plug.name || `Item ${plug.hash}`}
+                  {plug.isDefault ? <span className={styles.tagMuted}> (default)</span> : null}
+                  {plug.currentlyCanRoll === false ? (
+                    <span className={styles.tagMuted}> (retired)</span>
+                  ) : null}
+                </span>
+                {plug.itemTypeDisplayName ? (
+                  <span className={styles.entitySub} style={tierStyle(plug.tierType)}>
+                    {plug.itemTypeDisplayName}
+                  </span>
+                ) : null}
+              </span>
+            </RefButton>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface SocketSlotProps {
+  socket: OverviewSocket;
+  onNavigate: NavigateRef;
+}
+
+function SocketSlot({ socket, onNavigate }: SocketSlotProps): ReactNode {
+  const [open, setOpen] = useState(socket.plugs.length <= LARGE_SOCKET_PLUG_COUNT);
+
+  const plugs = socket.plugs;
+  const primaryPlug =
+    socket.singleInitialPlug ?? plugs.find((plug) => plug.isDefault) ?? plugs[0];
+  const plugSetRef: DefinitionRef | null =
+    socket.plugSetHash === undefined
+      ? null
+      : { table: 'DestinyPlugSetDefinition', hash: socket.plugSetHash };
+  const plugSetLabel =
+    socket.plugSetHash === undefined ? null : `PlugSet ${socket.plugSetHash}`;
+
+  if (plugs.length <= 1) {
+    return (
+      <div className={styles.socketSlot}>
+        {primaryPlug ? (
+          <RefButton
+            ref={itemRef(primaryPlug.hash)}
+            className={styles.entityRow}
+            title={primaryPlug.description || primaryPlug.name}
+            onNavigate={onNavigate}
+          >
+            <BungieIcon
+              icon={primaryPlug.icon}
+              isEnhanced={primaryPlug.isEnhanced}
+              size={DEFAULT_ICON_SIZE}
+            />
+            <span className={styles.entityText}>
+              <span className={styles.entityName}>
+                {primaryPlug.name || `Item ${primaryPlug.hash}`}
+                {primaryPlug.isDefault ? (
+                  <span className={styles.tagMuted}> (default)</span>
+                ) : null}
+                {primaryPlug.currentlyCanRoll === false ? (
+                  <span className={styles.tagMuted}> (retired)</span>
+                ) : null}
+              </span>
+              {primaryPlug.itemTypeDisplayName ? (
+                <span className={styles.entitySub} style={tierStyle(primaryPlug.tierType)}>
+                  {primaryPlug.itemTypeDisplayName}
+                </span>
+              ) : null}
+            </span>
+            <span className={styles.entityHash}>{primaryPlug.hash}</span>
+          </RefButton>
+        ) : (
+          <div className={styles.socketEmptyRow}>
+            <span>{socket.socketTypeName || `Socket ${socket.socketIndex}`}</span>
+            {plugSetRef && plugSetLabel ? (
+              <RefButton
+                ref={plugSetRef}
+                className={styles.inlineLink}
+                onNavigate={onNavigate}
+              >
+                {plugSetLabel}
+              </RefButton>
+            ) : null}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  const slotLabel =
+    primaryPlug?.name || socket.socketTypeName || `Socket ${socket.socketIndex}`;
+
+  return (
+    <div className={styles.socketSlot}>
+      <div className={styles.socketSlotHeader}>
+        <button
+          type="button"
+          className={styles.slotToggle}
+          aria-expanded={open}
+          onClick={() => setOpen((current) => !current)}
+        >
+          {open ? <ChevronDownIcon size={12} /> : <ChevronRightIcon size={12} />}
+          <BungieIcon
+            icon={primaryPlug?.icon}
+            isEnhanced={primaryPlug?.isEnhanced}
+            size={24}
+          />
+          <span className={styles.slotLabel}>{slotLabel}</span>
+          <span className={styles.slotMeta}>
+            {plugs.length} plugs
+            {socket.isRandomized ? (
+              <span className={styles.slotTag}>Randomized</span>
+            ) : null}
+          </span>
+        </button>
+        {plugSetRef && plugSetLabel ? (
+          <RefButton
+            ref={plugSetRef}
+            className={styles.inlineLink}
+            title={`Open PlugSet ${socket.plugSetHash}`}
+            onNavigate={onNavigate}
+          >
+            {plugSetLabel}
+          </RefButton>
+        ) : null}
+      </div>
+
+      {open ? <PlugPool plugs={plugs} onNavigate={onNavigate} /> : null}
+    </div>
+  );
+}
+
+interface SocketsSectionProps {
+  categories: OverviewSocketCategory[];
+  onNavigate: NavigateRef;
+}
+
+function SocketsSection({ categories, onNavigate }: SocketsSectionProps): ReactNode {
+  const [overrides, setOverrides] = useState<Record<number, boolean>>({});
+
+  const isExpanded = (category: OverviewSocketCategory): boolean =>
+    overrides[category.categoryHash] ?? categoryStartsExpanded(category);
+
+  const setAll = (expanded: boolean): void => {
+    const next: Record<number, boolean> = {};
+    for (const category of categories) {
+      next[category.categoryHash] = expanded;
+    }
+    setOverrides(next);
+  };
+
+  return (
+    <section className={styles.section}>
+      <div className={styles.sectionHead}>
+        <h3 className={styles.sectionTitle}>Sockets</h3>
+        <div className={styles.sectionActions}>
+          <button type="button" className={styles.smallBtn} onClick={() => setAll(true)}>
+            Expand all
+          </button>
+          <button type="button" className={styles.smallBtn} onClick={() => setAll(false)}>
+            Collapse all
+          </button>
+        </div>
+      </div>
+
+      <div className={styles.socketCategories}>
+        {categories.map((category) => {
+          const expanded = isExpanded(category);
+          const socketCount = category.sockets.length;
+          const plugCount = totalPlugs(category);
+
+          return (
+            <section key={category.categoryHash} className={styles.socketCategory}>
+              <div className={styles.socketCatHeader}>
+                <button
+                  type="button"
+                  className={styles.catToggle}
+                  aria-expanded={expanded}
+                  aria-label={`${expanded ? 'Collapse' : 'Expand'} ${category.name}`}
+                  onClick={() =>
+                    setOverrides((current) => ({
+                      ...current,
+                      [category.categoryHash]: !expanded,
+                    }))
+                  }
+                >
+                  {expanded ? <ChevronDownIcon size={12} /> : <ChevronRightIcon size={12} />}
+                </button>
+                <RefButton
+                  ref={{
+                    table: 'DestinySocketCategoryDefinition',
+                    hash: category.categoryHash,
+                  }}
+                  className={styles.inlineLink}
+                  onNavigate={onNavigate}
+                >
+                  {category.name}
+                </RefButton>
+                <span className={styles.socketCatCount}>
+                  {socketCount} {socketCount === 1 ? 'socket' : 'sockets'} · {plugCount}{' '}
+                  {plugCount === 1 ? 'plug' : 'plugs'}
+                </span>
+              </div>
+
+              {expanded ? (
+                <div className={styles.socketList}>
+                  {category.sockets.map((socket) => (
+                    <SocketSlot
+                      key={`${socket.socketIndex}:${socket.plugs.length}`}
+                      socket={socket}
+                      onNavigate={onNavigate}
+                    />
+                  ))}
+                </div>
+              ) : null}
+            </section>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
 
 export function OverviewTab({
   detail,
@@ -42,6 +382,9 @@ export function OverviewTab({
   const displayProps = detail.data.displayProperties as
     | { name?: string; description?: string }
     | undefined;
+
+  const rawTier = detail.data.tierType;
+  const tierColor = getTierColorVar(typeof rawTier === 'number' ? rawTier : undefined);
 
   const hasContent =
     Boolean(displayProps?.description) ||
@@ -112,7 +455,9 @@ export function OverviewTab({
             {overview.tierName && (
               <>
                 <dt>Tier</dt>
-                <dd>{overview.tierName}</dd>
+                <dd style={tierColor ? { color: tierColor } : undefined}>
+                  {overview.tierName}
+                </dd>
               </>
             )}
             {overview.damageType && (
@@ -127,18 +472,16 @@ export function OverviewTab({
                         'var(--text2)',
                     }}
                   />
-                  <button
-                    type="button"
+                  <RefButton
+                    ref={{
+                      table: 'DestinyDamageTypeDefinition',
+                      hash: overview.damageType.hash,
+                    }}
                     className={styles.inlineLink}
-                    onClick={() =>
-                      onNavigateRef({
-                        table: 'DestinyDamageTypeDefinition',
-                        hash: overview.damageType!.hash,
-                      })
-                    }
+                    onNavigate={onNavigateRef}
                   >
                     {overview.damageType.name}
-                  </button>
+                  </RefButton>
                 </dd>
               </>
             )}
@@ -159,19 +502,14 @@ export function OverviewTab({
                 <dt>Categories</dt>
                 <dd className={styles.inlineList}>
                   {overview.categories.map((cat) => (
-                    <button
+                    <RefButton
                       key={cat.hash}
-                      type="button"
+                      ref={{ table: 'DestinyItemCategoryDefinition', hash: cat.hash }}
                       className={styles.inlineLink}
-                      onClick={() =>
-                        onNavigateRef({
-                          table: 'DestinyItemCategoryDefinition',
-                          hash: cat.hash,
-                        })
-                      }
+                      onNavigate={onNavigateRef}
                     >
                       {cat.name}
-                    </button>
+                    </RefButton>
                   ))}
                 </dd>
               </>
@@ -216,19 +554,14 @@ export function OverviewTab({
                   : 0;
               return (
                 <div key={stat.statHash} className={styles.statRow}>
-                  <button
-                    type="button"
+                  <RefButton
+                    ref={{ table: 'DestinyStatDefinition', hash: stat.statHash }}
                     className={styles.statName}
-                    onClick={() =>
-                      onNavigateRef({
-                        table: 'DestinyStatDefinition',
-                        hash: stat.statHash,
-                      })
-                    }
                     title={stat.description}
+                    onNavigate={onNavigateRef}
                   >
                     {stat.name}
-                  </button>
+                  </RefButton>
                   <span className={styles.statVal}>{stat.value}</span>
                   {stat.isBar ? (
                     <div className={styles.statBarTrack} aria-hidden="true">
@@ -245,93 +578,11 @@ export function OverviewTab({
       )}
 
       {overview?.socketCategories && overview.socketCategories.length > 0 && (
-        <section className={styles.section}>
-          <h3 className={styles.sectionTitle}>Sockets</h3>
-          {overview.socketCategories.map((cat) => (
-            <div key={cat.categoryHash} className={styles.socketCategory}>
-              <div className={styles.socketCatHeader}>
-                <button
-                  type="button"
-                  className={styles.inlineLink}
-                  onClick={() =>
-                    onNavigateRef({
-                      table: 'DestinySocketCategoryDefinition',
-                      hash: cat.categoryHash,
-                    })
-                  }
-                >
-                  {cat.name}
-                </button>
-                <span className={styles.socketCatCount}>
-                  {cat.sockets.length} {cat.sockets.length === 1 ? 'socket' : 'sockets'}
-                </span>
-              </div>
-              <div className={styles.socketList}>
-                {cat.sockets.map((socket) => (
-                  <div key={socket.socketIndex} className={styles.socketGroup}>
-                    <div className={styles.socketMeta}>
-                      <span className={styles.socketIdx}>#{socket.socketIndex}</span>
-                      <span>{socket.socketTypeName}</span>
-                      {socket.plugSetHash && (
-                        <button
-                          type="button"
-                          className={styles.inlineLink}
-                          onClick={() =>
-                            onNavigateRef({
-                              table: 'DestinyPlugSetDefinition',
-                              hash: socket.plugSetHash!,
-                            })
-                          }
-                        >
-                          PlugSet {socket.plugSetHash}
-                        </button>
-                      )}
-                    </div>
-                    <div className={styles.plugList}>
-                      {socket.plugs.map((plug) => (
-                        <button
-                          key={`${socket.socketIndex}-${plug.hash}`}
-                          type="button"
-                          className={styles.entityRow}
-                          onClick={() =>
-                            onNavigateRef({
-                              table: 'DestinyInventoryItemDefinition',
-                              hash: plug.hash,
-                            })
-                          }
-                          title={plug.description || plug.name}
-                        >
-                          <BungieIcon
-                            icon={plug.icon}
-                            tierType={plug.tierType}
-                            size={28}
-                          />
-                          <span className={styles.entityText}>
-                            <span className={styles.entityName}>
-                              {plug.name || `Item ${plug.hash}`}
-                              {plug.isDefault && (
-                                <span className={styles.tagMuted}> (default)</span>
-                              )}
-                              {plug.currentlyCanRoll === false && (
-                                <span className={styles.tagMuted}> (retired)</span>
-                              )}
-                            </span>
-                            {plug.itemTypeDisplayName && (
-                              <span className={styles.entitySub}>
-                                {plug.itemTypeDisplayName}
-                              </span>
-                            )}
-                          </span>
-                          <span className={styles.entityHash}>{plug.hash}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-        </section>
+        <SocketsSection
+          key={`${detail.table}:${detail.hash}`}
+          categories={overview.socketCategories}
+          onNavigate={onNavigateRef}
+        />
       )}
 
       {overview?.perks && overview.perks.length > 0 && (
@@ -339,16 +590,11 @@ export function OverviewTab({
           <h3 className={styles.sectionTitle}>Sandbox perks</h3>
           <div className={styles.entityList}>
             {overview.perks.map((perk) => (
-              <button
+              <RefButton
                 key={perk.perkHash}
-                type="button"
+                ref={{ table: 'DestinySandboxPerkDefinition', hash: perk.perkHash }}
                 className={styles.entityRow}
-                onClick={() =>
-                  onNavigateRef({
-                    table: 'DestinySandboxPerkDefinition',
-                    hash: perk.perkHash,
-                  })
-                }
+                onNavigate={onNavigateRef}
               >
                 <BungieIcon icon={perk.icon} size={28} />
                 <span className={styles.entityText}>
@@ -360,7 +606,7 @@ export function OverviewTab({
                   )}
                 </span>
                 <span className={styles.entityHash}>{perk.perkHash}</span>
-              </button>
+              </RefButton>
             ))}
           </div>
         </section>
@@ -369,15 +615,13 @@ export function OverviewTab({
       {overview?.collectible && (
         <section className={styles.section}>
           <h3 className={styles.sectionTitle}>Collectible</h3>
-          <button
-            type="button"
+          <RefButton
+            ref={{
+              table: 'DestinyCollectibleDefinition',
+              hash: overview.collectible.hash,
+            }}
             className={styles.entityRow}
-            onClick={() =>
-              onNavigateRef({
-                table: 'DestinyCollectibleDefinition',
-                hash: overview.collectible!.hash,
-              })
-            }
+            onNavigate={onNavigateRef}
           >
             <span className={styles.entityText}>
               <span className={styles.entityName}>{overview.collectible.name}</span>
@@ -388,7 +632,7 @@ export function OverviewTab({
               )}
             </span>
             <span className={styles.entityHash}>{overview.collectible.hash}</span>
-          </button>
+          </RefButton>
         </section>
       )}
 
@@ -396,18 +640,13 @@ export function OverviewTab({
         <section className={styles.section}>
           <h3 className={styles.sectionTitle}>
             Lore —{' '}
-            <button
-              type="button"
+            <RefButton
+              ref={{ table: 'DestinyLoreDefinition', hash: overview.lore.loreHash }}
               className={styles.inlineLink}
-              onClick={() =>
-                onNavigateRef({
-                  table: 'DestinyLoreDefinition',
-                  hash: overview.lore!.loreHash,
-                })
-              }
+              onNavigate={onNavigateRef}
             >
               {overview.lore.name || `Lore ${overview.lore.loreHash}`}
-            </button>
+            </RefButton>
           </h3>
           {overview.lore.subtitle && (
             <p className={styles.flavor}>{overview.lore.subtitle}</p>
@@ -423,11 +662,11 @@ export function OverviewTab({
           </h3>
           <div className={styles.entityList}>
             {overview.linkedEntities.map((ent, idx) => (
-              <button
+              <RefButton
                 key={`${ent.table}-${ent.hash}-${idx}`}
-                type="button"
+                ref={{ table: ent.table, hash: ent.hash }}
                 className={styles.entityRow}
-                onClick={() => onNavigateRef({ table: ent.table, hash: ent.hash })}
+                onNavigate={onNavigateRef}
               >
                 <BungieIcon icon={ent.icon} size={28} />
                 <span className={styles.entityText}>
@@ -439,7 +678,7 @@ export function OverviewTab({
                   </span>
                 </span>
                 <span className={styles.entityHash}>{ent.hash}</span>
-              </button>
+              </RefButton>
             ))}
           </div>
         </section>

@@ -4,7 +4,6 @@ import type { TableStatus } from '../types/manifest';
 import {
   canonicalTableName,
   getFriendlyTableName,
-  getShortTableName,
 } from '../manifest/tables';
 import { RAIL_WIDTH_MAX, RAIL_WIDTH_MIN } from '../stores/settings';
 import { useExplorerStore } from '../stores/explorer';
@@ -24,6 +23,7 @@ export interface TableRailProps {
 const CORE_RESEARCH_TABLES: readonly string[] = [
   'DestinyInventoryItemDefinition',
   'DestinySandboxPerkDefinition',
+  'ArtifactPerks',
   'DestinyCollectibleDefinition',
   'DestinyRecordDefinition',
   'DestinyActivityDefinition',
@@ -62,33 +62,37 @@ function matchesFilter(table: TableStatus, filter: string): boolean {
   if (filter.length === 0) {
     return true;
   }
+  const compactFilter = filter.replace(/\s+/g, '');
   return (
     table.name.toLowerCase().includes(filter) ||
     table.shortName.toLowerCase().includes(filter) ||
-    getFriendlyTableName(table.name).toLowerCase().includes(filter)
+    getFriendlyTableName(table.name).toLowerCase().includes(filter) ||
+    table.name.toLowerCase().replace(/\s+/g, '').includes(compactFilter) ||
+    table.shortName.toLowerCase().replace(/\s+/g, '').includes(compactFilter) ||
+    getFriendlyTableName(table.name).toLowerCase().replace(/\s+/g, '').includes(compactFilter)
   );
 }
 
-/** Folds the Lite inventory table into the full one so rows never repeat a short name. */
+/** Folds only canonical aliases (such as Lite inventory) while preserving distinct tables. */
 function dedupeTables(tables: TableStatus[]): TableStatus[] {
-  const byShortName = new Map<string, TableStatus>();
+  const byTableName = new Map<string, TableStatus>();
 
   for (const table of tables) {
-    const key = getShortTableName(table.name);
-    const existing = byShortName.get(key);
+    const key = canonicalTableName(table.name);
+    const existing = byTableName.get(key);
     if (!existing) {
-      byShortName.set(key, table);
+      byTableName.set(key, table);
       continue;
     }
 
     const existingRank = existing.loaded ? 2 : existing.loading ? 1 : 0;
     const tableRank = table.loaded ? 2 : table.loading ? 1 : 0;
     if (tableRank > existingRank || (tableRank === existingRank && !table.name.endsWith('LiteDefinition'))) {
-      byShortName.set(key, table);
+      byTableName.set(key, table);
     }
   }
 
-  return [...byShortName.values()];
+  return [...byTableName.values()];
 }
 
 export function TableRail({
@@ -107,12 +111,13 @@ export function TableRail({
   const filters = useExplorerStore((state) => state.filters);
   const manifestStatus = useExplorerStore((state) => state.manifestStatus);
 
+  const realTables = tables.filter((table) => table.name !== 'ArtifactPerks');
   const loadedCount =
-    tables.length > 0
-      ? tables.filter((table) => table.loaded).length
+    realTables.length > 0
+      ? realTables.filter((table) => table.loaded).length
       : manifestStatus.loadedTableCount;
   const totalCount =
-    tables.length > 0 ? tables.length : manifestStatus.totalTableCount;
+    realTables.length > 0 ? realTables.length : manifestStatus.totalTableCount;
   const hasUnloadedTables = totalCount > loadedCount;
 
   const normalizedFilter = filterText.trim().toLowerCase();
@@ -277,7 +282,7 @@ export function TableRail({
             {group.tables.map((table) => {
               const selected =
                 filters.table !== 'all' &&
-                getShortTableName(table.name) === getShortTableName(filters.table);
+                canonicalTableName(table.name) === canonicalTableName(filters.table);
               return (
                 <button
                   key={table.name}

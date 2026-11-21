@@ -51,9 +51,10 @@
 }
 
 /**
- * The search cluster groups [ search input ] [ Filters ] [ Deep ] together at
- * the bar's start. It flexes to fill the bar; the locale select and the
- * trailing icon buttons keep their `margin-left: auto` push to the far right.
+ * The search cluster groups [ search input ] [ Filters ] [ Deep Search ]
+ * together at the bar's start. It flexes to fill the bar; the locale select
+ * and the trailing icon buttons keep their `margin-left: auto` push to the
+ * far right.
  */
 .searchCluster {
   display: flex;
@@ -131,6 +132,10 @@
   padding: 0 0.5rem;
   font-size: 0.75rem;
   color: var(--text2);
+  /* "Deep Search" must stay on one line and keep its width; the search
+     input is the only element allowed to shrink. */
+  white-space: nowrap;
+  flex-shrink: 0;
 
   @include theme.mobile {
     padding: 0 0.4375rem;

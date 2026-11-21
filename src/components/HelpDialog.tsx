@@ -28,6 +28,7 @@ const SHORTCUTS: ReadonlyArray<readonly [string, string]> = [
 
 const OPERATORS: ReadonlyArray<readonly [string, string]> = [
   ['table:perk', 'Restrict results to one table'],
+  ['table:artifactperks', 'Restrict results to the Artifact Perks view'],
   ['tier:exotic', 'Filter by item tier'],
   ['damage:solar', 'Filter by damage type'],
   ['class:hunter', 'Filter by guardian class'],
@@ -36,7 +37,7 @@ const OPERATORS: ReadonlyArray<readonly [string, string]> = [
   ['ammo:special', 'Filter by ammo type'],
   ['slot:energy', 'Filter by equip slot'],
   ['cat:shader', 'Match an item category'],
-  ['season:latest', 'Newest season, or season:12'],
+  ['season:latest', 'Newest season — or a number like season:26, or an episode name like season:heresy'],
   ['source:raid', 'Filter by item source'],
   ['is:enhanced', 'Only enhanced perks and traits'],
   ['is:craftable', 'Only craftable items'],
@@ -44,7 +45,7 @@ const OPERATORS: ReadonlyArray<readonly [string, string]> = [
   ['is:adept', 'Only adept items'],
   ['is:redacted', 'Only redacted definitions'],
   ['has:lore', 'Only items with lore'],
-  ['deep:wolfpack', 'Search inside raw JSON fields and values'],
+  ['deep:wolfpack', 'Deep Search — scan raw JSON keys and values for this query'],
   ['-engram', 'Exclude a term'],
   ['1363886209', 'Jump straight to a hash'],
   ['0x514c2131, -1368098261', 'Signed, unsigned, hex, or a pasted list'],

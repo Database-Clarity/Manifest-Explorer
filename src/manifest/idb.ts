@@ -38,7 +38,7 @@ export interface SearchIndexCache {
  * Current search index schema version. Older caches (or caches without this
  * field) are discarded and rebuilt cleanly.
  */
-export const SEARCH_INDEX_SCHEMA_VERSION = 3;
+export const SEARCH_INDEX_SCHEMA_VERSION = 4;
 
 export interface CacheStats {
   available: boolean;

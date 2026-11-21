@@ -599,6 +599,50 @@
   font-weight: 500;
 }
 
+.parentArtifactBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3125rem;
+  max-width: min(100%, 18rem);
+  min-width: 0;
+  padding: 0.125rem 0.375rem 0.125rem 0.1875rem;
+  border: 1px solid var(--hair);
+  border-radius: 0.1875rem;
+  background: var(--fld);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.6875rem;
+  line-height: 1.2;
+  cursor: pointer;
+
+  @media (hover: hover) {
+    &:hover {
+      background: var(--hover);
+      border-color: var(--hair);
+    }
+  }
+
+  &:focus-visible {
+    @include ctl.focus-ring;
+  }
+}
+
+.parentArtifactLabel {
+  flex-shrink: 0;
+  color: var(--text2);
+  font-size: 0.625rem;
+  text-transform: uppercase;
+  letter-spacing: 0.035em;
+}
+
+.parentArtifactName {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .hashRow {
   display: flex;
   align-items: center;

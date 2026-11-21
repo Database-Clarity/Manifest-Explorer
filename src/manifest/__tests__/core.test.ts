@@ -23,7 +23,9 @@ import {
   toUnsignedHash,
 } from '../hash';
 import { parseSearchQuery, scoreAndFilterEntries, type SearchContext } from '../query';
+import { SEASON_ALIASES, getD2aiMappings } from '../d2ai';
 import {
+  ARTIFACT_PERKS_TABLE,
   CORE_BOOT_TABLES,
   extractTableEntrySummary,
   getFriendlyTableName,
@@ -685,7 +687,7 @@ describe('ranking and filtering', () => {
 
 describe('search index schema version', () => {
   it('exports a schema version so stale caches are rebuilt', () => {
-    expect(SEARCH_INDEX_SCHEMA_VERSION).toBe(3);
+    expect(SEARCH_INDEX_SCHEMA_VERSION).toBe(4);
   });
 });
 
@@ -849,11 +851,12 @@ describe('DIM-inspired query operators', () => {
   it('filters by is:artifact with aliases', () => {
     const entries = [
       makeEntry({ hash: 1, name: 'Artifact Mod', isArtifact: true }),
-      makeEntry({ hash: 2, name: 'Normal Mod' }),
+      makeEntry({ hash: 2, name: 'Artifact Perk', isArtifactPerk: true }),
+      makeEntry({ hash: 3, name: 'Normal Mod' }),
     ];
-    expect(rank('is:artifact', entries).items.map((item) => item.hash)).toEqual([1]);
-    expect(rank('is:artifactperk', entries).items.map((item) => item.hash)).toEqual([1]);
-    expect(rank('is:seasonalartifact', entries).items.map((item) => item.hash)).toEqual([1]);
+    expect(rank('is:artifact', entries).items.map((item) => item.hash)).toEqual([1, 2]);
+    expect(rank('is:artifactperk', entries).items.map((item) => item.hash)).toEqual([2]);
+    expect(rank('is:seasonalartifact', entries).items.map((item) => item.hash)).toEqual([1, 2]);
   });
 
   it('filters by is:craftable / is:catalyst / is:ornament', () => {
@@ -887,6 +890,131 @@ describe('DIM-inspired query operators', () => {
     expect(rank('is:exotic', entries, { sort: 'hash-asc' }).items.map((item) => item.hash)).toEqual([1, 3]);
     expect(rank('is:solar', entries, { sort: 'hash-asc' }).items.map((item) => item.hash)).toEqual([1, 2]);
     expect(rank('is:weapon', entries, { sort: 'hash-asc' }).items.map((item) => item.hash)).toEqual([1, 2, 3]);
+  });
+});
+
+describe('d2ai bundled mappings', () => {
+  it('ships bundled season, craftable and source mappings', () => {
+    const mappings = getD2aiMappings();
+    expect(Object.keys(mappings.watermarkToSeason).length).toBeGreaterThan(0);
+    expect(Object.keys(mappings.itemHashToSeason).length).toBeGreaterThan(4000);
+    expect(Object.keys(mappings.sourceHashToSeason).length).toBeGreaterThan(0);
+    expect(mappings.craftableHashes.size).toBe(219);
+  });
+
+  it('covers seasons 1..28 with fallback names and aliases', () => {
+    expect(Object.keys(SEASON_ALIASES).length).toBe(28);
+    expect(SEASON_ALIASES[1]?.fallbackName).toBe('Red War');
+    expect(SEASON_ALIASES[2]?.fallbackName).toBe('Curse of Osiris');
+    expect(SEASON_ALIASES[26]?.fallbackName).toBe('Heresy');
+    expect(SEASON_ALIASES[27]?.fallbackName).toBe('Edge of Fate');
+    expect(SEASON_ALIASES[28]?.fallbackName).toBe('Renegades');
+    expect(SEASON_ALIASES[24]?.aliases).toContain('final shape');
+    expect(SEASON_ALIASES[27]?.aliases).toContain('edge of fate');
+    expect(SEASON_ALIASES[28]?.aliases).toContain('renegades');
+    expect(SEASON_ALIASES[28]?.aliases).toContain('lawless');
+    expect(SEASON_ALIASES[28]?.aliases).toContain('monument of triumph');
+  });
+});
+
+describe('artifact perks virtual table', () => {
+  it('resolves artifact perk aliases to the virtual table', () => {
+    const tables = [ITEM_TABLE, ARTIFACT_PERKS_TABLE];
+    expect(resolveTableAlias('artifactperk', tables)).toBe(ARTIFACT_PERKS_TABLE);
+    expect(resolveTableAlias('artifactperks', tables)).toBe(ARTIFACT_PERKS_TABLE);
+    expect(resolveTableAlias('artifactmod', tables)).toBe(ARTIFACT_PERKS_TABLE);
+    expect(resolveTableAlias('artifactmods', tables)).toBe(ARTIFACT_PERKS_TABLE);
+  });
+
+  it('detects artifact perks from item type display and plug category', () => {
+    const byType = extractTableEntrySummary(ITEM_TABLE, '1', {
+      displayProperties: { name: 'Anti-Barrier Pulse' },
+      itemTypeDisplayName: 'Artifact Perk',
+    });
+    expect(byType.isArtifactPerk).toBe(true);
+
+    const byPlug = extractTableEntrySummary(ITEM_TABLE, '2', {
+      displayProperties: { name: 'Overload Auto Rifle' },
+      plug: { plugCategoryIdentifier: 'artifact_perks' },
+    });
+    expect(byPlug.isArtifactPerk).toBe(true);
+
+    const notArtifact = extractTableEntrySummary(ITEM_TABLE, '3', {
+      displayProperties: { name: 'Regular Mod' },
+      itemTypeDisplayName: 'Weapon Mod',
+    });
+    expect(notArtifact.isArtifactPerk).toBe(false);
+  });
+
+  it('filters table:artifactperks by isArtifactPerk and copies parent artifact metadata', () => {
+    const entries = [
+      makeEntry({
+        hash: 1,
+        name: 'Anti-Barrier Pulse',
+        isArtifactPerk: true,
+        parentArtifactHash: 111,
+        parentArtifactName: 'Tablet of Ruin',
+        parentArtifactIcon: '/img/tablet.png',
+      }),
+      makeEntry({ hash: 2, name: 'Regular Mod' }),
+      makeEntry({ hash: 3, name: 'Other Artifact Perk', isArtifactPerk: true }),
+    ];
+    const parsed = parseSearchQuery('table:artifactperks', [ITEM_TABLE, ARTIFACT_PERKS_TABLE]);
+    const result = scoreAndFilterEntries(
+      entries,
+      parsed,
+      makeFilters(),
+      'relevance',
+      new Map(),
+      undefined,
+      { latestSeason: 26, seasonNameMap: new Map(), seasonAliases: SEASON_ALIASES },
+    );
+    expect(result.items.map((item) => item.hash)).toEqual([1, 3]);
+    expect(result.items[0]?.isArtifactPerk).toBe(true);
+    expect(result.items[0]?.parentArtifactHash).toBe(111);
+    expect(result.items[0]?.parentArtifactName).toBe('Tablet of Ruin');
+    expect(result.items[0]?.parentArtifactIcon).toBe('/img/tablet.png');
+  });
+
+  it('finds artifact perks by parent artifact name via free text', () => {
+    const entries = [
+      makeEntry({
+        hash: 1,
+        name: 'Anti-Barrier Pulse',
+        isArtifactPerk: true,
+        parentArtifactName: 'Encrypted Data Disk',
+      }),
+      makeEntry({ hash: 2, name: 'Unrelated Mod' }),
+    ];
+    expect(rank('encrypted data disk', entries).items.map((item) => item.hash)).toEqual([1]);
+  });
+});
+
+describe('season alias resolution', () => {
+  it('resolves season:heresy / season:renegades / season:26 / season:latest', () => {
+    const entries = [
+      makeEntry({ hash: 1, name: 'Heresy Item', seasonNumber: 26 }),
+      makeEntry({ hash: 2, name: 'Renegades Item', seasonNumber: 28 }),
+      makeEntry({ hash: 3, name: 'Final Shape Item', seasonNumber: 24 }),
+      makeEntry({ hash: 4, name: 'No Season' }),
+    ];
+    const context: SearchContext = {
+      latestSeason: 28,
+      seasonNameMap: new Map([[26, 'Episode: Heresy']]),
+      seasonAliases: SEASON_ALIASES,
+    };
+    expect(rank('season:heresy', entries, { context }).items.map((item) => item.hash)).toEqual([1]);
+    expect(rank('season:renegades', entries, { context }).items.map((item) => item.hash)).toEqual([
+      2,
+    ]);
+    expect(rank('season:26', entries, { context }).items.map((item) => item.hash)).toEqual([1]);
+    expect(rank('season:latest', entries, { context }).items.map((item) => item.hash)).toEqual([2]);
+    expect(rank('season:"final shape"', entries, { context }).items.map((item) => item.hash)).toEqual(
+      [3],
+    );
+    expect(rank('season:"edge of fate"', entries, { context }).items.map((item) => item.hash)).toEqual(
+      [],
+    );
   });
 });
 

@@ -414,6 +414,12 @@ export function DefinitionInspector({
     (typeof detail?.data.itemTypeDisplayName === 'string' &&
       detail.data.itemTypeDisplayName) ||
     (currentRef ? getShortTableName(currentRef.table) : '');
+  type ParentArtifact = { hash: number; name: string; icon?: string };
+  type OverviewWithParentArtifact = NonNullable<DefinitionDetailPayload['overview']> & {
+    parentArtifact?: ParentArtifact;
+  };
+  const parentArtifact = (detail?.overview as OverviewWithParentArtifact | undefined)
+    ?.parentArtifact;
   const iconPath =
     typeof displayProps?.icon === 'string'
       ? displayProps.icon
@@ -884,6 +890,42 @@ export function DefinitionInspector({
                   {itemSubtitle}
                 </span>
               )}
+              {parentArtifact ? (
+                <button
+                  type="button"
+                  className={styles.parentArtifactBtn}
+                  title={`Open artifact: ${parentArtifact.name}`}
+                  onClick={(event) =>
+                    navigateWithFlush(
+                      {
+                        table: 'DestinyInventoryItemDefinition',
+                        hash: parentArtifact.hash,
+                        label: parentArtifact.name,
+                        icon: parentArtifact.icon,
+                      },
+                      event.ctrlKey || event.metaKey,
+                    )
+                  }
+                  onAuxClick={(event) => {
+                    if (event.button === 1) {
+                      event.preventDefault();
+                      navigateWithFlush(
+                        {
+                          table: 'DestinyInventoryItemDefinition',
+                          hash: parentArtifact.hash,
+                          label: parentArtifact.name,
+                          icon: parentArtifact.icon,
+                        },
+                        true,
+                      );
+                    }
+                  }}
+                >
+                  <BungieIcon icon={parentArtifact.icon} size={16} />
+                  <span className={styles.parentArtifactLabel}>Artifact</span>
+                  <span className={styles.parentArtifactName}>{parentArtifact.name}</span>
+                </button>
+              ) : null}
             </div>
             <div className={styles.hashRow}>
               <button

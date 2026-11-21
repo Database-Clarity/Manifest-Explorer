@@ -25,20 +25,24 @@ interface TokenOption {
   label: string;
   /** Element-dot colour for damage chips. */
   dot?: string;
+  /** Item matches for this option; shown subtly inside the chip when > 0. */
+  count?: number;
 }
 
+/**
+ * Curated from a live-manifest audit (Lite + Full boots): every chip here
+ * matches real items. Dropped tokens matched nothing or were noise —
+ * `is:holofoil`/`is:redacted` (stripped from Lite), `is:featured` (no matches
+ * anywhere), `has:watermark` (half the manifest) — and `is:artifact` is
+ * superseded by the dedicated Artifact Perks table in the Tables rail.
+ */
 const HIGHLIGHT_OPTIONS: readonly TokenOption[] = [
   { token: 'is:enhanced', label: 'Enhanced' },
-  { token: 'is:artifact', label: 'Active artifact' },
   { token: 'is:adept', label: 'Adept' },
   { token: 'is:craftable', label: 'Craftable' },
-  { token: 'is:holofoil', label: 'Holofoil' },
-  { token: 'is:featured', label: 'Featured' },
   { token: 'is:catalyst', label: 'Catalyst' },
   { token: 'is:ornament', label: 'Ornament' },
   { token: 'has:lore', label: 'Has lore' },
-  { token: 'has:watermark', label: 'Has watermark' },
-  { token: 'is:redacted', label: 'Redacted' },
 ];
 
 const TIER_OPTIONS: readonly TokenOption[] = [
@@ -128,7 +132,8 @@ const SOURCE_OPTIONS: readonly TokenOption[] = [
   { token: 'source:vanguard', label: 'Vanguard' },
   { token: 'source:gambit', label: 'Gambit' },
   { token: 'source:eververse', label: 'Eververse' },
-  { token: 'source:"exotic mission"', label: 'Exotic Mission' },
+  { token: 'source:"iron banner"', label: 'Iron Banner' },
+  { token: 'source:nightfall', label: 'Nightfall' },
 ];
 
 const LATEST_SEASON_OPTION: TokenOption = { token: 'season:latest', label: 'Latest season' };
@@ -176,6 +181,10 @@ export function FiltersPopover({
     [categories, normalizedCategoryQuery],
   );
 
+  // Skip seasons with no indexed items so empty rows never clutter the list.
+  // Seasons without a computed count are kept (treated as non-empty).
+  const visibleSeasons = seasons.filter((option) => (option.count ?? 1) > 0);
+
   function toggleToken(token: string): void {
     setQuery(toggleQueryToken(query, token));
   }
@@ -205,6 +214,9 @@ export function FiltersPopover({
           />
         )}
         <span>{option.label}</span>
+        {option.count !== undefined && option.count > 0 && (
+          <span className={styles.chipCount}>{NUMBER_FORMAT.format(option.count)}</span>
+        )}
       </button>
     );
   }
@@ -277,12 +289,13 @@ export function FiltersPopover({
         <section className={styles.group}>
           <h3 className={styles.groupTitle}>Season / expansion</h3>
           <div className={styles.chips}>{renderTokenChip(LATEST_SEASON_OPTION)}</div>
-          {seasons.length > 0 &&
+          {visibleSeasons.length > 0 &&
             renderCollapsible(
               'All seasons',
-              seasons.map((option) => ({
+              visibleSeasons.map((option) => ({
                 token: `season:${option.value}`,
                 label: option.label,
+                count: option.count,
               })),
             )}
         </section>
@@ -349,7 +362,7 @@ export function FiltersPopover({
         </section>
 
         <div className={styles.hint}>
-          <code>tier:exotic damage:solar is:enhanced cat:"Hand Cannon"</code>
+          <code>tier:exotic damage:solar is:enhanced season:latest cat:"Hand Cannon"</code>
         </div>
       </div>
     </Popover>

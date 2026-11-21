@@ -37,6 +37,7 @@ import type {
   VariantItem,
 } from '../types/manifest';
 import {
+  ARTIFACT_PERKS_TABLE,
   CORE_BOOT_TABLES,
   REVERSE_REF_PRIORITY_TABLES,
   SECONDARY_INDEX_TABLES,
@@ -46,6 +47,7 @@ import {
   getTableGroup,
 } from './tables';
 import { bungieAssetUrl, getTargetTablesForField, getTargetTablesForObjectKey, toUnsignedHash } from './hash';
+import { SEASON_ALIASES, getD2aiMappings, refreshD2aiMappingsFromRemote } from './d2ai';
 import { annotateEnumField } from './enums';
 import { parseSearchQuery, scoreAndFilterEntries } from './query';
 import { streamTopLevelJsonObject } from './streamJson';
@@ -292,6 +294,7 @@ const artifactItemHashes = new Set<number>();
 const seasonNumberByHash = new Map<number, number>();
 const seasonNameByNumber = new Map<number, string>();
 const watermarkSeasonByIcon = new Map<string, number>();
+const seasonArtifactByNumber = new Map<number, { hash: number; name: string; icon?: string }>();
 let latestSeasonNumber = 0;
 
 type WorkerScope = {
@@ -441,6 +444,7 @@ function post(message: WorkerEvent): void {
 function currentStatus(): ManifestStatus {
   let loaded = 0;
   for (const status of tableStatuses.values()) {
+    if (status.name === ARTIFACT_PERKS_TABLE) continue;
     if (status.loaded) loaded += 1;
   }
   return {
@@ -609,11 +613,38 @@ function seasonNumberFromTraits(traitIds: readonly string[] | undefined): number
   return undefined;
 }
 
+/** Resolve the display identity of a seasonal artifact item hash. */
+function lookupArtifactIdentity(
+  artifactItemHash: number,
+): { hash: number; name: string; icon?: string } | undefined {
+  const indexed = entriesByTableAndHash.get(`${INVENTORY_ITEM_TABLE}:${artifactItemHash}`);
+  if (indexed?.name) {
+    return {
+      hash: artifactItemHash,
+      name: indexed.name,
+      ...(indexed.icon ? { icon: indexed.icon } : {}),
+    };
+  }
+  const rawArtifact =
+    tableDataMap.get('DestinyInventoryItemLiteDefinition')?.[String(artifactItemHash)] ??
+    tableDataMap.get(INVENTORY_ITEM_TABLE)?.[String(artifactItemHash)];
+  if (rawArtifact) {
+    const name = asString(asRecord(rawArtifact.displayProperties)?.name);
+    if (name) {
+      const icon =
+        asString(asRecord(rawArtifact.displayProperties)?.icon) ?? asString(rawArtifact.icon);
+      return { hash: artifactItemHash, name, ...(icon ? { icon } : {}) };
+    }
+  }
+  return undefined;
+}
+
 /** Rebuild season metadata maps from the loaded DestinySeasonDefinition data. */
 function rebuildSeasonMetadata(): void {
   seasonNumberByHash.clear();
   seasonNameByNumber.clear();
   watermarkSeasonByIcon.clear();
+  seasonArtifactByNumber.clear();
 
   const data = tableDataMap.get('DestinySeasonDefinition');
   if (data) {
@@ -625,13 +656,21 @@ function rebuildSeasonMetadata(): void {
       if (seasonNumber > latestSeasonNumber) latestSeasonNumber = seasonNumber;
 
       if (seasonNumber >= 1 && !seasonNameByNumber.has(seasonNumber)) {
-        const name = displayName(raw, `Season ${seasonNumber}`);
+        const rawName = asString(asRecord(raw.displayProperties)?.name)?.trim();
+        const name =
+          rawName || SEASON_ALIASES[seasonNumber]?.fallbackName || `Season ${seasonNumber}`;
         if (name) seasonNameByNumber.set(seasonNumber, name);
       }
 
       const watermark =
         asString(asRecord(raw.displayProperties)?.iconWatermark) ?? asString(raw.iconWatermark);
       if (watermark) watermarkSeasonByIcon.set(watermark, seasonNumber);
+
+      const artifactItemHash = asUnsigned(raw.artifactItemHash);
+      if (artifactItemHash !== undefined && !seasonArtifactByNumber.has(seasonNumber)) {
+        const identity = lookupArtifactIdentity(artifactItemHash);
+        if (identity) seasonArtifactByNumber.set(seasonNumber, identity);
+      }
     }
   }
 
@@ -642,7 +681,12 @@ function rebuildSeasonMetadata(): void {
     for (const entry of entries) {
       if (entry.table !== 'DestinySeasonDefinition' || entry.seasonNumber === undefined) continue;
       if (entry.seasonNumber >= 1 && !seasonNameByNumber.has(entry.seasonNumber)) {
-        seasonNameByNumber.set(entry.seasonNumber, entry.name || `Season ${entry.seasonNumber}`);
+        seasonNameByNumber.set(
+          entry.seasonNumber,
+          (entry.name && entry.name.trim()) ||
+            SEASON_ALIASES[entry.seasonNumber]?.fallbackName ||
+            `Season ${entry.seasonNumber}`,
+        );
       }
     }
   }
@@ -692,9 +736,27 @@ function enrichIndexedEntries(): void {
   rebuildSeasonMetadata();
   rebuildArtifactHashes();
 
+  const d2ai = getD2aiMappings();
   const collectibles = tableDataMap.get('DestinyCollectibleDefinition');
 
   for (const entry of entries) {
+    // Resolve season number in priority order (existing value wins).
+    if (entry.seasonNumber === undefined && entry.iconWatermark) {
+      const fromWatermark = d2ai.watermarkToSeason[entry.iconWatermark];
+      if (fromWatermark !== undefined) entry.seasonNumber = fromWatermark;
+    }
+    if (entry.seasonNumber === undefined && entry.table === INVENTORY_ITEM_TABLE) {
+      const fromItemHash = d2ai.itemHashToSeason[String(entry.hash)];
+      if (fromItemHash !== undefined) entry.seasonNumber = fromItemHash;
+    }
+    if (entry.seasonNumber === undefined && entry.collectibleHash !== undefined && collectibles) {
+      const collectible = collectibles[String(entry.collectibleHash)];
+      const sourceHash = asUnsigned(collectible?.sourceHash);
+      if (sourceHash !== undefined) {
+        const fromSource = d2ai.sourceHashToSeason[String(sourceHash)];
+        if (fromSource !== undefined) entry.seasonNumber = fromSource;
+      }
+    }
     if (entry.seasonNumber === undefined && entry.seasonHash !== undefined) {
       const number = seasonNumberByHash.get(entry.seasonHash);
       if (number !== undefined) entry.seasonNumber = number;
@@ -708,6 +770,10 @@ function enrichIndexedEntries(): void {
       if (number !== undefined) entry.seasonNumber = number;
     }
 
+    if (entry.table === INVENTORY_ITEM_TABLE && d2ai.craftableHashes.has(entry.hash)) {
+      entry.isCraftable = true;
+    }
+
     if (artifactItemHashes.has(entry.hash)) entry.isArtifact = true;
 
     if (entry.sourceLower === undefined && entry.collectibleHash !== undefined && collectibles) {
@@ -716,14 +782,55 @@ function enrichIndexedEntries(): void {
       if (source) entry.sourceLower = normalizeSearchText(source);
     }
   }
+
+  recomputeLatestSeasonFromEntries();
+
+  // Second pass: attach parent artifact metadata once season numbers are settled.
+  for (const entry of entries) {
+    if (entry.isArtifactPerk !== true) continue;
+    let parent =
+      entry.seasonNumber !== undefined ? seasonArtifactByNumber.get(entry.seasonNumber) : undefined;
+    if (parent === undefined && artifactItemHashes.has(entry.hash)) {
+      parent = seasonArtifactByNumber.get(latestSeasonNumber);
+    }
+    if (parent) {
+      entry.parentArtifactHash = parent.hash;
+      entry.parentArtifactName = parent.name;
+      if (parent.icon) entry.parentArtifactIcon = parent.icon;
+    }
+  }
+
+  syncArtifactPerksTableStatus();
 }
 
 function recomputeLatestSeasonFromEntries(): void {
+  latestSeasonNumber = 0;
   for (const entry of entries) {
     if (entry.seasonNumber !== undefined && entry.seasonNumber > latestSeasonNumber) {
       latestSeasonNumber = entry.seasonNumber;
     }
   }
+  for (const seasonNumber of seasonNameByNumber.keys()) {
+    if (seasonNumber > latestSeasonNumber) latestSeasonNumber = seasonNumber;
+  }
+}
+
+/** Maintain the virtual ArtifactPerks table status from the indexed entries. */
+function syncArtifactPerksTableStatus(): void {
+  let count = 0;
+  for (const entry of entries) {
+    if (entry.isArtifactPerk === true && entry.name) count += 1;
+  }
+  tableStatuses.set(ARTIFACT_PERKS_TABLE, {
+    name: ARTIFACT_PERKS_TABLE,
+    shortName: 'Artifact Perks',
+    group: 'primary',
+    count,
+    loaded: true,
+    loading: false,
+    indexed: true,
+    hasFullData: true,
+  });
 }
 
 async function persistSearchIndex(): Promise<void> {
@@ -786,6 +893,7 @@ function applyCachedState(
     const status = getOrCreateTableStatus(table);
     status.indexed = true;
   }
+  syncArtifactPerksTableStatus();
 }
 
 // ---------------------------------------------------------------------------
@@ -814,6 +922,12 @@ async function init(
       emitTables(true);
       emitCatalog();
       void backgroundUpdateCheck();
+      void refreshD2aiMappingsFromRemote().then((updated) => {
+        if (updated) {
+          enrichIndexedEntries();
+          emitCatalog();
+        }
+      });
       return currentStatus();
     }
   }
@@ -859,6 +973,14 @@ async function init(
   emitTables(true);
   emitCatalog();
   await persistSearchIndex();
+
+  // Future-proof the mappings with a non-blocking remote refresh.
+  void refreshD2aiMappingsFromRemote().then((updated) => {
+    if (updated) {
+      enrichIndexedEntries();
+      emitCatalog();
+    }
+  });
 
   // Stage 3: background secondary indexing.
   state.phase = 'indexing-secondary';
@@ -912,6 +1034,7 @@ async function loadTablesInParallel(
 }
 
 async function loadTable(table: string, explicit = false): Promise<void> {
+  if (table === ARTIFACT_PERKS_TABLE) return;
   const status = getOrCreateTableStatus(table);
   if (status.hasFullData) return;
   const inFlight = loadingPromises.get(table);
@@ -1052,7 +1175,7 @@ async function search(
   sort: SortMode,
   maxResults?: number,
 ): Promise<SearchResponse> {
-  const availableTables = Object.keys(state.componentPaths);
+  const availableTables = [...Object.keys(state.componentPaths), ARTIFACT_PERKS_TABLE];
   const parsed = parseSearchQuery(query, availableTables);
   return scoreAndFilterEntries(
     entries,
@@ -1064,6 +1187,7 @@ async function search(
     {
       latestSeason: latestSeasonNumber,
       seasonNameMap: seasonNameByNumber,
+      seasonAliases: SEASON_ALIASES,
     },
   );
 }
@@ -1165,8 +1289,21 @@ function scanTableForDeepSearch(
   data: Record<string, Record<string, unknown>>,
   terms: string[],
   scan: DeepScanState,
+  onlyArtifactPerks = false,
 ): void {
   for (const [hashKey, raw] of Object.entries(data)) {
+    if (onlyArtifactPerks) {
+      const entry = extractTableEntrySummary(table, hashKey, raw);
+      if (entry.isArtifactPerk !== true) continue;
+      if (!matchesAllTerms(JSON.stringify(raw), terms)) continue;
+      scan.totalMatches += 1;
+      if (scan.items.length >= scan.cap) continue;
+      const item = entryToResult(entry);
+      const deepMatch = findDeepMatch(raw, terms, '');
+      if (deepMatch) item.deepMatch = deepMatch;
+      scan.items.push(item);
+      continue;
+    }
     // Fast pre-filter on the serialized definition before walking the object.
     if (!matchesAllTerms(JSON.stringify(raw), terms)) continue;
     scan.totalMatches += 1;
@@ -1179,8 +1316,30 @@ function scanTableForDeepSearch(
   }
 }
 
-async function scanFullItemsForDeepSearch(terms: string[], scan: DeepScanState): Promise<void> {
+async function scanFullItemsForDeepSearch(
+  terms: string[],
+  scan: DeepScanState,
+  onlyArtifactPerks = false,
+): Promise<void> {
   await iterateFullItems(state.locale, state.versionSignature, (hash, rawJson) => {
+    if (onlyArtifactPerks) {
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(rawJson) as Record<string, unknown>;
+      } catch {
+        return;
+      }
+      const entry = extractTableEntrySummary(INVENTORY_ITEM_TABLE, String(hash), parsed);
+      if (entry.isArtifactPerk !== true) return;
+      if (!matchesAllTerms(rawJson, terms)) return;
+      scan.totalMatches += 1;
+      if (scan.items.length >= scan.cap) return;
+      const item = entryToResult(entry);
+      const deepMatch = findDeepMatch(parsed, terms, '');
+      if (deepMatch) item.deepMatch = deepMatch;
+      scan.items.push(item);
+      return;
+    }
     if (!matchesAllTerms(rawJson, terms)) return;
     scan.totalMatches += 1;
     if (scan.items.length >= scan.cap) return;
@@ -1217,7 +1376,16 @@ async function deepSearch(
     filters.table && filters.table !== 'all' && filters.table !== '' ? filters.table : undefined;
 
   if (requestedTable) {
-    if (requestedTable === INVENTORY_ITEM_TABLE) {
+    if (requestedTable === ARTIFACT_PERKS_TABLE) {
+      if (await hasFullItemsCached(state.locale, state.versionSignature)) {
+        await scanFullItemsForDeepSearch(terms, scan, true);
+      } else {
+        const lite = tableDataMap.get('DestinyInventoryItemLiteDefinition');
+        if (lite) {
+          scanTableForDeepSearch('DestinyInventoryItemLiteDefinition', lite, terms, scan, true);
+        }
+      }
+    } else if (requestedTable === INVENTORY_ITEM_TABLE) {
       if (await hasFullItemsCached(state.locale, state.versionSignature)) {
         await scanFullItemsForDeepSearch(terms, scan);
       } else {
@@ -1422,8 +1590,20 @@ async function buildDetail(
   };
   if (isLite) {
     payload.isLite = true;
+    if (table === INVENTORY_ITEM_TABLE) {
+      const entry = entriesByTableAndHash.get(`${INVENTORY_ITEM_TABLE}:${hash}`);
+      if (entry?.isArtifactPerk && entry.parentArtifactHash && entry.parentArtifactName) {
+        payload.overview = {
+          parentArtifact: {
+            hash: entry.parentArtifactHash,
+            name: entry.parentArtifactName,
+            ...(entry.parentArtifactIcon ? { icon: entry.parentArtifactIcon } : {}),
+          },
+        };
+      }
+    }
   } else if (table === INVENTORY_ITEM_TABLE) {
-    payload.overview = await buildInventoryItemOverview(data);
+    payload.overview = await buildInventoryItemOverview(hash, data);
   }
   return payload;
 }
@@ -1583,6 +1763,7 @@ function displayName(definition: Record<string, unknown> | undefined, fallback: 
 // ---------------------------------------------------------------------------
 
 async function buildInventoryItemOverview(
+  hash: number,
   data: Record<string, unknown>,
 ): Promise<DefinitionOverview> {
   const overview: DefinitionOverview = {};
@@ -1651,6 +1832,16 @@ async function buildInventoryItemOverview(
   }
 
   overview.linkedEntities = await buildLinkedEntities(data);
+
+  const entry = entriesByTableAndHash.get(`${INVENTORY_ITEM_TABLE}:${hash}`);
+  if (entry?.isArtifactPerk && entry.parentArtifactHash && entry.parentArtifactName) {
+    overview.parentArtifact = {
+      hash: entry.parentArtifactHash,
+      name: entry.parentArtifactName,
+      ...(entry.parentArtifactIcon ? { icon: entry.parentArtifactIcon } : {}),
+    };
+  }
+
   return overview;
 }
 
@@ -2254,6 +2445,7 @@ async function getCacheStats(): Promise<CacheStatsResult> {
   const idb = await getCacheStatsFromIdb();
   let loaded = 0;
   for (const status of tableStatuses.values()) {
+    if (status.name === ARTIFACT_PERKS_TABLE) continue;
     if (status.loaded) loaded += 1;
   }
   return {

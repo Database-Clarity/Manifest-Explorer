@@ -202,6 +202,9 @@ const ListRow = memo(function ListRow({
   onCopyHash,
 }: ResultRowProps): ReactNode {
   const tierColor = getTierColorVar(item.tierType);
+  const parentArtifactName = (
+    item as SearchResultItem & { parentArtifactName?: string }
+  ).parentArtifactName;
 
   return (
     <div
@@ -233,11 +236,21 @@ const ListRow = memo(function ListRow({
       />
       <span className={styles.rowText}>
         <span className={styles.rowName}>{itemLabel(item)}</span>
-        <span
-          className={styles.rowSub}
-          style={tierColor ? { color: tierColor } : undefined}
-        >
-          {itemSubtitle(item)}
+        <span className={styles.rowSubLine}>
+          <span
+            className={styles.rowSub}
+            style={tierColor ? { color: tierColor } : undefined}
+          >
+            {itemSubtitle(item)}
+          </span>
+          {parentArtifactName ? (
+            <span
+              className={styles.rowArtifact}
+              title={`Artifact: ${parentArtifactName}`}
+            >
+              {parentArtifactName}
+            </span>
+          ) : null}
         </span>
         {item.deepMatch && (
           <span
@@ -286,6 +299,9 @@ const GridCell = memo(function GridCell({
   onToggleCollect,
 }: ResultRowProps): ReactNode {
   const tierColor = getTierColorVar(item.tierType);
+  const parentArtifactName = (
+    item as SearchResultItem & { parentArtifactName?: string }
+  ).parentArtifactName;
 
   return (
     <div
@@ -316,11 +332,21 @@ const GridCell = memo(function GridCell({
       />
       <span className={styles.gridText}>
         <span className={styles.gridName}>{itemLabel(item)}</span>
-        <span
-          className={styles.gridSub}
-          style={tierColor ? { color: tierColor } : undefined}
-        >
-          {itemSubtitle(item)}
+        <span className={styles.gridSubLine}>
+          <span
+            className={styles.gridSub}
+            style={tierColor ? { color: tierColor } : undefined}
+          >
+            {itemSubtitle(item)}
+          </span>
+          {parentArtifactName ? (
+            <span
+              className={styles.rowArtifact}
+              title={`Artifact: ${parentArtifactName}`}
+            >
+              {parentArtifactName}
+            </span>
+          ) : null}
         </span>
         {item.deepMatch ? (
           <span
@@ -746,12 +772,12 @@ export function ResultsPane({ onOpenItem, onRetryBoot }: ResultsPaneProps): Reac
             <div className={styles.chips} role="group" aria-label="Active filters">
               {deepSearch ? (
                 <span className={styles.chip}>
-                  <span className={styles.chipLabel}>Deep JSON</span>
+                  <span className={styles.chipLabel}>Deep Search</span>
                   <button
                     type="button"
                     className={styles.chipClear}
-                    aria-label="Disable deep JSON search"
-                    title="Disable deep JSON search"
+                    aria-label="Disable deep search"
+                    title="Disable deep search"
                     onClick={() => setDeepSearch(false)}
                     onKeyDown={stopActivationKeys}
                   >
@@ -781,7 +807,9 @@ export function ResultsPane({ onOpenItem, onRetryBoot }: ResultsPaneProps): Reac
               {hasTableFilter ? (
                 <span className={styles.chip}>
                   <span className={styles.chipLabel} title={filters.table}>
-                    {getFriendlyTableName(filters.table)}
+                    {filters.table === 'ArtifactPerks'
+                      ? 'Artifact Perks'
+                      : getFriendlyTableName(filters.table)}
                   </span>
                   <button
                     type="button"

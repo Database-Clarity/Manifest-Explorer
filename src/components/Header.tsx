@@ -77,12 +77,37 @@ function formatBadge(count: number): string {
   return count > 99 ? '99+' : String(count);
 }
 
+/**
+ * Virtual rail tables that own their own identity and must never fold into a
+ * short-name sibling. The ArtifactPerks view ("Artifact Perks") is derived
+ * from artifact definitions but is its own top-level destination in the
+ * Primary rail, so it always keeps its own row.
+ */
+const UNFOLDABLE_TABLES: ReadonlySet<string> = new Set(['ArtifactPerks']);
+
+/**
+ * Display labels for virtual rail tables that may not be present in the
+ * loaded table list yet (they land with the manifest-engine change that
+ * introduces them), so the mobile Tables button never shows a raw id.
+ */
+const VIRTUAL_TABLE_LABELS: ReadonlyMap<string, string> = new Map([
+  ['ArtifactPerks', 'Artifact Perks'],
+]);
+
 /** Folds the Lite inventory table into the full one so rows never repeat a short name. */
 function dedupeTables(tables: TableStatus[]): TableStatus[] {
   const byShortName = new Map<string, TableStatus>();
 
   for (const table of tables) {
     const key = getShortTableName(table.name);
+
+    if (UNFOLDABLE_TABLES.has(table.name)) {
+      // Never merge virtual views into a similarly named sibling (e.g.
+      // ArtifactPerks into Artifact): they stay visible in their rail group.
+      byShortName.set(key, table);
+      continue;
+    }
+
     const existing = byShortName.get(key);
     if (!existing) {
       byShortName.set(key, table);
@@ -148,7 +173,9 @@ export function Header({
   const activeTableLabel =
     filters.table === 'all'
       ? 'All tables'
-      : (selectedTable?.shortName ?? getShortTableName(filters.table));
+      : (selectedTable?.shortName ??
+        VIRTUAL_TABLE_LABELS.get(filters.table) ??
+        getShortTableName(filters.table));
 
   const filtersAnchorRef =
     menu?.name === 'filters' && menu.source === 'mobile' ? filtersMobileRef : filtersDesktopRef;
@@ -272,9 +299,9 @@ export function Header({
               className={cx(styles.deepBtn, deepSearch && styles.iconBtnOn)}
               onClick={toggleDeepSearch}
               aria-pressed={deepSearch}
-              title="Deep search: match text inside raw JSON keys & values"
+              title="Deep Search — scan raw JSON keys and values across definitions instead of only names and descriptions"
             >
-              Deep
+              Deep Search
             </button>
           </div>
 

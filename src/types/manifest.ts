@@ -79,6 +79,14 @@ export interface SearchIndexEntry {
   /** Lowercased trait id strings for `trait:` search */
   traitIds?: string[];
   plugCategoryIdentifier?: string;
+  /** True for seasonal artifact perk item definitions. */
+  isArtifactPerk?: boolean;
+  /** Inventory item hash of the parent seasonal artifact. */
+  parentArtifactHash?: number;
+  /** Display name of the parent seasonal artifact. */
+  parentArtifactName?: string;
+  /** Icon of the parent seasonal artifact. */
+  parentArtifactIcon?: string;
 }
 
 export interface DeepMatchSnippet {
@@ -100,6 +108,10 @@ export interface SearchResultItem {
   isEnhanced?: boolean;
   index?: number;
   deepMatch?: DeepMatchSnippet;
+  isArtifactPerk?: boolean;
+  parentArtifactHash?: number;
+  parentArtifactName?: string;
+  parentArtifactIcon?: string;
 }
 
 export interface SearchFilters {
@@ -260,6 +272,7 @@ export interface DefinitionOverview {
   lore?: OverviewLore;
   collectible?: { hash: number; sourceString: string; name: string };
   linkedEntities?: OverviewLinkedEntity[];
+  parentArtifact?: { hash: number; name: string; icon?: string };
 }
 
 export interface ReverseReference {

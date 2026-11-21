@@ -81,6 +81,13 @@ export const REVERSE_REF_PRIORITY_TABLES = [
 const INVENTORY_ITEM_TABLE = 'DestinyInventoryItemDefinition';
 const INVENTORY_ITEM_LITE_TABLE = 'DestinyInventoryItemLiteDefinition';
 
+/**
+ * Virtual table that surfaces seasonal artifact perks. It is not a real Bungie
+ * component; entries are drawn from InventoryItem definitions flagged as
+ * artifact perks and presented as a dedicated table.
+ */
+export const ARTIFACT_PERKS_TABLE = 'ArtifactPerks';
+
 const GROUP_TABLES: ReadonlyArray<readonly [TableStatus['group'], readonly string[]]> = [
   ['primary', [INVENTORY_ITEM_LITE_TABLE, INVENTORY_ITEM_TABLE]],
   [
@@ -173,6 +180,7 @@ export function getShortTableName(table: string): string {
   if (!trimmed) return trimmed;
   // Lite items are presented as regular inventory items throughout the app.
   if (trimmed === INVENTORY_ITEM_LITE_TABLE) return 'InventoryItem';
+  if (trimmed === ARTIFACT_PERKS_TABLE) return 'Artifact Perks';
 
   let short = trimmed;
   if (short.startsWith('Destiny')) short = short.slice('Destiny'.length);
@@ -183,6 +191,7 @@ export function getShortTableName(table: string): string {
 
 /** Human friendly table name, e.g. DestinyPresentationNodeDefinition -> Presentation Node. */
 export function getFriendlyTableName(table: string): string {
+  if (table === ARTIFACT_PERKS_TABLE) return 'Artifact Perks';
   return pascalToWords(getShortTableName(table));
 }
 
@@ -191,6 +200,7 @@ export function getFriendlyTableName(table: string): string {
  * every consumer sees a single InventoryItem table.
  */
 export function canonicalTableName(table: string): string {
+  if (table === ARTIFACT_PERKS_TABLE) return ARTIFACT_PERKS_TABLE;
   return table === INVENTORY_ITEM_LITE_TABLE ? INVENTORY_ITEM_TABLE : table;
 }
 
@@ -295,6 +305,10 @@ const TABLE_ALIASES: Readonly<Record<string, readonly string[]>> = {
   seasonpass: ['DestinySeasonPassDefinition'],
   artifact: ['DestinyArtifactDefinition'],
   artifacts: ['DestinyArtifactDefinition'],
+  artifactperk: [ARTIFACT_PERKS_TABLE],
+  artifactperks: [ARTIFACT_PERKS_TABLE],
+  artifactmod: [ARTIFACT_PERKS_TABLE],
+  artifactmods: [ARTIFACT_PERKS_TABLE],
   objective: ['DestinyObjectiveDefinition'],
   objectives: ['DestinyObjectiveDefinition'],
   bucket: ['DestinyInventoryBucketDefinition'],
@@ -537,7 +551,11 @@ export function extractTableEntrySummary(
   const subtitleLower = normalizeText(subtitle);
 
   const icon = firstString(displayProperties?.icon, raw.icon);
-  const iconWatermark = firstString(displayProperties?.iconWatermark, raw.iconWatermark);
+  const iconWatermark = firstString(
+    displayProperties?.iconWatermark,
+    raw.iconWatermark,
+    raw.iconWatermarkShelved,
+  );
   const index = asNumber(raw.index);
 
   const seasonHash = asNumber(raw.seasonHash);
@@ -603,8 +621,13 @@ export function extractTableEntrySummary(
       asBoolean(raw.isAdept) === true ||
       tierTypeName.includes('adept') ||
       typeDisplay.includes('adept') ||
-      nameLower.includes('(adept)');
+      nameLower.includes('(adept)') ||
+      nameLower.includes('(timelost)') ||
+      nameLower.includes('(harrowed)');
     entry.isAdept = isAdept;
+
+    const isArtifactPerk = typeDisplay === 'artifact perk' || plugCategoryLower === 'artifact_perks';
+    entry.isArtifactPerk = isArtifactPerk;
 
     const isHolofoil =
       asBoolean(raw.isHolofoil) === true ||

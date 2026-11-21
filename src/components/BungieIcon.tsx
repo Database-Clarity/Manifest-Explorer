@@ -131,12 +131,13 @@ export function BungieIcon({
           <span className={styles.enhancedBadge} aria-hidden="true">
             <svg
               className={styles.enhancedArrow}
-              viewBox="0 0 10 32"
+              viewBox="0 0 8 32"
+              preserveAspectRatio="xMinYMax meet"
               fill="currentColor"
               aria-hidden="true"
               focusable="false"
             >
-              <path d="M5 1 9.2 8.2H6.15V31H3.85V8.2H.8Z" />
+              <path d="M3.2 0.5 6.4 6.6H4.35V32H2.05V6.6H0Z" />
             </svg>
           </span>
         </>

@@ -385,6 +385,10 @@ export function OverviewTab({
   onLoadFullItem,
 }: OverviewTabProps): ReactNode {
   const overview = detail.overview;
+  type OverviewWithParentArtifact = NonNullable<DefinitionDetailPayload['overview']> & {
+    parentArtifact?: { hash: number; name: string; icon?: string };
+  };
+  const parentArtifact = (overview as OverviewWithParentArtifact | undefined)?.parentArtifact;
   const displayProps = detail.data.displayProperties as
     | { name?: string; description?: string }
     | undefined;
@@ -402,6 +406,7 @@ export function OverviewTab({
     Boolean(overview?.perks?.length) ||
     Boolean(overview?.lore) ||
     Boolean(overview?.collectible) ||
+    Boolean(parentArtifact) ||
     Boolean(overview?.linkedEntities?.length) ||
     Boolean(clarityEntry);
 
@@ -450,11 +455,13 @@ export function OverviewTab({
         </section>
       )}
 
-      {(overview?.tierName ||
-        overview?.damageType ||
-        overview?.className ||
-        overview?.ammoType ||
-        overview?.categories?.length) && (
+      {overview &&
+        (overview.tierName ||
+          overview.damageType ||
+          overview.className ||
+          overview.ammoType ||
+          parentArtifact ||
+          overview.categories?.length) && (
         <section className={styles.section}>
           <h3 className={styles.sectionTitle}>Attributes</h3>
           <dl className={styles.kvGrid}>
@@ -499,6 +506,26 @@ export function OverviewTab({
                 <dd>{overview.ammoType}</dd>
               </>
             )}
+            {parentArtifact ? (
+              <>
+                <dt>Artifact</dt>
+                <dd>
+                  <RefButton
+                    ref={{
+                      table: 'DestinyInventoryItemDefinition',
+                      hash: parentArtifact.hash,
+                      label: parentArtifact.name,
+                      icon: parentArtifact.icon,
+                    }}
+                    className={styles.entityRow}
+                    onNavigate={onNavigateRef}
+                  >
+                    <BungieIcon icon={parentArtifact.icon} size={18} />
+                    <span className={styles.entityName}>{parentArtifact.name}</span>
+                  </RefButton>
+                </dd>
+              </>
+            ) : null}
             {overview.className && (
               <>
                 <dt>Class</dt>

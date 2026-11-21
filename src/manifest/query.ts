@@ -11,7 +11,7 @@ import {
   TIER_FILTER_OPTIONS,
 } from './enums';
 import { parseHashInput } from './hash';
-import { TABLE_METADATA, getShortTableName, resolveTableAlias } from './tables';
+import { ARTIFACT_PERKS_TABLE, TABLE_METADATA, getShortTableName, resolveTableAlias } from './tables';
 
 export interface SearchFlags {
   redacted?: boolean;
@@ -27,6 +27,7 @@ export interface SearchFlags {
   hasFlavor?: boolean;
   hasCollectible?: boolean;
   artifact?: boolean;
+  artifactPerk?: boolean;
   craftable?: boolean;
   catalyst?: boolean;
   ornament?: boolean;
@@ -65,6 +66,8 @@ export interface SearchContext {
   latestSeason?: number;
   /** seasonNumber -> display name, for `season:<name fragment>`. */
   seasonNameMap?: Map<number, string>;
+  /** Fallback names and aliases per season number, for `season:<name>`. */
+  seasonAliases?: Readonly<Record<number, { fallbackName: string; aliases: readonly string[] }>>;
 }
 
 type FlagKey = keyof SearchFlags;
@@ -164,7 +167,7 @@ const FLAG_TOKENS: Readonly<Record<string, FlagKey>> = {
   collectible: 'hasCollectible',
   hascollectible: 'hasCollectible',
   artifact: 'artifact',
-  artifactperk: 'artifact',
+  artifactperk: 'artifactPerk',
   seasonalartifact: 'artifact',
   craftable: 'craftable',
   crafted: 'craftable',
@@ -629,6 +632,7 @@ function scoreToken(entry: SearchIndexEntry, token: string): number {
   if (hasWordBoundary(entry.nameLower, token)) return 200;
   if (entry.nameLower.includes(token)) return 100;
   if (entry.subtitleLower.includes(token)) return 50;
+  if (entry.parentArtifactName && entry.parentArtifactName.toLowerCase().includes(token)) return 40;
   if (entry.descLower.includes(token)) return 20;
   return 0;
 }
@@ -637,7 +641,8 @@ function textMatches(entry: SearchIndexEntry, token: string): boolean {
   return (
     entry.nameLower.includes(token) ||
     entry.subtitleLower.includes(token) ||
-    entry.descLower.includes(token)
+    entry.descLower.includes(token) ||
+    (entry.parentArtifactName !== undefined && entry.parentArtifactName.toLowerCase().includes(token))
   );
 }
 
@@ -668,7 +673,9 @@ function entryFlag(entry: SearchIndexEntry, key: FlagKey): boolean {
     case 'hasCollectible':
       return entry.hasCollectible === true;
     case 'artifact':
-      return entry.isArtifact === true;
+      return entry.isArtifact === true || entry.isArtifactPerk === true;
+    case 'artifactPerk':
+      return entry.isArtifactPerk === true;
     case 'craftable':
       return entry.isCraftable === true;
     case 'catalyst':
@@ -711,6 +718,16 @@ function resolveSeasonNumbers(
     if (context?.seasonNameMap) {
       for (const [seasonNumber, name] of context.seasonNameMap) {
         if (name.toLowerCase().includes(token)) result.add(seasonNumber);
+      }
+    }
+    if (context?.seasonAliases) {
+      for (const [seasonNumber, alias] of Object.entries(context.seasonAliases)) {
+        const num = Number(seasonNumber);
+        if (Number.isNaN(num)) continue;
+        if (alias.fallbackName.toLowerCase().includes(token)) result.add(num);
+        for (const name of alias.aliases) {
+          if (name.toLowerCase().includes(token)) result.add(num);
+        }
       }
     }
   }
@@ -777,6 +794,10 @@ function toResult(entry: SearchIndexEntry): SearchResultItem {
   if (entry.isRedacted !== undefined) item.isRedacted = entry.isRedacted;
   if (entry.isEnhanced !== undefined) item.isEnhanced = entry.isEnhanced;
   if (entry.index !== undefined) item.index = entry.index;
+  if (entry.isArtifactPerk !== undefined) item.isArtifactPerk = entry.isArtifactPerk;
+  if (entry.parentArtifactHash !== undefined) item.parentArtifactHash = entry.parentArtifactHash;
+  if (entry.parentArtifactName !== undefined) item.parentArtifactName = entry.parentArtifactName;
+  if (entry.parentArtifactIcon !== undefined) item.parentArtifactIcon = entry.parentArtifactIcon;
   return item;
 }
 
@@ -800,6 +821,12 @@ export function scoreAndFilterEntries(
     uiFilters.table && uiFilters.table !== 'all' && uiFilters.table !== ''
       ? tableKey(uiFilters.table)
       : undefined;
+  const artifactPerksKey = tableKey(ARTIFACT_PERKS_TABLE);
+
+  // The virtual ArtifactPerks table matches artifact perk entries regardless of
+  // their underlying InventoryItem table.
+  const matchesTableKey = (entry: SearchIndexEntry, key: string): boolean =>
+    key === artifactPerksKey ? entry.isArtifactPerk === true : tableKey(entry.table) === key;
 
   const hasHashFilter = parsed.hashMatches.length > 0;
   const hashSet = hasHashFilter ? new Set(parsed.hashMatches) : undefined;
@@ -811,8 +838,8 @@ export function scoreAndFilterEntries(
   const scored: ScoredEntry[] = [];
 
   for (const entry of entries) {
-    if (parsedTableKey && tableKey(entry.table) !== parsedTableKey) continue;
-    if (uiTableKey && tableKey(entry.table) !== uiTableKey) continue;
+    if (parsedTableKey && !matchesTableKey(entry, parsedTableKey)) continue;
+    if (uiTableKey && !matchesTableKey(entry, uiTableKey)) continue;
 
     if (uiFilters.tierTypes.length > 0) {
       if (entry.tierType === undefined || !uiFilters.tierTypes.includes(entry.tierType)) continue;

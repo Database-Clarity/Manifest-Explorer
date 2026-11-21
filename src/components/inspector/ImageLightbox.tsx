@@ -430,11 +430,6 @@ export function ImageLightbox({
     }
   }, [mode, asset, display.width, display.height, dpr]);
 
-  const backdropStyle: CSSProperties | undefined =
-    backdrop === 'checker'
-      ? { backgroundImage: 'repeating-conic-gradient(#ffffff 0% 25%, #c6c6c6 0% 50%)' }
-      : undefined;
-
   const stageClass =
     backdrop === 'dark'
       ? styles.stageDark
@@ -578,7 +573,6 @@ export function ImageLightbox({
         <div
           ref={stageRef}
           className={`${styles.stage} ${stageClass}`}
-          style={backdropStyle}
           data-scaling={mode}
           data-backdrop={backdrop}
         >

@@ -187,7 +187,8 @@ $checker-size: 16px;
 }
 
 .stageChecker {
-  background-color: white;
+  background-color: var(--checker-a);
+  background-image: repeating-conic-gradient(var(--checker-a) 0% 25%, var(--checker-b) 0% 50%);
   background-size: $checker-size $checker-size;
 }
 

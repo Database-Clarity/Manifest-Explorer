@@ -85,6 +85,10 @@
   --icon-bg: #15181c;
   --icon-fg: #8b95a0;
 
+  // Transparency checkerboard tiles (theme-aware)
+  --checker-a: #1a1e24;
+  --checker-b: #2a313a;
+
   // Destiny elements (from Clarity tokens)
   --el-kinetic: #c9d1da;
   --el-arc: #7fd0ec;
@@ -187,6 +191,10 @@
   // Game artwork tile backdrop stays dark on Europa Ice light so white Bungie PNGs stay crisp
   --icon-bg: #1c222a;
   --icon-fg: #9ba5b0;
+
+  // Transparency checkerboard tiles (Europa Ice light)
+  --checker-a: #e8eff5;
+  --checker-b: #cbd8e3;
 
   // Destiny elements (AA darkened on Europa Ice)
   --el-kinetic: #4f5b68;

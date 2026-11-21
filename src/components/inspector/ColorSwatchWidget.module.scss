@@ -1,7 +1,5 @@
 @use '../../styles/controls' as ctl;
 
-// Checkerboard is the one place raw hex is allowed: it is a transparency proof
-// pattern, not a UI surface.
 $checker-size: 8px;
 
 .trigger {
@@ -44,6 +42,8 @@ $checker-size: 8px;
   border: 1px solid var(--pop-edge);
   border-radius: 0.125rem;
   overflow: hidden;
+  background-color: var(--checker-a);
+  background-image: repeating-conic-gradient(var(--checker-a) 0% 25%, var(--checker-b) 0% 50%);
   background-size: $checker-size $checker-size;
 }
 
@@ -92,7 +92,9 @@ $checker-size: 8px;
 }
 
 .previewChecker {
-  background-color: white;
+  background-color: var(--checker-a);
+  background-image: repeating-conic-gradient(var(--checker-a) 0% 25%, var(--checker-b) 0% 50%);
+  background-size: $checker-size $checker-size;
 }
 
 .previewFill {

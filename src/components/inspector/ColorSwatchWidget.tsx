@@ -36,9 +36,6 @@ interface ChannelRow {
   fill: string;
 }
 
-const CHECKER_PATTERN =
-  'repeating-conic-gradient(#ffffff 0% 25%, #c6c6c6 0% 50%)';
-
 function clampByte(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.min(255, Math.max(0, Math.round(value)));
@@ -196,11 +193,7 @@ export function ColorSwatchWidget({
         aria-label={`Color ${hexLabel}. Open color inspector`}
         title={`${rgba} — open color inspector`}
       >
-        <span
-          className={styles.swatch}
-          style={{ backgroundImage: CHECKER_PATTERN }}
-          aria-hidden="true"
-        >
+        <span className={styles.swatch} aria-hidden="true">
           <span className={styles.swatchFill} style={{ backgroundColor: rgba }} />
         </span>
         <span className={styles.hexLabel}>{hexLabel}</span>
@@ -219,10 +212,7 @@ export function ColorSwatchWidget({
               <span className={styles.previewFill} style={previewCellStyle} />
               <span className={styles.previewCaption}>Dark</span>
             </div>
-            <div
-              className={`${styles.previewCell} ${styles.previewChecker}`}
-              style={{ backgroundImage: CHECKER_PATTERN }}
-            >
+            <div className={`${styles.previewCell} ${styles.previewChecker}`}>
               <span className={styles.previewFill} style={previewCellStyle} />
               <span className={styles.previewCaption}>Checker</span>
             </div>

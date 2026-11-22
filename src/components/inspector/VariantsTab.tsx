@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { memo, type ReactNode } from 'react';
 import type { DefinitionRef, VariantItem } from '../../types/manifest';
 import { BungieIcon } from '../BungieIcon';
 import { DiffIcon } from '../../ui/Icons';
@@ -14,7 +14,7 @@ export interface VariantsTabProps {
   onDiffVariant: (variantRef: DefinitionRef) => void;
 }
 
-export function VariantsTab({
+export const VariantsTab = memo(function VariantsTab({
   currentRef,
   variants,
   loading,
@@ -124,4 +124,4 @@ export function VariantsTab({
       </div>
     </div>
   );
-}
+});

@@ -1,8 +1,19 @@
-import { useState, type MouseEvent, type ReactNode } from 'react';
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent,
+  type ReactNode,
+} from 'react';
 import type {
   ClarityDescriptionEntry,
   DefinitionDetailPayload,
   DefinitionRef,
+  OverviewLinkedEntity,
+  OverviewPerk,
   OverviewSocket,
   OverviewSocketCategory,
   OverviewSocketPlug,
@@ -84,6 +95,21 @@ function tierStyle(tierType?: number): { color: string } | undefined {
   return color ? { color } : undefined;
 }
 
+/**
+ * Stable navigation callback so memoized sections (Sockets/pools) are not
+ * invalidated by a fresh parent arrow function on every render.
+ */
+function useStableNavigate(navigate: NavigateRef): NavigateRef {
+  const navigateRef = useRef(navigate);
+  useEffect(() => {
+    navigateRef.current = navigate;
+  }, [navigate]);
+  return useCallback(
+    (ref: DefinitionRef, inNewTab?: boolean) => navigateRef.current(ref, inNewTab),
+    [],
+  );
+}
+
 function itemRef(hash: number, label?: string, icon?: string): DefinitionRef {
   return {
     table: 'DestinyInventoryItemDefinition',
@@ -112,14 +138,17 @@ interface PlugPoolProps {
 function PlugPool({ plugs, onNavigate }: PlugPoolProps): ReactNode {
   const [filter, setFilter] = useState('');
   const needle = filter.trim().toLowerCase();
-  const visible =
-    needle.length === 0
-      ? plugs
-      : plugs.filter(
-          (plug) =>
-            plug.name.toLowerCase().includes(needle) ||
-            plug.itemTypeDisplayName.toLowerCase().includes(needle),
-        );
+  const visible = useMemo(
+    () =>
+      needle.length === 0
+        ? plugs
+        : plugs.filter(
+            (plug) =>
+              plug.name.toLowerCase().includes(needle) ||
+              plug.itemTypeDisplayName.toLowerCase().includes(needle),
+          ),
+    [plugs, needle],
+  );
 
   return (
     <div className={styles.socketPool}>
@@ -288,7 +317,10 @@ interface SocketsSectionProps {
   onNavigate: NavigateRef;
 }
 
-function SocketsSection({ categories, onNavigate }: SocketsSectionProps): ReactNode {
+const SocketsSection = memo(function SocketsSection({
+  categories,
+  onNavigate,
+}: SocketsSectionProps): ReactNode {
   const [overrides, setOverrides] = useState<Record<number, boolean>>({});
 
   const isExpanded = (category: OverviewSocketCategory): boolean =>
@@ -373,9 +405,182 @@ function SocketsSection({ categories, onNavigate }: SocketsSectionProps): ReactN
       </div>
     </section>
   );
+});
+
+interface SandboxPerksSectionProps {
+  perks: OverviewPerk[];
+  onNavigate: NavigateRef;
 }
 
-export function OverviewTab({
+function SandboxPerksSection({ perks, onNavigate }: SandboxPerksSectionProps): ReactNode {
+  const [open, setOpen] = useState(perks.length <= 8);
+  const [filter, setFilter] = useState('');
+  const needle = filter.trim().toLowerCase();
+  const visible =
+    needle.length === 0
+      ? perks
+      : perks.filter(
+          (perk) =>
+            perk.name.toLowerCase().includes(needle) ||
+            perk.description.toLowerCase().includes(needle) ||
+            String(perk.perkHash).includes(needle),
+        );
+
+  return (
+    <section className={styles.section}>
+      <button
+        type="button"
+        className={styles.collapsibleToggle}
+        aria-expanded={open}
+        aria-label={`${open ? 'Collapse' : 'Expand'} Sandbox perks (${perks.length})`}
+        onClick={() => setOpen((current) => !current)}
+      >
+        {open ? <ChevronDownIcon size={12} /> : <ChevronRightIcon size={12} />}
+        <span className={styles.collapsibleTitle}>Sandbox perks</span>
+        <span className={styles.collapsibleCount}>({perks.length})</span>
+      </button>
+      {open ? (
+        <div className={styles.collapsibleContent}>
+          {perks.length > FILTERED_POOL_PLUG_COUNT ? (
+            <input
+              type="search"
+              className={styles.poolFilter}
+              value={filter}
+              onChange={(event) => setFilter(event.target.value)}
+              placeholder={`Filter ${perks.length} perks…`}
+              aria-label={`Filter ${perks.length} perks`}
+              autoComplete="off"
+              spellCheck={false}
+            />
+          ) : null}
+          {visible.length === 0 ? (
+            <p className={styles.poolEmpty}>No perks match “{filter.trim()}”.</p>
+          ) : (
+            <div className={styles.entityList}>
+              {visible.map((perk) => (
+                <RefButton
+                  key={perk.perkHash}
+                  ref={{
+                    table: 'DestinySandboxPerkDefinition',
+                    hash: perk.perkHash,
+                    label: perk.name || undefined,
+                    icon: perk.icon,
+                  }}
+                  className={styles.entityRow}
+                  onNavigate={onNavigate}
+                >
+                  <BungieIcon icon={perk.icon} size={28} />
+                  <span className={styles.entityText}>
+                    <span className={styles.entityName}>
+                      {perk.name || `Perk ${perk.perkHash}`}
+                    </span>
+                    {perk.description && (
+                      <span className={styles.entitySub}>{perk.description}</span>
+                    )}
+                  </span>
+                  <span className={styles.entityHash}>{perk.perkHash}</span>
+                </RefButton>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+interface LinkedDefinitionsSectionProps {
+  linkedEntities: OverviewLinkedEntity[];
+  onNavigate: NavigateRef;
+}
+
+function LinkedDefinitionsSection({
+  linkedEntities,
+  onNavigate,
+}: LinkedDefinitionsSectionProps): ReactNode {
+  const [open, setOpen] = useState(linkedEntities.length <= FILTERED_POOL_PLUG_COUNT);
+  const [filter, setFilter] = useState('');
+  const needle = filter.trim().toLowerCase();
+  const visible =
+    needle.length === 0
+      ? linkedEntities
+      : linkedEntities.filter((entity) =>
+          [
+            entity.name,
+            entity.relation,
+            entity.subtitle,
+            getShortTableName(entity.table),
+            String(entity.hash),
+          ]
+            .join(' ')
+            .toLowerCase()
+            .includes(needle),
+        );
+
+  return (
+    <section className={styles.section}>
+      <button
+        type="button"
+        className={styles.collapsibleToggle}
+        aria-expanded={open}
+        aria-label={`${open ? 'Collapse' : 'Expand'} Linked definitions (${linkedEntities.length})`}
+        onClick={() => setOpen((current) => !current)}
+      >
+        {open ? <ChevronDownIcon size={12} /> : <ChevronRightIcon size={12} />}
+        <span className={styles.collapsibleTitle}>Linked definitions</span>
+        <span className={styles.collapsibleCount}>({linkedEntities.length})</span>
+      </button>
+      {open ? (
+        <div className={styles.collapsibleContent}>
+          {linkedEntities.length > FILTERED_POOL_PLUG_COUNT ? (
+            <input
+              type="search"
+              className={styles.poolFilter}
+              value={filter}
+              onChange={(event) => setFilter(event.target.value)}
+              placeholder={`Filter ${linkedEntities.length} definitions…`}
+              aria-label={`Filter ${linkedEntities.length} definitions`}
+              autoComplete="off"
+              spellCheck={false}
+            />
+          ) : null}
+          {visible.length === 0 ? (
+            <p className={styles.poolEmpty}>No definitions match “{filter.trim()}”.</p>
+          ) : (
+            <div className={styles.entityList}>
+              {visible.map((entity, idx) => (
+                <RefButton
+                  key={`${entity.table}-${entity.hash}-${idx}`}
+                  ref={{
+                    table: entity.table,
+                    hash: entity.hash,
+                    label: entity.name || undefined,
+                    icon: entity.icon,
+                  }}
+                  className={styles.entityRow}
+                  onNavigate={onNavigate}
+                >
+                  <BungieIcon icon={entity.icon} size={28} />
+                  <span className={styles.entityText}>
+                    <span className={styles.entityName}>
+                      {entity.name || `${getShortTableName(entity.table)} ${entity.hash}`}
+                    </span>
+                    <span className={styles.entitySub}>
+                      {entity.relation} · {entity.subtitle || getShortTableName(entity.table)}
+                    </span>
+                  </span>
+                  <span className={styles.entityHash}>{entity.hash}</span>
+                </RefButton>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+export const OverviewTab = memo(function OverviewTab({
   detail,
   loadingFull,
   clarityEntry,
@@ -384,6 +589,7 @@ export function OverviewTab({
   onNavigateRef,
   onLoadFullItem,
 }: OverviewTabProps): ReactNode {
+  const handleNavigateRef = useStableNavigate(onNavigateRef);
   const overview = detail.overview;
   type OverviewWithParentArtifact = NonNullable<DefinitionDetailPayload['overview']> & {
     parentArtifact?: { hash: number; name: string; icon?: string };
@@ -493,7 +699,7 @@ export function OverviewTab({
                       icon: overview.damageType.icon,
                     }}
                     className={styles.inlineLink}
-                    onNavigate={onNavigateRef}
+                    onNavigate={handleNavigateRef}
                   >
                     {overview.damageType.name}
                   </RefButton>
@@ -518,7 +724,7 @@ export function OverviewTab({
                       icon: parentArtifact.icon,
                     }}
                     className={styles.entityRow}
-                    onNavigate={onNavigateRef}
+                    onNavigate={handleNavigateRef}
                   >
                     <BungieIcon icon={parentArtifact.icon} size={18} />
                     <span className={styles.entityName}>{parentArtifact.name}</span>
@@ -545,7 +751,7 @@ export function OverviewTab({
                         label: cat.name || undefined,
                       }}
                       className={styles.inlineLink}
-                      onNavigate={onNavigateRef}
+                      onNavigate={handleNavigateRef}
                     >
                       {cat.name}
                     </RefButton>
@@ -601,7 +807,7 @@ export function OverviewTab({
                     }}
                     className={styles.statName}
                     title={stat.description}
-                    onNavigate={onNavigateRef}
+                    onNavigate={handleNavigateRef}
                   >
                     {stat.name}
                   </RefButton>
@@ -622,42 +828,18 @@ export function OverviewTab({
 
       {overview?.socketCategories && overview.socketCategories.length > 0 && (
         <SocketsSection
-          key={`${detail.table}:${detail.hash}`}
+          key={`sockets:${detail.table}:${detail.hash}`}
           categories={overview.socketCategories}
-          onNavigate={onNavigateRef}
+          onNavigate={handleNavigateRef}
         />
       )}
 
       {overview?.perks && overview.perks.length > 0 && (
-        <section className={styles.section}>
-          <h3 className={styles.sectionTitle}>Sandbox perks</h3>
-          <div className={styles.entityList}>
-            {overview.perks.map((perk) => (
-              <RefButton
-                key={perk.perkHash}
-                ref={{
-                  table: 'DestinySandboxPerkDefinition',
-                  hash: perk.perkHash,
-                  label: perk.name || undefined,
-                  icon: perk.icon,
-                }}
-                className={styles.entityRow}
-                onNavigate={onNavigateRef}
-              >
-                <BungieIcon icon={perk.icon} size={28} />
-                <span className={styles.entityText}>
-                  <span className={styles.entityName}>
-                    {perk.name || `Perk ${perk.perkHash}`}
-                  </span>
-                  {perk.description && (
-                    <span className={styles.entitySub}>{perk.description}</span>
-                  )}
-                </span>
-                <span className={styles.entityHash}>{perk.perkHash}</span>
-              </RefButton>
-            ))}
-          </div>
-        </section>
+        <SandboxPerksSection
+          key={`perks:${detail.table}:${detail.hash}`}
+          perks={overview.perks}
+          onNavigate={handleNavigateRef}
+        />
       )}
 
       {overview?.collectible && (
@@ -670,7 +852,7 @@ export function OverviewTab({
               label: overview.collectible.name || undefined,
             }}
             className={styles.entityRow}
-            onNavigate={onNavigateRef}
+            onNavigate={handleNavigateRef}
           >
             <span className={styles.entityText}>
               <span className={styles.entityName}>{overview.collectible.name}</span>
@@ -696,7 +878,7 @@ export function OverviewTab({
                 label: overview.lore.name || undefined,
               }}
               className={styles.inlineLink}
-              onNavigate={onNavigateRef}
+              onNavigate={handleNavigateRef}
             >
               {overview.lore.name || `Lore ${overview.lore.loreHash}`}
             </RefButton>
@@ -709,37 +891,11 @@ export function OverviewTab({
       )}
 
       {overview?.linkedEntities && overview.linkedEntities.length > 0 && (
-        <section className={styles.section}>
-          <h3 className={styles.sectionTitle}>
-            Linked definitions ({overview.linkedEntities.length})
-          </h3>
-          <div className={styles.entityList}>
-            {overview.linkedEntities.map((ent, idx) => (
-              <RefButton
-                key={`${ent.table}-${ent.hash}-${idx}`}
-                ref={{
-                  table: ent.table,
-                  hash: ent.hash,
-                  label: ent.name || undefined,
-                  icon: ent.icon,
-                }}
-                className={styles.entityRow}
-                onNavigate={onNavigateRef}
-              >
-                <BungieIcon icon={ent.icon} size={28} />
-                <span className={styles.entityText}>
-                  <span className={styles.entityName}>
-                    {ent.name || `${getShortTableName(ent.table)} ${ent.hash}`}
-                  </span>
-                  <span className={styles.entitySub}>
-                    {ent.relation} · {ent.subtitle || getShortTableName(ent.table)}
-                  </span>
-                </span>
-                <span className={styles.entityHash}>{ent.hash}</span>
-              </RefButton>
-            ))}
-          </div>
-        </section>
+        <LinkedDefinitionsSection
+          key={`linked:${detail.table}:${detail.hash}`}
+          linkedEntities={overview.linkedEntities}
+          onNavigate={handleNavigateRef}
+        />
       )}
 
       {!hasContent && !detail.isLite && (
@@ -750,4 +906,4 @@ export function OverviewTab({
       )}
     </div>
   );
-}
+});

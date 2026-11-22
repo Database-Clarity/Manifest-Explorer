@@ -36,7 +36,20 @@ const EXPORT_META: Readonly<Record<CollectorExportFormat, ExportMeta>> = {
   'grouped-json': { fileName: 'manifest-hashes-grouped.json', mime: 'application/json' },
 };
 
-export function CollectorPopover({ open, onClose, anchorRef }: CollectorPopoverProps): ReactNode {
+/**
+ * Zero-cost shell: while the popover is closed nothing below mounts, so no
+ * collector subscription or item list renders on unrelated renders. `Popover`
+ * restores focus to the anchor from its effect cleanup on unmount, so Escape
+ * and outside-click closing behave exactly as before.
+ */
+export function CollectorPopover(props: CollectorPopoverProps): ReactNode {
+  if (!props.open) {
+    return null;
+  }
+  return <CollectorPopoverBody {...props} />;
+}
+
+function CollectorPopoverBody({ open, onClose, anchorRef }: CollectorPopoverProps): ReactNode {
   const [format, setFormat] = useState<CollectorExportFormat>('json-hashes');
 
   const collectMode = useCollectorStore((state) => state.collectMode);

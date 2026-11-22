@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { memo, useMemo, useState, type ReactNode } from 'react';
 import type { DefinitionDetailPayload, DefinitionRef } from '../../types/manifest';
 import { computeJsonDiff, type DiffEntry } from '../../manifest/diff';
 import { getShortTableName } from '../../manifest/tables';
@@ -29,7 +29,7 @@ function formatDiffVal(value: unknown): string {
   return String(value);
 }
 
-export function DiffTab({
+export const DiffTab = memo(function DiffTab({
   current,
   pinnedRef,
   pinnedDetail,
@@ -168,4 +168,4 @@ export function DiffTab({
       )}
     </div>
   );
-}
+});

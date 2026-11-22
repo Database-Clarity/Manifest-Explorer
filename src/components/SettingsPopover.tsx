@@ -1,5 +1,5 @@
 /// <reference types="vite/client" />
-import { useEffect, useState, type ReactNode, type RefObject } from 'react';
+import { useState, type ReactNode, type RefObject } from 'react';
 import type { BungieLocale, ImageScalingMode, QueryPrecedence } from '../types/manifest';
 import { BUNGIE_LOCALES } from '../types/manifest';
 import type { CodeFontFamily, ThemeMode, TouchSize } from '../stores/settings';
@@ -96,7 +96,20 @@ function Stepper({ label, value, display, min, max, step, onChange }: StepperPro
   );
 }
 
-export function SettingsPopover({
+/**
+ * Zero-cost shell: while the popover is closed nothing below mounts, so no
+ * settings subscription or manifest-status read runs on unrelated renders.
+ * `Popover` restores focus to the anchor from its effect cleanup on unmount,
+ * so Escape and outside-click closing behave exactly as before.
+ */
+export function SettingsPopover(props: SettingsPopoverProps): ReactNode {
+  if (!props.open) {
+    return null;
+  }
+  return <SettingsPopoverBody {...props} />;
+}
+
+function SettingsPopoverBody({
   open,
   onClose,
   anchorRef,
@@ -136,12 +149,6 @@ export function SettingsPopover({
   const resetSettings = useSettingsStore((state) => state.resetSettings);
 
   const manifestStatus = useExplorerStore((state) => state.manifestStatus);
-
-  useEffect(() => {
-    if (!open) {
-      setConfirmClear(false);
-    }
-  }, [open]);
 
   const tableTotal = manifestStatus.totalTableCount > 0 ? manifestStatus.totalTableCount : 98;
   const fuzzinessPercent = Math.round(fuzziness * 100);

@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="14" fill="#db2777"/>
-  <text x="32" y="32" dy="0.35em" text-anchor="middle" font-family="ui-sans-serif, system-ui, -apple-system, sans-serif" font-size="26" font-weight="600" fill="#ffffff">ME</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000">
+  <path d="M48 470V240L240 48H470V154H283.91L154 283.91V470ZM530 48H760L952 240V470H846V283.91L716.09 154H530ZM952 530V760L760 952H530V846H716.09L846 716.09V530ZM470 952H240L48 760V530H154V716.09L283.91 846H470Z" fill="#24EC54"/>
+  <path d="M224.59 704.51V295.49L265.5 254.59H333.67L500 452.96L666.33 254.59H734.5L775.41 295.49V704.51L734.5 745.41H669.39V416.15L500 617.93L330.61 416.15V745.41H265.5Z" fill="#1CDCFC"/>
 </svg>

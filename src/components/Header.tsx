@@ -1,5 +1,6 @@
 /// <reference types="vite/client" />
 import {
+  memo,
   useId,
   useMemo,
   useRef,
@@ -21,10 +22,10 @@ import { countQueryFilterTokens } from '../utils/queryTokens';
 import {
   BookmarkIcon,
   ChevronDownIcon,
-  ClarityMark,
   CloseIcon,
   FilterIcon,
   HelpIcon,
+  ManifestMark,
   SearchIcon,
   SettingsIcon,
 } from '../ui/Icons';
@@ -111,6 +112,9 @@ const VIRTUAL_TABLE_LABELS: ReadonlyMap<string, string> = new Map([
   ['ArtifactPerks', 'Artifact Perks'],
 ]);
 
+/** Stable empty list so the closed autocomplete state never allocates. */
+const EMPTY_SUGGESTIONS: readonly SearchSuggestion[] = [];
+
 /** Folds the Lite inventory table into the full one so rows never repeat a short name. */
 function dedupeTables(tables: TableStatus[]): TableStatus[] {
   const byShortName = new Map<string, TableStatus>();
@@ -141,7 +145,7 @@ function dedupeTables(tables: TableStatus[]): TableStatus[] {
   return [...byShortName.values()];
 }
 
-export function Header({
+export const Header = memo(function Header({
   searchInputRef,
   onCheckUpdates,
   onClearCache,
@@ -168,7 +172,8 @@ export function Header({
   const setQuery = useExplorerStore((state) => state.setQuery);
   const deepSearch = useExplorerStore((state) => state.deepSearch);
   const toggleDeepSearch = useExplorerStore((state) => state.toggleDeepSearch);
-  const filters = useExplorerStore((state) => state.filters);
+  const tableFilter = useExplorerStore((state) => state.filters.table);
+  const includeUnnamed = useExplorerStore((state) => state.filters.includeUnnamed);
   const setTableFilter = useExplorerStore((state) => state.setTableFilter);
   const setMobileInspectorOpen = useExplorerStore((state) => state.setMobileInspectorOpen);
   const tables = useExplorerStore((state) => state.tables);
@@ -182,13 +187,25 @@ export function Header({
   const collectedCount = useCollectorStore((state) => state.items.length);
   const collectMode = useCollectorStore((state) => state.collectMode);
 
-  const activeFilterCount = countActiveFilters(query, filters.includeUnnamed);
-  const uniqueTables = dedupeTables(tables);
-  const hasUnloadedTables = uniqueTables.some((table) => !table.loaded);
+  const activeFilterCount = countActiveFilters(query, includeUnnamed);
+  // These only depend on the table list, not the query: keep them stable so
+  // search keystrokes (which re-render Header via `query`) never re-dedupe or
+  // re-group the 115+ table rows.
+  const uniqueTables = useMemo(() => dedupeTables(tables), [tables]);
+  const hasUnloadedTables = useMemo(
+    () => uniqueTables.some((table) => !table.loaded),
+    [uniqueTables],
+  );
 
-  const suggestions = useMemo(
-    () => buildSearchSuggestions(query, searchCaret, filterCatalog, tables),
-    [query, searchCaret, filterCatalog, tables],
+  // Tokenizing the catalog (115 sources, 28 seasons, categories) only matters
+  // while the dropdown can actually appear; skip it whenever the input is not
+  // focused or the list was dismissed with Escape.
+  const suggestions: readonly SearchSuggestion[] = useMemo(
+    () =>
+      searchFocused && !suggestionsDismissed
+        ? buildSearchSuggestions(query, searchCaret, filterCatalog, tables)
+        : EMPTY_SUGGESTIONS,
+    [searchFocused, suggestionsDismissed, query, searchCaret, filterCatalog, tables],
   );
   const autocompleteOpen = searchFocused && !suggestionsDismissed && suggestions.length > 0;
   const activeSuggestionIndex =
@@ -196,19 +213,24 @@ export function Header({
       ? suggestionIndex
       : -1;
 
-  const groupedTables = TABLE_GROUP_ORDER.map(([group, label]) => ({
-    group,
-    label,
-    tables: uniqueTables.filter((table) => table.group === group),
-  })).filter((entry) => entry.tables.length > 0);
+  const groupedTables = useMemo(
+    () =>
+      TABLE_GROUP_ORDER.map(([group, label]) => ({
+        group,
+        label,
+        tables: uniqueTables.filter((table) => table.group === group),
+      })).filter((entry) => entry.tables.length > 0),
+    [uniqueTables],
+  );
 
-  const selectedTable = filters.table === 'all' ? null : uniqueTables.find((table) => table.name === filters.table);
+  const selectedTable =
+    tableFilter === 'all' ? null : uniqueTables.find((table) => table.name === tableFilter);
   const activeTableLabel =
-    filters.table === 'all'
+    tableFilter === 'all'
       ? 'All tables'
       : (selectedTable?.shortName ??
-        VIRTUAL_TABLE_LABELS.get(filters.table) ??
-        getShortTableName(filters.table));
+        VIRTUAL_TABLE_LABELS.get(tableFilter) ??
+        getShortTableName(tableFilter));
 
   const filtersAnchorRef =
     menu?.name === 'filters' && menu.source === 'mobile' ? filtersMobileRef : filtersDesktopRef;
@@ -383,10 +405,20 @@ export function Header({
             title="Manifest Explorer"
           >
             <span className={styles.brandMark}>
-              <ClarityMark size={20} />
+              <ManifestMark size={22} />
             </span>
             <span className={styles.brandText}>Manifest Explorer</span>
           </button>
+
+          <a
+            className={styles.clarityAttribution}
+            href="https://d2clarity.com"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="A Clarity project — visit d2clarity.com"
+          >
+            by Clarity
+          </a>
 
           <div className={styles.searchCluster}>
             <div className={styles.searchField}>
@@ -439,7 +471,7 @@ export function Header({
               )}
               <SearchAutocomplete
                 id={suggestionListId}
-                suggestions={autocompleteOpen ? suggestions : []}
+                suggestions={suggestions}
                 highlightIndex={activeSuggestionIndex}
                 onHighlight={setSuggestionIndex}
                 onAccept={acceptSuggestion}
@@ -608,60 +640,62 @@ export function Header({
         </div>
       </header>
 
-      <Popover
-        open={tablesOpen}
-        onClose={closeMenu}
-        anchorRef={tablesRef}
-        align="start"
-        label="Tables"
-        width="16rem"
-      >
-        <div className={styles.menuSection}>
-          <button
-            type="button"
-            className={cx(styles.menuRow, filters.table === 'all' && styles.menuRowSelected)}
-            onClick={() => handleSelectTable('all')}
-            aria-current={filters.table === 'all' ? 'true' : undefined}
-          >
-            <span className={styles.menuRowName}>All tables</span>
-            <span className={styles.menuRowMeta}>{NUMBER_FORMAT.format(indexedEntryCount)}</span>
-          </button>
-        </div>
-
-        {groupedTables.map((group) => (
-          <section key={group.group} className={styles.menuSection}>
-            <h2 className={styles.menuTitle}>{group.label}</h2>
-            {group.tables.map((table) => {
-              const selected =
-                filters.table !== 'all' &&
-                getShortTableName(table.name) === getShortTableName(filters.table);
-              return (
-                <button
-                  key={table.name}
-                  type="button"
-                  className={cx(styles.menuRow, selected && styles.menuRowSelected)}
-                  onClick={() => handleSelectTable(table.name)}
-                  aria-current={selected ? 'true' : undefined}
-                  title={table.name}
-                >
-                  <span className={styles.menuRowName}>{table.shortName}</span>
-                  <span className={styles.menuRowMeta}>
-                    {table.loaded ? NUMBER_FORMAT.format(table.count) : 'Load'}
-                  </span>
-                </button>
-              );
-            })}
-          </section>
-        ))}
-
-        {hasUnloadedTables && (
-          <div className={styles.menuFooter}>
-            <button type="button" className={styles.menuFooterBtn} onClick={handleLoadAllTables}>
-              Load all tables
+      {tablesOpen ? (
+        <Popover
+          open
+          onClose={closeMenu}
+          anchorRef={tablesRef}
+          align="start"
+          label="Tables"
+          width="16rem"
+        >
+          <div className={styles.menuSection}>
+            <button
+              type="button"
+              className={cx(styles.menuRow, tableFilter === 'all' && styles.menuRowSelected)}
+              onClick={() => handleSelectTable('all')}
+              aria-current={tableFilter === 'all' ? 'true' : undefined}
+            >
+              <span className={styles.menuRowName}>All tables</span>
+              <span className={styles.menuRowMeta}>{NUMBER_FORMAT.format(indexedEntryCount)}</span>
             </button>
           </div>
-        )}
-      </Popover>
+
+          {groupedTables.map((group) => (
+            <section key={group.group} className={styles.menuSection}>
+              <h2 className={styles.menuTitle}>{group.label}</h2>
+              {group.tables.map((table) => {
+                const selected =
+                  tableFilter !== 'all' &&
+                  getShortTableName(table.name) === getShortTableName(tableFilter);
+                return (
+                  <button
+                    key={table.name}
+                    type="button"
+                    className={cx(styles.menuRow, selected && styles.menuRowSelected)}
+                    onClick={() => handleSelectTable(table.name)}
+                    aria-current={selected ? 'true' : undefined}
+                    title={table.name}
+                  >
+                    <span className={styles.menuRowName}>{table.shortName}</span>
+                    <span className={styles.menuRowMeta}>
+                      {table.loaded ? NUMBER_FORMAT.format(table.count) : 'Load'}
+                    </span>
+                  </button>
+                );
+              })}
+            </section>
+          ))}
+
+          {hasUnloadedTables && (
+            <div className={styles.menuFooter}>
+              <button type="button" className={styles.menuFooterBtn} onClick={handleLoadAllTables}>
+                Load all tables
+              </button>
+            </div>
+          )}
+        </Popover>
+      ) : null}
 
       <FiltersPopover
         open={filtersOpen}
@@ -687,4 +721,4 @@ export function Header({
       />
     </>
   );
-}
+});

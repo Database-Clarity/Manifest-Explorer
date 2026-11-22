@@ -8,7 +8,21 @@ import {
   type ReactNode,
 } from 'react';
 import type { ImageScalingMode } from '../../types/manifest';
-import { CloseIcon, CopyIcon, ExternalLinkIcon, ImageIcon } from '../../ui/Icons';
+import { upscaleAnime4k } from '../../utils/anime4k';
+import {
+  upscale,
+  upscaleEasu,
+  upscalePerkSdf,
+  type RgbaImage,
+} from '../../utils/upscale';
+import {
+  CheckIcon,
+  CloseIcon,
+  CopyIcon,
+  DownloadIcon,
+  ExternalLinkIcon,
+  ImageIcon,
+} from '../../ui/Icons';
 import styles from './ImageLightbox.module.scss';
 
 export interface ImageLightboxProps {
@@ -21,6 +35,8 @@ export interface ImageLightboxProps {
 
 type BackdropMode = 'dark' | 'checker' | 'light';
 type ZoomSelection = 'fit' | 1 | 2 | 3 | 4 | 6;
+/** Lightbox-specific scaling modes. `original` is the browser's own rendering. */
+type ScalingMode = 'anime4k' | 'perk-sdf' | 'mitchell' | 'nearest' | 'original';
 
 interface LoadedAsset {
   image: HTMLImageElement;
@@ -36,31 +52,56 @@ interface DisplaySize {
   scale: number;
 }
 
+type FeedbackKind = 'copied' | 'copy-unavailable' | 'export-unavailable';
+type ExportAction = 'copy' | 'download' | 'open';
+
+interface PngExport {
+  blob: Blob;
+  filename: string;
+}
+
 const ZOOM_LEVELS: readonly (1 | 2 | 3 | 4 | 6)[] = [1, 2, 3, 4, 6];
 const MAX_CANVAS_SOURCE_WIDTH = 1024;
 const MAX_OUTPUT_DIMENSION = 4096;
 const MAX_OUTPUT_PIXELS = 8_000_000;
+/** Cap the internal resample buffer at 4x native so Fit mode stays instant. */
+const MAX_UPSCALE_SCALE = 4;
 const STAGE_PADDING = 32;
+const FEEDBACK_MS = 1_800;
+const DOWNLOAD_URL_REVOKE_MS = 1_000;
+const OPEN_TAB_URL_REVOKE_MS = 60_000;
 
 const SCALING_OPTIONS: ReadonlyArray<{
-  value: ImageScalingMode;
+  value: ScalingMode;
   label: string;
   title: string;
 }> = [
   {
-    value: 'sharp',
-    label: 'Sharp (Lanczos)',
-    title: 'Lanczos-3 resampling on canvas; falls back to CSS for large or CORS-limited images',
+    value: 'anime4k',
+    label: 'Anime4K',
+    title:
+      'Anime4K 3D-AA WebGL2 CNN: silky diagonals and clean detail with zero JPEG ringing (falls back to FSR EASU 2× cascade without WebGL2)',
   },
   {
-    value: 'integer',
-    label: 'Integer (Pixelated)',
+    value: 'perk-sdf',
+    label: 'Perk Vector',
+    title:
+      'SDF vector-contour reconstruction for flat monochrome perk/mod/ability icons (transparent PNG or opaque JPEG)',
+  },
+  {
+    value: 'mitchell',
+    label: 'Smooth',
+    title: 'Mitchell-Netravali (B=1/3, C=1/3) cubic: balanced and ring-free',
+  },
+  {
+    value: 'nearest',
+    label: 'Pixelated',
     title: 'Nearest-neighbour integer scaling with exact whole-pixel blocks',
   },
   {
-    value: 'smooth',
-    label: 'Smooth',
-    title: 'Browser-standard smooth interpolation',
+    value: 'original',
+    label: 'Original',
+    title: 'Browser-standard rendering (original quality)',
   },
 ];
 
@@ -70,163 +111,126 @@ const BACKDROP_OPTIONS: ReadonlyArray<{ value: BackdropMode; label: string }> = 
   { value: 'light', label: 'Light' },
 ];
 
-/** Lanczos-3 windowed sinc kernel. */
-function lanczos3(x: number): number {
-  if (x === 0) return 1;
-  const abs = Math.abs(x);
-  if (abs >= 3) return 0;
-  const pix = Math.PI * x;
-  return (3 * Math.sin(pix) * Math.sin(pix / 3)) / (pix * pix);
-}
-
-interface Contribution {
-  start: number;
-  weights: Float32Array;
-}
-
-/** Precompute normalised filter taps for each destination sample. */
-function buildContributions(srcLength: number, dstLength: number): Contribution[] {
-  const ratio = srcLength / dstLength;
-  const filterScale = Math.max(1, ratio);
-  const support = 3 * filterScale;
-  const contributions: Contribution[] = [];
-
-  for (let dst = 0; dst < dstLength; dst += 1) {
-    const center = (dst + 0.5) * ratio;
-    const start = Math.max(0, Math.floor(center - support));
-    const end = Math.min(srcLength, Math.ceil(center + support));
-    const weights = new Float32Array(Math.max(1, end - start));
-    let total = 0;
-
-    for (let src = start; src < end; src += 1) {
-      const weight = lanczos3((src + 0.5 - center) / filterScale);
-      weights[src - start] = weight;
-      total += weight;
-    }
-
-    if (total !== 0) {
-      for (let i = 0; i < weights.length; i += 1) {
-        weights[i] = (weights[i] ?? 0) / total;
-      }
-    }
-
-    contributions.push({ start, weights });
+/** Map the sitewide icon-scaling setting onto a lightbox mode. */
+function toScalingMode(defaultScaling: ImageScalingMode): ScalingMode {
+  switch (defaultScaling) {
+    case 'integer':
+      return 'nearest';
+    case 'smooth':
+      return 'mitchell';
+    case 'sharp':
+    default:
+      return 'anime4k';
   }
-
-  return contributions;
 }
 
-/**
- * Horizontal pass. RGB is premultiplied by alpha before filtering so
- * transparent edges do not bleed dark or white halos into the result.
- */
-function resampleHorizontal(
-  src: Uint8ClampedArray,
-  srcWidth: number,
-  srcHeight: number,
-  dstWidth: number,
-): Float32Array {
-  const out = new Float32Array(dstWidth * srcHeight * 4);
-  const contributions = buildContributions(srcWidth, dstWidth);
-
-  for (let y = 0; y < srcHeight; y += 1) {
-    const rowOffset = y * srcWidth * 4;
-
-    for (let x = 0; x < dstWidth; x += 1) {
-      const contribution = contributions[x];
-      if (!contribution) continue;
-      const { start, weights } = contribution;
-      let red = 0;
-      let green = 0;
-      let blue = 0;
-      let alpha = 0;
-
-      for (let i = 0; i < weights.length; i += 1) {
-        const px = rowOffset + (start + i) * 4;
-        const weight = weights[i] ?? 0;
-        const a = (src[px + 3] ?? 0) / 255;
-        red += (src[px] ?? 0) * a * weight;
-        green += (src[px + 1] ?? 0) * a * weight;
-        blue += (src[px + 2] ?? 0) * a * weight;
-        alpha += (src[px + 3] ?? 0) * weight;
-      }
-
-      const outOffset = (y * dstWidth + x) * 4;
-      out[outOffset] = red;
-      out[outOffset + 1] = green;
-      out[outOffset + 2] = blue;
-      out[outOffset + 3] = alpha;
-    }
-  }
-
-  return out;
-}
-
-/** Vertical pass, then unpremultiply back to straight RGBA. */
-function resampleVertical(
-  src: Float32Array,
-  width: number,
-  srcHeight: number,
-  dstHeight: number,
-): Uint8ClampedArray {
-  const out = new Uint8ClampedArray(width * dstHeight * 4);
-  const contributions = buildContributions(srcHeight, dstHeight);
-
-  for (let y = 0; y < dstHeight; y += 1) {
-    const contribution = contributions[y];
-    if (!contribution) continue;
-    const { start, weights } = contribution;
-
-    for (let x = 0; x < width; x += 1) {
-      let red = 0;
-      let green = 0;
-      let blue = 0;
-      let alpha = 0;
-
-      for (let i = 0; i < weights.length; i += 1) {
-        const px = ((start + i) * width + x) * 4;
-        const weight = weights[i] ?? 0;
-        red += (src[px] ?? 0) * weight;
-        green += (src[px + 1] ?? 0) * weight;
-        blue += (src[px + 2] ?? 0) * weight;
-        alpha += (src[px + 3] ?? 0) * weight;
-      }
-
-      const outOffset = (y * width + x) * 4;
-      const alphaFraction = alpha / 255;
-      out[outOffset] =
-        alphaFraction > 0 ? Math.round(red / alphaFraction) : 0;
-      out[outOffset + 1] =
-        alphaFraction > 0 ? Math.round(green / alphaFraction) : 0;
-      out[outOffset + 2] =
-        alphaFraction > 0 ? Math.round(blue / alphaFraction) : 0;
-      out[outOffset + 3] = Math.round(alpha);
-    }
-  }
-
-  return out;
-}
-
-function resampleLanczos3(
-  source: ImageData,
-  targetWidth: number,
-  targetHeight: number,
-): ImageData {
-  const horizontal = resampleHorizontal(
-    source.data,
-    source.width,
-    source.height,
-    targetWidth,
-  );
-  const data = resampleVertical(horizontal, targetWidth, source.height, targetHeight);
-  const pixels = new Uint8ClampedArray(data.length);
-  pixels.set(data);
-  return new ImageData(pixels, targetWidth, targetHeight);
+/** Canvas-resampled modes (the rest render the raw <img>). */
+function isCanvasMode(mode: ScalingMode): mode is 'anime4k' | 'perk-sdf' | 'mitchell' {
+  return mode === 'anime4k' || mode === 'perk-sdf' || mode === 'mitchell';
 }
 
 function readDevicePixelRatio(): number {
   if (typeof window === 'undefined') return 1;
   return window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
+}
+
+/** Build a filesystem-safe basename from the manifest asset path. */
+function exportFilenameBase(path: string): string {
+  const basename = path.split(/[\\/]/).pop() ?? 'image';
+  const withoutQuery = basename.split(/[?#]/)[0] ?? basename;
+  const withoutExtension = withoutQuery.replace(/\.[^.]*$/, '');
+  const cleaned = withoutExtension
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^[-.]+|[-.]+$/g, '');
+  return cleaned || 'image';
+}
+
+function buildExportFilename(
+  path: string,
+  mode: ScalingMode,
+  width: number,
+  height: number,
+): string {
+  const base = exportFilenameBase(path);
+  return mode === 'original'
+    ? `${base}-${width}x${height}.png`
+    : `${base}-${mode}-${width}x${height}.png`;
+}
+
+/** Keep offscreen exports inside the same bounds the preview canvas respects. */
+function clampExportSize(width: number, height: number): { width: number; height: number } {
+  const safeWidth = Math.max(1, Math.round(width));
+  const safeHeight = Math.max(1, Math.round(height));
+  const dimensionScale = Math.min(1, MAX_OUTPUT_DIMENSION / Math.max(safeWidth, safeHeight));
+  const pixelScale = Math.min(1, Math.sqrt(MAX_OUTPUT_PIXELS / (safeWidth * safeHeight)));
+  const scale = Math.min(dimensionScale, pixelScale);
+  return {
+    width: Math.max(1, Math.round(safeWidth * scale)),
+    height: Math.max(1, Math.round(safeHeight * scale)),
+  };
+}
+
+function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    if (typeof canvas.toBlob !== 'function') {
+      reject(new Error('PNG export is not supported.'));
+      return;
+    }
+
+    try {
+      canvas.toBlob((blob) => {
+        if (blob) {
+          resolve(blob);
+        } else {
+          reject(new Error('PNG export failed.'));
+        }
+      }, 'image/png');
+    } catch (error) {
+      reject(error instanceof Error ? error : new Error('PNG export failed.'));
+    }
+  });
+}
+
+async function writePngToClipboard(blob: Blob): Promise<boolean> {
+  if (typeof ClipboardItem === 'undefined') return false;
+  const clipboard = navigator.clipboard;
+  if (!clipboard || typeof clipboard.write !== 'function') return false;
+
+  try {
+    await clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function downloadBlob(blob: Blob, filename: string): void {
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = objectUrl;
+  anchor.download = filename;
+  anchor.rel = 'noopener';
+  anchor.style.display = 'none';
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), DOWNLOAD_URL_REVOKE_MS);
+}
+
+function openBlobInNewTab(blob: Blob): void {
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = objectUrl;
+  anchor.target = '_blank';
+  anchor.rel = 'noopener noreferrer';
+  anchor.style.display = 'none';
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  // Keep the URL alive long enough for the new tab to finish loading even if
+  // the lightbox closes immediately.
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), OPEN_TAB_URL_REVOKE_MS);
 }
 
 export function ImageLightbox({
@@ -236,22 +240,25 @@ export function ImageLightbox({
   onClose,
   onCopy,
 }: ImageLightboxProps): ReactNode {
-  const [mode, setMode] = useState<ImageScalingMode>(defaultScaling);
+  const [mode, setMode] = useState<ScalingMode>(() => toScalingMode(defaultScaling));
   const [zoom, setZoom] = useState<ZoomSelection>('fit');
   const [exactDevicePixels, setExactDevicePixels] = useState(false);
   const [backdrop, setBackdrop] = useState<BackdropMode>('dark');
   const [asset, setAsset] = useState<LoadedAsset | null>(null);
   const [loadError, setLoadError] = useState(false);
-  const [sharpResult, setSharpResult] = useState<'idle' | 'ready' | 'fallback'>('idle');
+  const [upscaleResult, setUpscaleResult] = useState<'idle' | 'ready' | 'fallback'>('idle');
   const [view, setView] = useState<{ width: number; height: number }>({
     width: 0,
     height: 0,
   });
+  const [feedback, setFeedback] = useState<FeedbackKind | null>(null);
+  const [busyAction, setBusyAction] = useState<ExportAction | null>(null);
 
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const feedbackTimerRef = useRef<number | null>(null);
 
   const dpr = readDevicePixelRatio();
 
@@ -259,6 +266,14 @@ export function ImageLightbox({
     const frame = window.requestAnimationFrame(() => closeButtonRef.current?.focus());
     dialogRef.current?.focus({ preventScroll: true });
     return () => window.cancelAnimationFrame(frame);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (feedbackTimerRef.current !== null) {
+        window.clearTimeout(feedbackTimerRef.current);
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -274,10 +289,15 @@ export function ImageLightbox({
 
   useEffect(() => {
     setZoom('fit');
+    setFeedback(null);
+    if (feedbackTimerRef.current !== null) {
+      window.clearTimeout(feedbackTimerRef.current);
+      feedbackTimerRef.current = null;
+    }
   }, [url]);
 
   useEffect(() => {
-    setMode(defaultScaling);
+    setMode(toScalingMode(defaultScaling));
   }, [defaultScaling]);
 
   useLayoutEffect(() => {
@@ -307,7 +327,7 @@ export function ImageLightbox({
     let cancelled = false;
     setAsset(null);
     setLoadError(false);
-    setSharpResult('idle');
+    setUpscaleResult('idle');
 
     const settle = (image: HTMLImageElement, corsSafe: boolean): void => {
       if (cancelled) return;
@@ -354,12 +374,12 @@ export function ImageLightbox({
         : 1;
     const baseScale =
       zoom === 'fit'
-        ? mode === 'integer'
+        ? mode === 'nearest'
           ? Math.max(1, Math.floor(fitScale))
           : fitScale
         : zoom;
 
-    const scale = mode === 'integer' && exactDevicePixels ? baseScale / dpr : baseScale;
+    const scale = mode === 'nearest' && exactDevicePixels ? baseScale / dpr : baseScale;
     return {
       width: Math.max(1, asset.width * scale),
       height: Math.max(1, asset.height * scale),
@@ -368,31 +388,45 @@ export function ImageLightbox({
   }, [asset, view.width, view.height, zoom, mode, exactDevicePixels, dpr]);
 
   useEffect(() => {
-    if (mode !== 'sharp' || !asset) return;
+    if (!asset) return;
+    if (!isCanvasMode(mode)) {
+      setUpscaleResult('idle');
+      return;
+    }
 
     if (!asset.corsSafe || asset.width > MAX_CANVAS_SOURCE_WIDTH) {
-      setSharpResult('fallback');
+      setUpscaleResult('fallback');
       return;
     }
 
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const targetWidth = Math.max(1, Math.round(display.width * dpr));
-    const targetHeight = Math.max(1, Math.round(display.height * dpr));
+    // Clamp the internal resample buffer to at most 4x native so Fit mode on a
+    // small icon resamples to a handful of pixels (e.g. 384x384), never a
+    // 1728x1728 device-pixel grid that freezes the main thread. The canvas is
+    // still displayed at the requested CSS size via its inline style.
+    const targetWidth = Math.min(
+      Math.max(1, Math.round(display.width * dpr)),
+      asset.width * MAX_UPSCALE_SCALE,
+    );
+    const targetHeight = Math.min(
+      Math.max(1, Math.round(display.height * dpr)),
+      asset.height * MAX_UPSCALE_SCALE,
+    );
 
     if (
       targetWidth > MAX_OUTPUT_DIMENSION ||
       targetHeight > MAX_OUTPUT_DIMENSION ||
       targetWidth * targetHeight > MAX_OUTPUT_PIXELS
     ) {
-      setSharpResult('fallback');
+      setUpscaleResult('fallback');
       return;
     }
 
     const outContext = canvas.getContext('2d');
     if (!outContext) {
-      setSharpResult('fallback');
+      setUpscaleResult('fallback');
       return;
     }
 
@@ -404,7 +438,7 @@ export function ImageLightbox({
         outContext.imageSmoothingEnabled = false;
         outContext.clearRect(0, 0, targetWidth, targetHeight);
         outContext.drawImage(asset.image, 0, 0);
-        setSharpResult('ready');
+        setUpscaleResult('ready');
         return;
       }
 
@@ -413,20 +447,40 @@ export function ImageLightbox({
       sourceCanvas.height = asset.height;
       const sourceContext = sourceCanvas.getContext('2d', { willReadFrequently: true });
       if (!sourceContext) {
-        setSharpResult('fallback');
+        setUpscaleResult('fallback');
         return;
       }
 
       sourceContext.clearRect(0, 0, asset.width, asset.height);
       sourceContext.drawImage(asset.image, 0, 0);
       const sourceData = sourceContext.getImageData(0, 0, asset.width, asset.height);
-      const resampled = resampleLanczos3(sourceData, targetWidth, targetHeight);
+      const source: RgbaImage = {
+        data: sourceData.data,
+        width: asset.width,
+        height: asset.height,
+      };
 
-      outContext.putImageData(resampled, 0, 0);
-      setSharpResult('ready');
+      let resampled: RgbaImage;
+      if (mode === 'anime4k') {
+        // WebGL2 CNN, falling back to the CPU EASU 2x cascade when unavailable.
+        resampled =
+          upscaleAnime4k(source, targetWidth, targetHeight) ??
+          upscaleEasu(source, targetWidth, targetHeight);
+      } else if (mode === 'perk-sdf') {
+        resampled = upscalePerkSdf(source, targetWidth, targetHeight);
+      } else {
+        resampled = upscale(source, targetWidth, targetHeight, mode);
+      }
+
+      outContext.putImageData(
+        new ImageData(resampled.data as Uint8ClampedArray<ArrayBuffer>, targetWidth, targetHeight),
+        0,
+        0,
+      );
+      setUpscaleResult('ready');
     } catch {
       // Tainted canvas or an unsupported ImageData path: use the <img> fallback.
-      setSharpResult('fallback');
+      setUpscaleResult('fallback');
     }
   }, [mode, asset, display.width, display.height, dpr]);
 
@@ -441,9 +495,9 @@ export function ImageLightbox({
     width: display.width,
     height: display.height,
     imageRendering:
-      mode === 'integer'
+      mode === 'nearest'
         ? 'pixelated'
-        : mode === 'sharp' && sharpResult === 'fallback'
+        : isCanvasMode(mode) && upscaleResult === 'fallback'
           ? 'crisp-edges'
           : 'auto',
   };
@@ -457,6 +511,125 @@ export function ImageLightbox({
     zoom === 'fit'
       ? `Fit ${display.scale.toFixed(2)}×`
       : `${zoom}×`;
+
+  const showFeedback = (kind: FeedbackKind): void => {
+    if (feedbackTimerRef.current !== null) {
+      window.clearTimeout(feedbackTimerRef.current);
+    }
+    setFeedback(kind);
+    feedbackTimerRef.current = window.setTimeout(() => {
+      feedbackTimerRef.current = null;
+      setFeedback(null);
+    }, FEEDBACK_MS);
+  };
+
+  const createPngExport = async (): Promise<PngExport> => {
+    if (!asset) {
+      throw new Error('The image has not loaded yet.');
+    }
+
+    const canvas = canvasRef.current;
+    if (
+      isCanvasMode(mode) &&
+      upscaleResult === 'ready' &&
+      canvas &&
+      canvas.width > 0 &&
+      canvas.height > 0
+    ) {
+      const blob = await canvasToPngBlob(canvas);
+      return {
+        blob,
+        filename: buildExportFilename(path, mode, canvas.width, canvas.height),
+      };
+    }
+
+    // Original mode exports native pixels; pixelated and fallback modes export
+    // the current on-screen size so the PNG matches what the lightbox shows.
+    const size =
+      mode === 'original'
+        ? { width: asset.width, height: asset.height }
+        : clampExportSize(display.width * dpr, display.height * dpr);
+
+    const offscreen = document.createElement('canvas');
+    offscreen.width = size.width;
+    offscreen.height = size.height;
+    const context = offscreen.getContext('2d');
+    if (!context) {
+      throw new Error('Could not create an export canvas.');
+    }
+
+    if (mode !== 'original') {
+      context.imageSmoothingEnabled = false;
+    }
+    context.clearRect(0, 0, size.width, size.height);
+    context.drawImage(asset.image, 0, 0, size.width, size.height);
+
+    const blob = await canvasToPngBlob(offscreen);
+    return {
+      blob,
+      filename: buildExportFilename(path, mode, size.width, size.height),
+    };
+  };
+
+  const canExport = asset !== null && !loadError && asset.width > 0 && asset.height > 0;
+  const actionsDisabled = !canExport || busyAction !== null;
+  const copyLabel =
+    feedback === 'copied'
+      ? 'Copied image'
+      : feedback === 'copy-unavailable'
+        ? 'Copy unavailable'
+        : 'Copy image';
+  const statusMessage =
+    feedback === 'copied'
+      ? 'Image copied to clipboard'
+      : feedback === 'copy-unavailable'
+        ? 'Copy unavailable'
+        : feedback === 'export-unavailable'
+          ? 'Export unavailable'
+          : '';
+
+  const handleCopyImage = async (): Promise<void> => {
+    if (!canExport || busyAction !== null) return;
+
+    setBusyAction('copy');
+    try {
+      const exported = await createPngExport();
+      const copied = await writePngToClipboard(exported.blob);
+      showFeedback(copied ? 'copied' : 'copy-unavailable');
+    } catch {
+      showFeedback('copy-unavailable');
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const handleDownloadPng = async (): Promise<void> => {
+    if (!canExport || busyAction !== null) return;
+
+    setBusyAction('download');
+    try {
+      const exported = await createPngExport();
+      downloadBlob(exported.blob, exported.filename);
+    } catch {
+      showFeedback('export-unavailable');
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const handleOpenUpscaled = async (): Promise<void> => {
+    if (!canExport || busyAction !== null || mode === 'original') return;
+
+    setBusyAction('open');
+    try {
+      const exported = await createPngExport();
+      openBlobInNewTab(exported.blob);
+    } catch {
+      showFeedback('export-unavailable');
+    } finally {
+      setBusyAction(null);
+    }
+  };
 
   return (
     <div
@@ -540,14 +713,18 @@ export function ImageLightbox({
             </div>
           </div>
 
-          <label className={styles.toggle}>
-            <input
-              type="checkbox"
-              checked={exactDevicePixels}
-              onChange={(event) => setExactDevicePixels(event.target.checked)}
-            />
-            <span>Exact device pixels (1:1 DPR)</span>
-          </label>
+          {mode === 'nearest' && (
+            <label className={styles.toggle}>
+              <input
+                type="checkbox"
+                checked={exactDevicePixels}
+                onChange={(event) => setExactDevicePixels(event.target.checked)}
+                title="Exact device pixels (1:1 DPR)"
+                aria-label="Exact device pixels (1:1 DPR)"
+              />
+              <span>1:1 DPR</span>
+            </label>
+          )}
 
           <div className={styles.group}>
             <span className={styles.groupLabel}>Backdrop</span>
@@ -582,18 +759,18 @@ export function ImageLightbox({
             <p className={styles.message}>Loading image…</p>
           ) : (
             <>
-              {mode === 'sharp' && (
+              {isCanvasMode(mode) && (
                 <canvas
                   ref={canvasRef}
                   className={styles.canvas}
                   style={{
                     ...canvasStyle,
-                    display: sharpResult === 'ready' ? 'block' : 'none',
+                    display: upscaleResult === 'ready' ? 'block' : 'none',
                   }}
                   aria-hidden="true"
                 />
               )}
-              {(mode !== 'sharp' || sharpResult !== 'ready') && (
+              {(!isCanvasMode(mode) || upscaleResult !== 'ready') && (
                 <img
                   src={url}
                   alt=""
@@ -644,9 +821,50 @@ export function ImageLightbox({
               <ExternalLinkIcon size={12} />
               Open original
             </a>
+            <button
+              type="button"
+              className={styles.actionBtn}
+              onClick={() => {
+                void handleCopyImage();
+              }}
+              disabled={actionsDisabled}
+              title="Copy image to clipboard"
+            >
+              {feedback === 'copied' ? <CheckIcon size={12} /> : <CopyIcon size={12} />}
+              {copyLabel}
+            </button>
+            <button
+              type="button"
+              className={styles.actionBtn}
+              onClick={() => {
+                void handleDownloadPng();
+              }}
+              disabled={actionsDisabled}
+              title="Download the current image as a PNG"
+            >
+              <DownloadIcon size={12} />
+              Download PNG
+            </button>
+            {mode !== 'original' && (
+              <button
+                type="button"
+                className={styles.actionBtn}
+                onClick={() => {
+                  void handleOpenUpscaled();
+                }}
+                disabled={actionsDisabled}
+                title="Open the exported PNG in a new tab"
+              >
+                <ExternalLinkIcon size={12} />
+                Open upscaled
+              </button>
+            )}
             <button type="button" className={styles.actionBtn} onClick={onClose}>
               Close
             </button>
+            <span className="sr-only" role="status" aria-live="polite">
+              {statusMessage}
+            </span>
           </div>
         </div>
       </div>

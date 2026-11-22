@@ -1,4 +1,5 @@
 import {
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -112,7 +113,7 @@ const TABS: ReadonlyArray<{ id: InspectorTab; label: string; shortLabel: string 
   { id: 'diff', label: 'Diff', shortLabel: 'Diff' },
 ];
 
-export function DefinitionInspector({
+function DefinitionInspectorImpl({
   width,
   onResize,
   currentRef,
@@ -175,11 +176,38 @@ export function DefinitionInspector({
   const [tabsOverflowing, setTabsOverflowing] = useState(false);
   const [tabsMenuOpen, setTabsMenuOpen] = useState(false);
   const [tabsMenuFilter, setTabsMenuFilter] = useState('');
+  const definitionKey = detail ? `${detail.table}:${detail.hash}` : '';
+  const [visitedTabState, setVisitedTabState] = useState<{
+    definitionKey: string;
+    tabs: Set<InspectorTab>;
+  }>(() => ({ definitionKey, tabs: new Set([activeTab]) }));
+  const visitedTabs = useMemo(() => {
+    const tabs =
+      visitedTabState.definitionKey === definitionKey
+        ? new Set(visitedTabState.tabs)
+        : new Set<InspectorTab>();
+    tabs.add(activeTab);
+    return tabs;
+  }, [activeTab, definitionKey, visitedTabState]);
   const scrollTimerRef = useRef<number | null>(null);
   const liveScrollRef = useRef<{ tab: InspectorTab; top: number }>({
     tab: activeTab,
     top: 0,
   });
+
+  useEffect(() => {
+    setVisitedTabState((state) => {
+      if (state.definitionKey !== definitionKey) {
+        return { definitionKey, tabs: new Set([activeTab]) };
+      }
+      if (state.tabs.has(activeTab)) {
+        return state;
+      }
+      const tabs = new Set(state.tabs);
+      tabs.add(activeTab);
+      return { definitionKey, tabs };
+    });
+  }, [activeTab, definitionKey]);
 
   useEffect(() => {
     const element = sessionTabsScrollRef.current;
@@ -211,7 +239,9 @@ export function DefinitionInspector({
       scrollTimerRef.current = null;
     }
     const panel = tabPanelRef.current;
-    const scroller = panel?.querySelector<HTMLElement>('[data-inspector-scroll="true"]');
+    const scroller = panel?.querySelector<HTMLElement>(
+      '[data-inspector-panel-active="true"] [data-inspector-scroll="true"]',
+    );
     if (scroller) {
       saveEntryScroll(activeTab, scroller.scrollTop);
     }
@@ -255,7 +285,7 @@ export function DefinitionInspector({
     let raf2 = 0;
     const apply = (): void => {
       const scroller = tabPanelRef.current?.querySelector<HTMLElement>(
-        '[data-inspector-scroll="true"]',
+        '[data-inspector-panel-active="true"] [data-inspector-scroll="true"]',
       );
       if (scroller) {
         scroller.scrollTop = targetScrollTop;
@@ -446,11 +476,8 @@ export function DefinitionInspector({
     : false;
 
   const rawJsonText = useMemo(() => {
-    if (activeTab !== 'raw' || !detail) {
-      return '';
-    }
-    return JSON.stringify(detail.data, null, 2);
-  }, [activeTab, detail]);
+    return detail ? JSON.stringify(detail.data, null, 2) : '';
+  }, [detail]);
 
   const handleDownloadJson = useCallback(() => {
     if (!detail) {
@@ -1104,100 +1131,136 @@ export function DefinitionInspector({
           </div>
         ) : detail ? (
           <>
-            {activeTab === 'pretty' && (
-              <JsonTree
-                key={`${activeSession?.id ?? ''}:${historyIndex}:${currentRef.table}:${currentRef.hash}`}
-                data={detail.data}
-                resolvedRefs={detail.resolvedRefs}
-                initialFilter={activeEntry?.jsonFilter}
-                onFilterChange={handleJsonFilterChange}
-                initialExpanded={activeEntry?.jsonExpanded}
-                onExpandedChange={handleJsonExpandedChange}
-                imageScaling={imageScaling}
-                onNavigateRef={(ref, inNewTab) => navigateWithFlush(ref, inNewTab)}
-                onCopy={copyText}
-              />
-            )}
-            {activeTab === 'overview' && (
-              <OverviewTab
-                detail={detail}
-                loadingFull={loadingFull}
-                clarityEntry={clarityEntry}
-                clarityLoading={clarityLoading}
-                showClarity={showClarity}
-                onNavigateRef={(ref, inNewTab) => navigateWithFlush(ref, inNewTab)}
-                onLoadFullItem={onLoadFullItem}
-              />
-            )}
-            {activeTab === 'variants' && (
-              <VariantsTab
-                currentRef={currentRef}
-                variants={variants}
-                loading={variantsLoading}
-                onNavigateRef={(ref, inNewTab) => navigateWithFlush(ref, inNewTab)}
-                onDiffVariant={(variantRef) => {
-                  flushScroll();
-                  pinForDiff({
-                    table: currentRef.table,
-                    hash: unsignedHash,
-                    label: itemName,
-                    icon: iconPath,
-                  });
-                  onNavigateRef(variantRef, false);
-                  setActiveTab('diff');
-                }}
-              />
-            )}
-            {activeTab === 'references' && (
-              <ReferencesTab
-                response={references}
-                loading={referencesLoading}
-                onNavigateRef={(ref, inNewTab) => navigateWithFlush(ref, inNewTab)}
-                onLoadPriorityTable={onLoadPriorityTable}
-              />
-            )}
-            {activeTab === 'raw' && (
-              <div className={styles.rawWrap}>
-                <div className={styles.rawToolbar}>
-                  <button
-                    type="button"
-                    className={styles.actionBtn}
-                    onClick={() => copyText(rawJsonText, 'Copied raw JSON')}
-                  >
-                    <CopyIcon size={13} />
-                    Copy JSON
-                  </button>
-                  <button
-                    type="button"
-                    className={styles.actionBtn}
-                    onClick={handleDownloadJson}
-                  >
-                    <DownloadIcon size={13} />
-                    Download .json
-                  </button>
-                </div>
-                <pre className={styles.rawPre} data-inspector-scroll="true">
-                  {rawJsonText}
-                </pre>
+            {visitedTabs.has('pretty') && (
+              <div
+                hidden={activeTab !== 'pretty'}
+                className={styles.tabPanelSlot}
+                data-inspector-panel-active={activeTab === 'pretty' ? 'true' : 'false'}
+              >
+                <JsonTree
+                  key={`${activeSession?.id ?? ''}:${historyIndex}:${currentRef.table}:${currentRef.hash}`}
+                  data={detail.data}
+                  resolvedRefs={detail.resolvedRefs}
+                  initialFilter={activeEntry?.jsonFilter}
+                  onFilterChange={handleJsonFilterChange}
+                  initialExpanded={activeEntry?.jsonExpanded}
+                  onExpandedChange={handleJsonExpandedChange}
+                  imageScaling={imageScaling}
+                  onNavigateRef={(ref, inNewTab) => navigateWithFlush(ref, inNewTab)}
+                  onCopy={copyText}
+                />
               </div>
             )}
-            {activeTab === 'diff' && (
-              <DiffTab
-                current={detail}
-                pinnedRef={pinnedDiffRef}
-                pinnedDetail={pinnedDetail}
-                pinnedLoading={pinnedLoading}
-                onPinCurrent={() =>
-                  pinForDiff({
-                    table: currentRef.table,
-                    hash: unsignedHash,
-                    label: itemName,
-                    icon: iconPath,
-                  })
-                }
-                onClearPin={clearPinnedDiff}
-                onNavigateRef={(ref) => navigateWithFlush(ref, false)}
-              />
+            {visitedTabs.has('overview') && (
+              <div
+                hidden={activeTab !== 'overview'}
+                className={styles.tabPanelSlot}
+                data-inspector-panel-active={activeTab === 'overview' ? 'true' : 'false'}
+              >
+                <OverviewTab
+                  detail={detail}
+                  loadingFull={loadingFull}
+                  clarityEntry={clarityEntry}
+                  clarityLoading={clarityLoading}
+                  showClarity={showClarity}
+                  onNavigateRef={(ref, inNewTab) => navigateWithFlush(ref, inNewTab)}
+                  onLoadFullItem={onLoadFullItem}
+                />
+              </div>
+            )}
+            {visitedTabs.has('variants') && (
+              <div
+                hidden={activeTab !== 'variants'}
+                className={styles.tabPanelSlot}
+                data-inspector-panel-active={activeTab === 'variants' ? 'true' : 'false'}
+              >
+                <VariantsTab
+                  currentRef={currentRef}
+                  variants={variants}
+                  loading={variantsLoading}
+                  onNavigateRef={(ref, inNewTab) => navigateWithFlush(ref, inNewTab)}
+                  onDiffVariant={(variantRef) => {
+                    flushScroll();
+                    pinForDiff({
+                      table: currentRef.table,
+                      hash: unsignedHash,
+                      label: itemName,
+                      icon: iconPath,
+                    });
+                    onNavigateRef(variantRef, false);
+                    setActiveTab('diff');
+                  }}
+                />
+              </div>
+            )}
+            {visitedTabs.has('references') && (
+              <div
+                hidden={activeTab !== 'references'}
+                className={styles.tabPanelSlot}
+                data-inspector-panel-active={activeTab === 'references' ? 'true' : 'false'}
+              >
+                <ReferencesTab
+                  response={references}
+                  loading={referencesLoading}
+                  onNavigateRef={(ref, inNewTab) => navigateWithFlush(ref, inNewTab)}
+                  onLoadPriorityTable={onLoadPriorityTable}
+                />
+              </div>
+            )}
+            {visitedTabs.has('raw') && (
+              <div
+                hidden={activeTab !== 'raw'}
+                className={styles.tabPanelSlot}
+                data-inspector-panel-active={activeTab === 'raw' ? 'true' : 'false'}
+              >
+                <div className={styles.rawWrap}>
+                  <div className={styles.rawToolbar}>
+                    <button
+                      type="button"
+                      className={styles.actionBtn}
+                      onClick={() => copyText(rawJsonText, 'Copied raw JSON')}
+                    >
+                      <CopyIcon size={13} />
+                      Copy JSON
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.actionBtn}
+                      onClick={handleDownloadJson}
+                    >
+                      <DownloadIcon size={13} />
+                      Download .json
+                    </button>
+                  </div>
+                  <pre className={styles.rawPre} data-inspector-scroll="true">
+                    {rawJsonText}
+                  </pre>
+                </div>
+              </div>
+            )}
+            {visitedTabs.has('diff') && (
+              <div
+                hidden={activeTab !== 'diff'}
+                className={styles.tabPanelSlot}
+                data-inspector-panel-active={activeTab === 'diff' ? 'true' : 'false'}
+              >
+                <DiffTab
+                  current={detail}
+                  pinnedRef={pinnedDiffRef}
+                  pinnedDetail={pinnedDetail}
+                  pinnedLoading={pinnedLoading}
+                  onPinCurrent={() =>
+                    pinForDiff({
+                      table: currentRef.table,
+                      hash: unsignedHash,
+                      label: itemName,
+                      icon: iconPath,
+                    })
+                  }
+                  onClearPin={clearPinnedDiff}
+                  onNavigateRef={(ref) => navigateWithFlush(ref, false)}
+                />
+              </div>
             )}
           </>
         ) : (
@@ -1211,3 +1274,5 @@ export function DefinitionInspector({
     </aside>
   );
 }
+
+export const DefinitionInspector = memo(DefinitionInspectorImpl);

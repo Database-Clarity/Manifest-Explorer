@@ -1,5 +1,5 @@
 /// <reference types="vite/client" />
-import type { ReactNode } from 'react';
+import { memo, type ReactNode } from 'react';
 import type { ManifestStatus } from '../types/manifest';
 import { useExplorerStore } from '../stores/explorer';
 import styles from './StatusBar.module.scss';
@@ -36,7 +36,7 @@ function resolveStatus(phase: ManifestStatus['phase']): StatusView {
   return { label: 'Ready', tone: 'ok' };
 }
 
-export function StatusBar({
+export const StatusBar = memo(function StatusBar({
   onCheckUpdates,
   onOpenHelp,
   appUpdateAvailable,
@@ -131,7 +131,26 @@ export function StatusBar({
         >
           Shortcuts (?)
         </button>
+        <span className={styles.actionDivider} aria-hidden="true" />
+        <a
+          className={styles.barLink}
+          href="https://d2clarity.com"
+          target="_blank"
+          rel="noopener noreferrer"
+          title="Clarity website (d2clarity.com)"
+        >
+          Clarity
+        </a>
+        <a
+          className={cx(styles.barLink, styles.barLinkAccent)}
+          href="https://ko-fi.com/D2Clarity"
+          target="_blank"
+          rel="noopener noreferrer"
+          title="Support Clarity on Ko-Fi"
+        >
+          Ko-Fi
+        </a>
       </div>
     </footer>
   );
-}
+});

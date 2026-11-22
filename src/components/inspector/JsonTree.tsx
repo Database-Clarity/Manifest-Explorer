@@ -1,9 +1,12 @@
 import {
+  memo,
   useCallback,
+  useDeferredValue,
   useEffect,
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type KeyboardEvent,
   type MouseEvent,
   type ReactNode,
@@ -186,7 +189,29 @@ function resolveObjectKeyRef(
   return resolvedRefs[nodeKey] ?? resolvedRefs[String(unsigned)] ?? null;
 }
 
-function matchesFilter(key: string, value: unknown, filterLower: string, depth = 0): boolean {
+/**
+ * Nested values are walked up to this many levels below the node the filter is
+ * invoked on. Object results are memoized per call depth in a per-filter-pass
+ * cache, so repeated renders (and shared subtrees) never re-walk deep values.
+ */
+const FILTER_MAX_DEPTH = 8;
+
+type FilterCache = ReadonlyArray<WeakMap<object, boolean>>;
+
+function createFilterCache(): FilterCache {
+  return Array.from(
+    { length: FILTER_MAX_DEPTH + 1 },
+    () => new WeakMap<object, boolean>(),
+  );
+}
+
+function matchesFilter(
+  key: string,
+  value: unknown,
+  filterLower: string,
+  depth: number,
+  cache: FilterCache,
+): boolean {
   if (!filterLower) {
     return true;
   }
@@ -202,27 +227,37 @@ function matchesFilter(key: string, value: unknown, filterLower: string, depth =
   if (typeof value === 'number' || typeof value === 'boolean') {
     return String(value).toLowerCase().includes(filterLower);
   }
-  if (depth > 8) {
+  if (typeof value !== 'object' || depth > FILTER_MAX_DEPTH) {
     return false;
   }
+  const bucket = cache[depth];
+  if (!bucket) {
+    return false;
+  }
+  const cached = bucket.get(value);
+  if (cached !== undefined) {
+    return cached;
+  }
+  let result = false;
   if (Array.isArray(value)) {
-    for (let i = 0; i < value.length; i += 1) {
-      if (matchesFilter(String(i), value[i], filterLower, depth + 1)) {
-        return true;
+    for (let index = 0; index < value.length; index += 1) {
+      if (matchesFilter(String(index), value[index], filterLower, depth + 1, cache)) {
+        result = true;
+        break;
       }
     }
-    return false;
-  }
-  if (typeof value === 'object') {
+  } else {
     const entries = Object.entries(value as Record<string, unknown>);
-    for (let i = 0; i < entries.length; i += 1) {
-      const entry = entries[i];
-      if (entry && matchesFilter(entry[0], entry[1], filterLower, depth + 1)) {
-        return true;
+    for (let index = 0; index < entries.length; index += 1) {
+      const entry = entries[index];
+      if (entry && matchesFilter(entry[0], entry[1], filterLower, depth + 1, cache)) {
+        result = true;
+        break;
       }
     }
   }
-  return false;
+  bucket.set(value, result);
+  return result;
 }
 
 interface FindMatch {
@@ -230,18 +265,18 @@ interface FindMatch {
   ancestorPaths: string[];
 }
 
+const NO_FIND_MATCHES: readonly FindMatch[] = [];
+
 function collectFindMatches(
   data: Record<string, unknown>,
   filterLower: string,
 ): FindMatch[] {
   const matches: FindMatch[] = [];
+  // A single mutable ancestor stack: `ancestors.slice()` only runs when a
+  // match is actually recorded, keeping large definitions O(N) instead of O(N²).
+  const ancestors: string[] = [];
 
-  const visit = (
-    nodeKey: string,
-    path: string,
-    value: unknown,
-    ancestorPaths: string[],
-  ): void => {
+  const visit = (nodeKey: string, path: string, value: unknown): void => {
     const keyMatches = nodeKey.toLowerCase().includes(filterLower);
     const valueMatches =
       value === null
@@ -253,22 +288,38 @@ function collectFindMatches(
             : false;
 
     if (keyMatches || valueMatches) {
-      matches.push({ path, ancestorPaths });
+      matches.push({ path, ancestorPaths: ancestors.slice() });
     }
 
     if (Array.isArray(value)) {
-      value.forEach((childValue, index) => {
+      ancestors.push(path);
+      for (let index = 0; index < value.length; index += 1) {
         const childKey = String(index);
-        visit(childKey, `${path}[${childKey}]`, childValue, [...ancestorPaths, path]);
-      });
+        visit(childKey, `${path}[${childKey}]`, value[index]);
+      }
+      ancestors.pop();
     } else if (typeof value === 'object' && value !== null) {
-      Object.entries(value as Record<string, unknown>).forEach(([childKey, childValue]) => {
-        visit(childKey, `${path}.${childKey}`, childValue, [...ancestorPaths, path]);
-      });
+      ancestors.push(path);
+      const entries = Object.entries(value as Record<string, unknown>);
+      for (let index = 0; index < entries.length; index += 1) {
+        const entry = entries[index];
+        if (!entry) {
+          continue;
+        }
+        visit(entry[0], `${path}.${entry[0]}`, entry[1]);
+      }
+      ancestors.pop();
     }
   };
 
-  Object.entries(data).forEach(([key, value]) => visit(key, key, value, []));
+  const rootEntries = Object.entries(data);
+  for (let index = 0; index < rootEntries.length; index += 1) {
+    const entry = rootEntries[index];
+    if (!entry) {
+      continue;
+    }
+    visit(entry[0], entry[0], entry[1]);
+  }
   return matches;
 }
 
@@ -349,6 +400,48 @@ function InlineImagePreview({
   );
 }
 
+/**
+ * Manual expand/collapse overrides live in a tiny external store so that
+ * toggling one node only re-renders that node (its descendants mount/unmount)
+ * instead of the whole tree. JsonTree still persists the full map through
+ * `onExpandedChange` and seeds it from `initialExpanded`.
+ */
+interface ExpansionStore {
+  readonly subscribe: (listener: () => void) => () => void;
+  readonly getSnapshot: (path: string) => boolean | undefined;
+  readonly set: (path: string, open: boolean) => Record<string, boolean>;
+  readonly reset: () => Record<string, boolean>;
+}
+
+function createExpansionStore(initial: Record<string, boolean>): ExpansionStore {
+  let expandedMap: Record<string, boolean> = { ...initial };
+  const listeners = new Set<() => void>();
+
+  const emit = (): void => {
+    listeners.forEach((listener) => listener());
+  };
+
+  return {
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    getSnapshot: (path) => expandedMap[path],
+    set: (path, open) => {
+      expandedMap = { ...expandedMap, [path]: open };
+      emit();
+      return expandedMap;
+    },
+    reset: () => {
+      expandedMap = {};
+      emit();
+      return expandedMap;
+    },
+  };
+}
+
 interface NodeProps {
   nodeKey: string;
   parentKey?: string;
@@ -361,7 +454,8 @@ interface NodeProps {
   activeMatchPath: string | null;
   expandedByFind: ReadonlySet<string>;
   expandGeneration: { mode: 'default' | 'expand' | 'collapse'; seq: number };
-  expandedMap: Record<string, boolean>;
+  filterCache: FilterCache;
+  expansionStore: ExpansionStore;
   onTogglePath: (path: string, nextOpen: boolean) => void;
   resolvedRefs: Record<string, ResolvedHashSummary>;
   onNavigateRef: (ref: DefinitionRef, inNewTab?: boolean) => void;
@@ -371,7 +465,7 @@ interface NodeProps {
   isArrayItem?: boolean;
 }
 
-function JsonNode({
+const JsonNode = memo(function JsonNode({
   nodeKey,
   parentKey,
   path,
@@ -383,7 +477,8 @@ function JsonNode({
   activeMatchPath,
   expandedByFind,
   expandGeneration,
-  expandedMap,
+  filterCache,
+  expansionStore,
   onTogglePath,
   resolvedRefs,
   onNavigateRef,
@@ -392,6 +487,11 @@ function JsonNode({
   imageScaling,
   isArrayItem = false,
 }: NodeProps): ReactNode {
+  const manualOpen = useSyncExternalStore(
+    expansionStore.subscribe,
+    () => expansionStore.getSnapshot(path),
+    () => expansionStore.getSnapshot(path),
+  );
   const selfKeyMatches = filterLower.length > 0 && nodeKey.toLowerCase().includes(filterLower);
   const preserveSubtree =
     searchMode === 'filter' && filterLower.length > 0 && (ancestorMatched || selfKeyMatches);
@@ -399,8 +499,6 @@ function JsonNode({
   const defaultExpanded =
     depth === 0 &&
     (nodeKey === 'displayProperties' || nodeKey === 'inventory' || nodeKey === 'equippingBlock');
-
-  const manualOpen = expandedMap[path] ?? null;
 
   const isObject = typeof value === 'object' && value !== null;
   const isArray = Array.isArray(value);
@@ -410,13 +508,13 @@ function JsonNode({
     !selfKeyMatches &&
     !ancestorMatched &&
     isObject &&
-    matchesFilter(nodeKey, value, filterLower);
+    matchesFilter(nodeKey, value, filterLower, 0, filterCache);
   const isAutoExpandedForSearch =
     searchMode === 'filter'
       ? filterLower.length > 0 && (selfKeyMatches || hasDescendantMatch)
       : searchMode === 'find' && expandedByFind.has(path);
   const isExpanded =
-    manualOpen !== null
+    manualOpen !== undefined
       ? manualOpen
       : isAutoExpandedForSearch
         ? true
@@ -427,23 +525,32 @@ function JsonNode({
             : defaultExpanded;
 
   if (isObject) {
-    const entries = isArray
-      ? (value as unknown[]).map((v, idx) => [String(idx), v] as const)
-      : Object.entries(value as Record<string, unknown>);
+    const entries = isExpanded
+      ? isArray
+        ? (value as unknown[]).map((childValue, index) => [String(index), childValue] as const)
+        : Object.entries(value as Record<string, unknown>)
+      : null;
     const filteredEntries =
-      searchMode === 'filter' && filterLower.length > 0 && !preserveSubtree
-        ? entries.filter(([k, v]) => matchesFilter(k, v, filterLower))
-        : entries;
+      entries === null
+        ? null
+        : searchMode === 'filter' && filterLower.length > 0 && !preserveSubtree
+          ? entries.filter(([childKey, childValue]) =>
+              matchesFilter(childKey, childValue, filterLower, 0, filterCache),
+            )
+          : entries;
 
     const swatch = !isArray ? asColorSwatch(value) : null;
     const objectKeyRef = isArray
       ? null
       : resolveObjectKeyRef(nodeKey, parentKey, resolvedRefs);
-    const count = entries.length;
-    const peek = !isExpanded && count > 0 ? getCollapsedPeek(value as Record<string, unknown>, isArray) : null;
-    const summary = isArray
-      ? `[${count}]`
-      : `{${count}}`;
+    const count = isArray
+      ? (value as unknown[]).length
+      : Object.keys(value as Record<string, unknown>).length;
+    const peek =
+      !isExpanded && count > 0
+        ? getCollapsedPeek(value as Record<string, unknown>, isArray)
+        : null;
+    const summary = isArray ? `[${count}]` : `{${count}}`;
 
     const handleObjectRefClick = (event: MouseEvent<HTMLButtonElement>): void => {
       if (!objectKeyRef) return;
@@ -543,7 +650,7 @@ function JsonNode({
           </div>
         </div>
 
-        {isExpanded && filteredEntries.length > 0 && (
+        {isExpanded && filteredEntries !== null && filteredEntries.length > 0 && (
           <div className={styles.children}>
             {filteredEntries.map(([childKey, childValue]) => {
               const childPath = isArray ? `${path}[${childKey}]` : `${path}.${childKey}`;
@@ -561,7 +668,8 @@ function JsonNode({
                   activeMatchPath={activeMatchPath}
                   expandedByFind={expandedByFind}
                   expandGeneration={expandGeneration}
-                  expandedMap={expandedMap}
+                  filterCache={filterCache}
+                  expansionStore={expansionStore}
                   onTogglePath={onTogglePath}
                   resolvedRefs={resolvedRefs}
                   onNavigateRef={onNavigateRef}
@@ -732,9 +840,11 @@ function JsonNode({
       )}
     </div>
   );
-}
+});
 
-export function JsonTree({
+const FILTER_PERSIST_DEBOUNCE_MS = 200;
+
+export const JsonTree = memo(function JsonTree({
   data,
   resolvedRefs,
   onNavigateRef,
@@ -748,44 +858,126 @@ export function JsonTree({
   const [filter, setFilter] = useState(initialFilter ?? '');
   const [searchMode, setSearchMode] = useState<'filter' | 'find'>('filter');
   const [activeMatchIndex, setActiveMatchIndex] = useState(0);
-  const [expandedMap, setExpandedMap] = useState<Record<string, boolean>>(
-    () => initialExpanded ?? {},
-  );
   const [expandGeneration, setExpandGeneration] = useState<{
     mode: 'default' | 'expand' | 'collapse';
     seq: number;
   }>({ mode: 'default', seq: 0 });
   const [lightbox, setLightbox] = useState<{ url: string; path: string } | null>(null);
   const treeRef = useRef<HTMLDivElement>(null);
+  const expansionStore = useMemo(() => createExpansionStore(initialExpanded ?? {}), []);
+
+  // Keep parent callbacks in refs so every callback handed to JsonNode stays
+  // identity-stable for the lifetime of the tree (crucial for React.memo).
+  const onFilterChangeRef = useRef(onFilterChange);
+  const onNavigateRefRef = useRef(onNavigateRef);
+  const onCopyRef = useRef(onCopy);
+  const onExpandedChangeRef = useRef(onExpandedChange);
 
   useEffect(() => {
-    setFilter(initialFilter ?? '');
-  }, [initialFilter]);
+    onFilterChangeRef.current = onFilterChange;
+    onNavigateRefRef.current = onNavigateRef;
+    onCopyRef.current = onCopy;
+    onExpandedChangeRef.current = onExpandedChange;
+  }, [onCopy, onExpandedChange, onFilterChange, onNavigateRef]);
+
+  // Filter persistence into Zustand history is debounced; the input itself
+  // updates synchronously so typing never waits on the store cascade.
+  const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingFilterPersistRef = useRef<string | null>(null);
+  const lastPersistedFilterRef = useRef(initialFilter ?? '');
+
+  const persistPendingFilter = useCallback((): void => {
+    const pending = pendingFilterPersistRef.current;
+    if (pending === null) {
+      return;
+    }
+    pendingFilterPersistRef.current = null;
+    if (pending === lastPersistedFilterRef.current) {
+      return;
+    }
+    lastPersistedFilterRef.current = pending;
+    onFilterChangeRef.current?.(pending);
+  }, []);
+
+  const clearPersistTimer = useCallback((): void => {
+    if (persistTimerRef.current !== null) {
+      clearTimeout(persistTimerRef.current);
+      persistTimerRef.current = null;
+    }
+  }, []);
+
+  const flushFilterPersist = useCallback((): void => {
+    clearPersistTimer();
+    persistPendingFilter();
+  }, [clearPersistTimer, persistPendingFilter]);
+
+  // Flush any debounced value when the tree unmounts (tab switch, new hash…).
+  useEffect(() => flushFilterPersist, [flushFilterPersist]);
+
+  const scheduleFilterPersist = useCallback(
+    (next: string): void => {
+      pendingFilterPersistRef.current = next;
+      clearPersistTimer();
+      persistTimerRef.current = setTimeout(() => {
+        persistTimerRef.current = null;
+        persistPendingFilter();
+      }, FILTER_PERSIST_DEBOUNCE_MS);
+    },
+    [clearPersistTimer, persistPendingFilter],
+  );
+
+  useEffect(() => {
+    const incoming = initialFilter ?? '';
+    // Our own debounced persistence round-trips through the parent; never let
+    // that echo clobber newer text the user is already typing.
+    if (incoming === lastPersistedFilterRef.current) {
+      return;
+    }
+    lastPersistedFilterRef.current = incoming;
+    pendingFilterPersistRef.current = null;
+    clearPersistTimer();
+    setFilter(incoming);
+  }, [clearPersistTimer, initialFilter]);
 
   const handleFilterChange = useCallback(
     (next: string) => {
       setFilter(next);
-      onFilterChange?.(next);
+      scheduleFilterPersist(next);
     },
-    [onFilterChange],
+    [scheduleFilterPersist],
   );
 
   const handleTogglePath = useCallback(
     (targetPath: string, nextOpen: boolean) => {
-      setExpandedMap((prev) => {
-        const next = { ...prev, [targetPath]: nextOpen };
-        onExpandedChange?.(next);
-        return next;
-      });
+      const next = expansionStore.set(targetPath, nextOpen);
+      onExpandedChangeRef.current?.(next);
     },
-    [onExpandedChange],
+    [expansionStore],
+  );
+
+  const resetExpansion = useCallback(
+    (mode: 'expand' | 'collapse'): void => {
+      const next = expansionStore.reset();
+      onExpandedChangeRef.current?.(next);
+      setExpandGeneration((prev) => ({ mode, seq: prev.seq + 1 }));
+    },
+    [expansionStore],
   );
 
   const filterLower = filter.trim().toLowerCase();
+  // Defer the (potentially expensive) tree/find recompute so the controlled
+  // input always commits immediately, even on 10k-line definitions.
+  const deferredFilterLower = useDeferredValue(filterLower);
+  // One boolean cache per call depth, recreated per filter pass: JsonNode never
+  // re-walks the same deep subtree twice for the same filter.
+  const filterCache = useMemo(() => createFilterCache(), [deferredFilterLower]);
 
   const findMatches = useMemo(
-    () => (filterLower ? collectFindMatches(data, filterLower) : []),
-    [data, filterLower],
+    () =>
+      searchMode === 'find' && deferredFilterLower
+        ? collectFindMatches(data, deferredFilterLower)
+        : NO_FIND_MATCHES,
+    [data, deferredFilterLower, searchMode],
   );
   const clampedActiveMatchIndex =
     findMatches.length === 0
@@ -807,7 +999,7 @@ export function JsonTree({
 
   useEffect(() => {
     setActiveMatchIndex(0);
-  }, [filterLower, data]);
+  }, [deferredFilterLower, data]);
 
   useEffect(() => {
     if (searchMode !== 'find' || activeMatchPath === null) return;
@@ -819,11 +1011,13 @@ export function JsonTree({
 
   const rootEntries = useMemo(() => {
     const all = Object.entries(data);
-    if (searchMode === 'find' || !filterLower) {
+    if (searchMode === 'find' || !deferredFilterLower) {
       return all;
     }
-    return all.filter(([key, val]) => matchesFilter(key, val, filterLower));
-  }, [data, filterLower, searchMode]);
+    return all.filter(([key, value]) =>
+      matchesFilter(key, value, deferredFilterLower, 0, filterCache),
+    );
+  }, [data, deferredFilterLower, filterCache, searchMode]);
 
   const stepMatch = useCallback(
     (direction: -1 | 1) => {
@@ -839,6 +1033,7 @@ export function JsonTree({
     if (event.key === 'Escape') {
       if (filter.length > 0) {
         handleFilterChange('');
+        flushFilterPersist();
       } else {
         event.currentTarget.blur();
       }
@@ -858,12 +1053,19 @@ export function JsonTree({
     setLightbox({ url, path });
   }, []);
 
-  const handleCopy = useCallback(
-    (text: string, label: string) => {
-      onCopy(text, label);
+  const handleNavigateRef = useCallback(
+    (ref: DefinitionRef, inNewTab?: boolean): void => {
+      // Persist any pending filter while this entry is still the active one;
+      // the tree key changes (and unmounts) as soon as navigation lands.
+      flushFilterPersist();
+      onNavigateRefRef.current(ref, inNewTab);
     },
-    [onCopy],
+    [flushFilterPersist],
   );
+
+  const handleCopy = useCallback((text: string, label: string): void => {
+    onCopyRef.current(text, label);
+  }, []);
 
   return (
     <div className={styles.wrapper}>
@@ -873,6 +1075,7 @@ export function JsonTree({
           className={styles.filterInput}
           value={filter}
           onChange={(e) => handleFilterChange(e.target.value)}
+          onBlur={flushFilterPersist}
           onKeyDown={handleSearchKeyDown}
           placeholder={searchMode === 'filter' ? 'Filter keys or values…' : 'Find in JSON…'}
           aria-label={searchMode === 'filter' ? 'Filter JSON keys or values' : 'Find in JSON'}
@@ -897,7 +1100,7 @@ export function JsonTree({
             Find
           </button>
         </div>
-        {searchMode === 'find' && filterLower.length > 0 && (
+        {searchMode === 'find' && deferredFilterLower.length > 0 && (
           <div className={styles.findControls} role="group" aria-label="Find matches">
             <button
               type="button"
@@ -929,22 +1132,14 @@ export function JsonTree({
         <button
           type="button"
           className={styles.toolBtn}
-          onClick={() => {
-            setExpandedMap({});
-            onExpandedChange?.({});
-            setExpandGeneration((prev) => ({ mode: 'expand', seq: prev.seq + 1 }));
-          }}
+          onClick={() => resetExpansion('expand')}
         >
           Expand
         </button>
         <button
           type="button"
           className={styles.toolBtn}
-          onClick={() => {
-            setExpandedMap({});
-            onExpandedChange?.({});
-            setExpandGeneration((prev) => ({ mode: 'collapse', seq: prev.seq + 1 }));
-          }}
+          onClick={() => resetExpansion('collapse')}
         >
           Collapse
         </button>
@@ -967,15 +1162,16 @@ export function JsonTree({
               path={key}
               value={val}
               depth={0}
-              filterLower={filterLower}
+              filterLower={deferredFilterLower}
               searchMode={searchMode}
               activeMatchPath={activeMatchPath}
               expandedByFind={expandedByFind}
               expandGeneration={expandGeneration}
-              expandedMap={expandedMap}
+              filterCache={filterCache}
+              expansionStore={expansionStore}
               onTogglePath={handleTogglePath}
               resolvedRefs={resolvedRefs}
-              onNavigateRef={onNavigateRef}
+              onNavigateRef={handleNavigateRef}
               onCopy={handleCopy}
               onOpenLightbox={handleOpenLightbox}
               imageScaling={imageScaling}
@@ -995,4 +1191,4 @@ export function JsonTree({
       )}
     </div>
   );
-}
+});

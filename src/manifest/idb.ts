@@ -134,19 +134,27 @@ export async function getSearchIndex(
   }
 }
 
+/**
+ * Commit a search-index snapshot. Resolves `true` only after the readwrite
+ * transaction finished (`tx.oncomplete`), i.e. when the snapshot is durable
+ * enough for an immediate reload to read back. Failures resolve `false` so the
+ * worker can retry instead of reporting a cache that was never written.
+ */
 export async function putSearchIndex(
   locale: string,
   versionSignature: string,
   cache: SearchIndexCache,
-): Promise<void> {
+): Promise<boolean> {
   const db = await openDb();
-  if (!db) return;
+  if (!db) return false;
   try {
     const tx = db.transaction(STORE_SEARCH_INDEX, 'readwrite');
     tx.objectStore(STORE_SEARCH_INDEX).put(cache, `${locale}:${versionSignature}`);
     await txComplete(tx);
-  } catch {
-    // Degrade silently.
+    return true;
+  } catch (error) {
+    console.error('[manifest] Failed to commit the search index to IndexedDB:', error);
+    return false;
   }
 }
 

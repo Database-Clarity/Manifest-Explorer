@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import type { ChangelogEntry } from '../data/changelog';
-import { ChevronDownIcon, CloseIcon } from '../ui/Icons';
+import { ChevronDownIcon, CloseIcon, ExternalLinkIcon, HeartIcon, ManifestMark } from '../ui/Icons';
 import styles from './ChangelogDialog.module.scss';
 
 export interface ChangelogDialogProps {
@@ -93,10 +93,35 @@ export function ChangelogDialog({
       >
         <div className={styles.header}>
           <div className={styles.heading}>
-            <span className={styles.eyebrow}>Manifest Explorer</span>
+            <span className={styles.eyebrow}>
+              <ManifestMark size={18} />
+              <span>Clarity · Manifest Explorer</span>
+            </span>
             <h2 id={titleId} className={styles.title}>
               What’s new
             </h2>
+          </div>
+          <div className={styles.headerLinks}>
+            <a
+              className={styles.headerLink}
+              href="https://d2clarity.com"
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Visit the Clarity website"
+            >
+              <span>d2clarity.com</span>
+              <ExternalLinkIcon size={10} className={styles.headerLinkIcon} />
+            </a>
+            <a
+              className={`${styles.headerLink} ${styles.kofiLink}`}
+              href="https://ko-fi.com/D2Clarity"
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Support Clarity on Ko-Fi"
+            >
+              <HeartIcon size={11} className={styles.headerLinkIcon} />
+              <span>Support on Ko-Fi</span>
+            </a>
           </div>
           <button
             ref={closeRef}

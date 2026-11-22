@@ -424,7 +424,10 @@ const GridCell = memo(function GridCell({
  * result array with a fixed rem-derived height so 38k+ definitions scroll
  * without layout work. Only the visible window (plus overscan) is mounted.
  */
-export function ResultsPane({ onOpenItem, onRetryBoot }: ResultsPaneProps): ReactNode {
+export const ResultsPane = memo(function ResultsPane({
+  onOpenItem,
+  onRetryBoot,
+}: ResultsPaneProps): ReactNode {
   const results = useExplorerStore((state) => state.results);
   const totalMatches = useExplorerStore((state) => state.totalMatches);
   const searchDurationMs = useExplorerStore((state) => state.searchDurationMs);
@@ -440,8 +443,14 @@ export function ResultsPane({ onOpenItem, onRetryBoot }: ResultsPaneProps): Reac
   const setQuery = useExplorerStore((state) => state.setQuery);
   const setTableFilter = useExplorerStore((state) => state.setTableFilter);
   const resetFilters = useExplorerStore((state) => state.resetFilters);
-  const history = useExplorerStore((state) => state.history);
-  const historyIndex = useExplorerStore((state) => state.historyIndex);
+  // Primitive view of the active inspector tab. Subscribing to the whole
+  // `history` array would re-render this pane on every scroll-position or
+  // expanded-node save the inspector writes back into the current entry; the
+  // string identity only changes when the open `table:hash` itself changes.
+  const activeEntryKey = useExplorerStore((state) => {
+    const entry = state.history[state.historyIndex];
+    return entry ? `${entry.table}:${entry.hash}` : '';
+  });
 
   const sortMode = useSettingsStore((state) => state.sortMode);
   const setSortMode = useSettingsStore((state) => state.setSortMode);
@@ -639,8 +648,6 @@ export function ResultsPane({ onOpenItem, onRetryBoot }: ResultsPaneProps): Reac
     ? `results-option-${clampedSelectedIndex}`
     : undefined;
 
-  const activeRef = historyIndex >= 0 ? history[historyIndex] : undefined;
-
   const handleViewModeChange = useCallback(
     (mode: ViewMode) => {
       if (isNarrowPhone) {
@@ -739,20 +746,17 @@ export function ResultsPane({ onOpenItem, onRetryBoot }: ResultsPaneProps): Reac
       for (let index = firstRow; index < windowEnd; index += 1) {
         const item = results[index];
         if (!item) continue;
+        const itemKey = resultKey(item);
         rows.push(
           <ListRow
-            key={resultKey(item)}
+            key={itemKey}
             item={item}
             index={index}
             setSize={results.length}
             rowHeight={rowHeight}
-            active={
-              activeRef !== undefined &&
-              activeRef.table === item.table &&
-              activeRef.hash === item.hash
-            }
+            active={itemKey === activeEntryKey}
             cursor={index === clampedSelectedIndex}
-            collected={collectedKeys.has(resultKey(item))}
+            collected={collectedKeys.has(itemKey)}
             collectMode={collectMode}
             showTableColumn={filters.table === 'all' && viewportWidth >= 520}
             artifactPerksCategory={filters.table === 'ArtifactPerks'}
@@ -771,20 +775,17 @@ export function ResultsPane({ onOpenItem, onRetryBoot }: ResultsPaneProps): Reac
           const index = start + column;
           const item = results[index];
           if (!item) break;
+          const itemKey = resultKey(item);
           cells.push(
             <GridCell
-              key={resultKey(item)}
+              key={itemKey}
               item={item}
               index={index}
               setSize={results.length}
               rowHeight={rowHeight}
-              active={
-                activeRef !== undefined &&
-                activeRef.table === item.table &&
-                activeRef.hash === item.hash
-              }
+              active={itemKey === activeEntryKey}
               cursor={index === clampedSelectedIndex}
-              collected={collectedKeys.has(resultKey(item))}
+              collected={collectedKeys.has(itemKey)}
               collectMode={collectMode}
               showTableColumn={false}
               artifactPerksCategory={filters.table === 'ArtifactPerks'}
@@ -1069,4 +1070,4 @@ export function ResultsPane({ onOpenItem, onRetryBoot }: ResultsPaneProps): Reac
       </div>
     </section>
   );
-}
+});

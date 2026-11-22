@@ -44,6 +44,7 @@ import {
   CORE_BOOT_TABLES,
   REVERSE_REF_PRIORITY_TABLES,
   SECONDARY_INDEX_TABLES,
+  canonicalTableName,
   extractTableEntrySummary,
   getFriendlyTableName,
   getShortTableName,
@@ -78,6 +79,7 @@ import {
 // ---------------------------------------------------------------------------
 
 const INVENTORY_ITEM_TABLE = 'DestinyInventoryItemDefinition';
+const INVENTORY_ITEM_LITE_TABLE = 'DestinyInventoryItemLiteDefinition';
 const FULL_ITEM_LRU_LIMIT = 256;
 const STREAM_FLUSH_ENTRIES = 2500;
 const STREAM_FLUSH_BYTES = 10_000_000;
@@ -302,6 +304,59 @@ const watermarkSeasonByIcon = new Map<string, number>();
 const seasonArtifactByNumber = new Map<number, { hash: number; name: string; icon?: string }>();
 let latestSeasonNumber = 0;
 
+/**
+ * Tables whose loaded data feeds cross-table enrichment: season metadata comes
+ * from DestinySeasonDefinition, active artifact membership from
+ * DestinyArtifactDefinition, collectible sources from DestinyCollectibleDefinition,
+ * and artifact display identities from the inventory item tables. Loading one of
+ * these invalidates enrichment for every entry, so one full pass is required.
+ */
+const ENRICHMENT_DEPENDENCY_TABLES: ReadonlySet<string> = new Set([
+  INVENTORY_ITEM_TABLE,
+  INVENTORY_ITEM_LITE_TABLE,
+  'DestinySeasonDefinition',
+  'DestinyArtifactDefinition',
+  'DestinyCollectibleDefinition',
+]);
+
+export function isEnrichmentDependencyTable(table: string): boolean {
+  return ENRICHMENT_DEPENDENCY_TABLES.has(table);
+}
+
+// ---------------------------------------------------------------------------
+// Search index persistence coalescing
+// ---------------------------------------------------------------------------
+
+/** Persist at most once per this many newly indexed tables during Stage 3. */
+export const SEARCH_INDEX_PERSIST_TABLE_BATCH = 18;
+/** ... or once this many milliseconds have elapsed since the last write. */
+export const SEARCH_INDEX_PERSIST_INTERVAL_MS = 4_000;
+
+export function shouldFlushSearchIndex(
+  tablesSincePersist: number,
+  lastPersistAt: number,
+  now: number,
+): boolean {
+  return (
+    tablesSincePersist >= SEARCH_INDEX_PERSIST_TABLE_BATCH ||
+    now - lastPersistAt >= SEARCH_INDEX_PERSIST_INTERVAL_MS
+  );
+}
+
+/** True when the next IndexedDB write needs a full enrichment pass first. */
+let fullEnrichmentPending = true;
+/** True when in-memory entries changed since the last completed write. */
+let indexDirty = false;
+/** Coalescing bookkeeping for the expensive full-index write. */
+let tablesSincePersist = 0;
+let lastPersistAt = 0;
+
+/**
+ * Number of write attempts a `ready` transition makes before giving up on a
+ * dirty index (and logging it) instead of hanging the UI forever.
+ */
+const SEARCH_INDEX_PERSIST_ATTEMPTS = 3;
+
 type WorkerScope = {
   postMessage(message: unknown): void;
   onmessage: ((event: MessageEvent) => void) | null;
@@ -474,6 +529,10 @@ function currentStatus(): ManifestStatus {
 const EMIT_THROTTLE_MS = 300;
 let loadAllInProgress = false;
 
+function isBackgroundIndexing(): boolean {
+  return state.phase === 'indexing-secondary' || loadAllInProgress;
+}
+
 interface EmitThrottle {
   timer: ReturnType<typeof setTimeout> | null;
   last: number;
@@ -483,7 +542,7 @@ const statusThrottle: EmitThrottle = { timer: null, last: 0 };
 const tablesThrottle: EmitThrottle = { timer: null, last: 0 };
 
 function shouldThrottleEmits(): boolean {
-  return state.phase === 'indexing-secondary' || loadAllInProgress;
+  return isBackgroundIndexing();
 }
 
 function throttleEmit(throttle: EmitThrottle, emit: () => void, force: boolean): void {
@@ -526,6 +585,9 @@ function emitTables(force = false): void {
 }
 
 function currentCatalog(): FilterCatalog {
+  // Season/source counts and labels are derived from enriched entries.
+  ensureIndexEnriched();
+
   const categories: FilterOption[] = [...categoryNameMap.entries()]
     .map(([value, label]) => ({ value, label }))
     .sort((a, b) => a.label.localeCompare(b.label));
@@ -802,85 +864,132 @@ function collectSourceTagsForEntry(
   return tags.size > 0 ? [...tags] : undefined;
 }
 
+interface EnrichmentLookups {
+  d2ai: ReturnType<typeof getD2aiMappings>;
+  collectibles: Record<string, Record<string, unknown>> | undefined;
+}
+
+function currentEnrichmentLookups(): EnrichmentLookups {
+  return {
+    d2ai: getD2aiMappings(),
+    collectibles: tableDataMap.get('DestinyCollectibleDefinition'),
+  };
+}
+
+/**
+ * Fill in the per-entry portions of cross-table enrichment: season number (via
+ * watermark, item hash, collectible source, season hash or trait ids), crafting
+ * and artifact membership, and collectible source strings. Idempotent and
+ * order-independent, so it works whether the item or the referenced table
+ * loads first.
+ */
+function enrichEntry(entry: SearchIndexEntry, lookups: EnrichmentLookups): void {
+  const { d2ai, collectibles } = lookups;
+
+  // Resolve season number in priority order (existing value wins).
+  if (entry.seasonNumber === undefined && entry.iconWatermark) {
+    const fromWatermark = d2ai.watermarkToSeason[entry.iconWatermark];
+    if (fromWatermark !== undefined) entry.seasonNumber = fromWatermark;
+  }
+  if (entry.seasonNumber === undefined && entry.table === INVENTORY_ITEM_TABLE) {
+    const fromItemHash = d2ai.itemHashToSeason[String(entry.hash)];
+    if (fromItemHash !== undefined) entry.seasonNumber = fromItemHash;
+  }
+  if (entry.seasonNumber === undefined && entry.collectibleHash !== undefined && collectibles) {
+    const collectible = collectibles[String(entry.collectibleHash)];
+    const sourceHash = asUnsigned(collectible?.sourceHash);
+    if (sourceHash !== undefined) {
+      const fromSource = d2ai.sourceHashToSeason[String(sourceHash)];
+      if (fromSource !== undefined) entry.seasonNumber = fromSource;
+    }
+  }
+  if (entry.seasonNumber === undefined && entry.seasonHash !== undefined) {
+    const number = seasonNumberByHash.get(entry.seasonHash);
+    if (number !== undefined) entry.seasonNumber = number;
+  }
+  if (entry.seasonNumber === undefined) {
+    const fromTrait = seasonNumberFromTraits(entry.traitIds);
+    if (fromTrait !== undefined) entry.seasonNumber = fromTrait;
+  }
+  if (entry.seasonNumber === undefined && entry.iconWatermark) {
+    const number = watermarkSeasonByIcon.get(entry.iconWatermark);
+    if (number !== undefined) entry.seasonNumber = number;
+  }
+
+  if (entry.table === INVENTORY_ITEM_TABLE && d2ai.craftableHashes.has(entry.hash)) {
+    entry.isCraftable = true;
+  }
+
+  if (artifactItemHashes.has(entry.hash)) entry.isArtifact = true;
+
+  if (entry.sourceLower === undefined && entry.collectibleHash !== undefined && collectibles) {
+    const collectible = collectibles[String(entry.collectibleHash)];
+    const source = asString(collectible?.sourceString) ?? asString(collectible?.displaySource);
+    if (source) entry.sourceLower = normalizeSearchText(source);
+  }
+
+  const sourceTags = collectSourceTagsForEntry(entry, d2ai, collectibles);
+  if (sourceTags && sourceTags.length > 0) entry.sourceTags = sourceTags;
+  else entry.sourceTags = undefined;
+}
+
+/**
+ * Attach parent artifact metadata to an artifact perk. Requires season metadata
+ * (seasonArtifactByNumber / latestSeasonNumber) to be settled first.
+ */
+function attachParentArtifact(entry: SearchIndexEntry): void {
+  if (entry.isArtifactPerk !== true) return;
+  let parent =
+    entry.seasonNumber !== undefined ? seasonArtifactByNumber.get(entry.seasonNumber) : undefined;
+  if (parent === undefined && artifactItemHashes.has(entry.hash)) {
+    parent = seasonArtifactByNumber.get(latestSeasonNumber);
+  }
+  if (parent) {
+    entry.parentArtifactHash = parent.hash;
+    entry.parentArtifactName = parent.name;
+    if (parent.icon) entry.parentArtifactIcon = parent.icon;
+  }
+}
+
 /**
  * Fill in cross-table metadata on the in-memory search entries before they are
- * persisted: season numbers (via seasonHash, watermark, or trait ids), artifact
- * membership, and collectible source strings. Idempotent and order-independent,
- * so it works whether InventoryItem or the referenced tables load first.
+ * persisted. Runs a full pass over the index, so it is only invoked when a
+ * dependency table changed (or on the first persist), never once per
+ * background table.
  */
 function enrichIndexedEntries(): void {
   rebuildSeasonMetadata();
   rebuildArtifactHashes();
 
-  const d2ai = getD2aiMappings();
-  const collectibles = tableDataMap.get('DestinyCollectibleDefinition');
-
-  for (const entry of entries) {
-    // Resolve season number in priority order (existing value wins).
-    if (entry.seasonNumber === undefined && entry.iconWatermark) {
-      const fromWatermark = d2ai.watermarkToSeason[entry.iconWatermark];
-      if (fromWatermark !== undefined) entry.seasonNumber = fromWatermark;
-    }
-    if (entry.seasonNumber === undefined && entry.table === INVENTORY_ITEM_TABLE) {
-      const fromItemHash = d2ai.itemHashToSeason[String(entry.hash)];
-      if (fromItemHash !== undefined) entry.seasonNumber = fromItemHash;
-    }
-    if (entry.seasonNumber === undefined && entry.collectibleHash !== undefined && collectibles) {
-      const collectible = collectibles[String(entry.collectibleHash)];
-      const sourceHash = asUnsigned(collectible?.sourceHash);
-      if (sourceHash !== undefined) {
-        const fromSource = d2ai.sourceHashToSeason[String(sourceHash)];
-        if (fromSource !== undefined) entry.seasonNumber = fromSource;
-      }
-    }
-    if (entry.seasonNumber === undefined && entry.seasonHash !== undefined) {
-      const number = seasonNumberByHash.get(entry.seasonHash);
-      if (number !== undefined) entry.seasonNumber = number;
-    }
-    if (entry.seasonNumber === undefined) {
-      const fromTrait = seasonNumberFromTraits(entry.traitIds);
-      if (fromTrait !== undefined) entry.seasonNumber = fromTrait;
-    }
-    if (entry.seasonNumber === undefined && entry.iconWatermark) {
-      const number = watermarkSeasonByIcon.get(entry.iconWatermark);
-      if (number !== undefined) entry.seasonNumber = number;
-    }
-
-    if (entry.table === INVENTORY_ITEM_TABLE && d2ai.craftableHashes.has(entry.hash)) {
-      entry.isCraftable = true;
-    }
-
-    if (artifactItemHashes.has(entry.hash)) entry.isArtifact = true;
-
-    if (entry.sourceLower === undefined && entry.collectibleHash !== undefined && collectibles) {
-      const collectible = collectibles[String(entry.collectibleHash)];
-      const source = asString(collectible?.sourceString) ?? asString(collectible?.displaySource);
-      if (source) entry.sourceLower = normalizeSearchText(source);
-    }
-
-    const sourceTags = collectSourceTagsForEntry(entry, d2ai, collectibles);
-    if (sourceTags && sourceTags.length > 0) entry.sourceTags = sourceTags;
-    else entry.sourceTags = undefined;
-  }
-
+  const lookups = currentEnrichmentLookups();
+  for (const entry of entries) enrichEntry(entry, lookups);
   recomputeLatestSeasonFromEntries();
 
   // Second pass: attach parent artifact metadata once season numbers are settled.
-  for (const entry of entries) {
-    if (entry.isArtifactPerk !== true) continue;
-    let parent =
-      entry.seasonNumber !== undefined ? seasonArtifactByNumber.get(entry.seasonNumber) : undefined;
-    if (parent === undefined && artifactItemHashes.has(entry.hash)) {
-      parent = seasonArtifactByNumber.get(latestSeasonNumber);
-    }
-    if (parent) {
-      entry.parentArtifactHash = parent.hash;
-      entry.parentArtifactName = parent.name;
-      if (parent.icon) entry.parentArtifactIcon = parent.icon;
-    }
-  }
+  for (const entry of entries) attachParentArtifact(entry);
 
   syncArtifactPerksTableStatus();
+
+  fullEnrichmentPending = false;
+  indexDirty = true;
+}
+
+/**
+ * Enrich only the entries a background table just added. Used for tables that
+ * have no cross-table enrichment impact, so Stage 3 never rescans all ~277k
+ * entries per table.
+ */
+function enrichNewEntries(newEntries: readonly SearchIndexEntry[]): void {
+  if (newEntries.length === 0) return;
+  const lookups = currentEnrichmentLookups();
+  for (const entry of newEntries) {
+    enrichEntry(entry, lookups);
+    if (entry.seasonNumber !== undefined && entry.seasonNumber > latestSeasonNumber) {
+      latestSeasonNumber = entry.seasonNumber;
+    }
+  }
+  for (const entry of newEntries) attachParentArtifact(entry);
+  addArtifactPerksToStatus(newEntries);
 }
 
 function recomputeLatestSeasonFromEntries(): void {
@@ -895,12 +1004,7 @@ function recomputeLatestSeasonFromEntries(): void {
   }
 }
 
-/** Maintain the virtual ArtifactPerks table status from the indexed entries. */
-function syncArtifactPerksTableStatus(): void {
-  let count = 0;
-  for (const entry of entries) {
-    if (entry.isArtifactPerk === true && entry.name) count += 1;
-  }
+function setArtifactPerksTableStatus(count: number): void {
   tableStatuses.set(ARTIFACT_PERKS_TABLE, {
     name: ARTIFACT_PERKS_TABLE,
     shortName: 'Artifact Perks',
@@ -913,13 +1017,126 @@ function syncArtifactPerksTableStatus(): void {
   });
 }
 
-async function persistSearchIndex(): Promise<void> {
+/** Maintain the virtual ArtifactPerks table status from the indexed entries. */
+function syncArtifactPerksTableStatus(): void {
+  let count = 0;
+  for (const entry of entries) {
+    if (entry.isArtifactPerk === true && entry.name) count += 1;
+  }
+  setArtifactPerksTableStatus(count);
+}
+
+/** Fold freshly indexed entries into the ArtifactPerks count without a rescan. */
+function addArtifactPerksToStatus(newEntries: readonly SearchIndexEntry[]): void {
+  let added = 0;
+  for (const entry of newEntries) {
+    if (entry.isArtifactPerk === true && entry.name) added += 1;
+  }
+  if (added === 0) return;
+  const status = tableStatuses.get(ARTIFACT_PERKS_TABLE);
+  if (!status) {
+    syncArtifactPerksTableStatus();
+    return;
+  }
+  setArtifactPerksTableStatus(status.count + added);
+}
+
+/**
+ * Ensure every indexed entry has current cross-table metadata. At most one full
+ * pass runs per enrichment dependency change.
+ */
+function ensureIndexEnriched(): void {
+  if (!fullEnrichmentPending) return;
   enrichIndexedEntries();
-  await putSearchIndex(state.locale, state.versionSignature, {
-    entries,
-    indexedTables: [...indexedTables],
-    schemaVersion: SEARCH_INDEX_SCHEMA_VERSION,
-  });
+}
+
+/**
+ * Coalesce async writes into at most one in-flight run while still starting a
+ * fresh run for every call made after the previous run settled.
+ *
+ * The in-flight slot is filled before the write body can run (the body starts
+ * on a microtask) and is cleared only when it still points at that run. Clearing
+ * it from a synchronous `finally` inside the run meant an already-clean run
+ * (which never awaited) cleared the slot *before* it was assigned, pinning a
+ * settled promise in the slot forever: every later persist then resolved
+ * without touching IndexedDB, so `Ready · 98/98` could be shown while only the
+ * Stage 2 snapshot was durable and a reload had to re-index 83 tables.
+ */
+export function createCoalescedWriter(write: () => Promise<void>): () => Promise<void> {
+  let inFlight: Promise<void> | null = null;
+  return () => {
+    if (inFlight) return inFlight;
+    const run = Promise.resolve().then(write);
+    inFlight = run;
+    const clear = (): void => {
+      if (inFlight === run) inFlight = null;
+    };
+    void run.then(clear, clear);
+    return run;
+  };
+}
+
+/**
+ * Write the in-memory search index to IndexedDB. Concurrent callers share the
+ * in-flight write, and the loop re-runs if entries changed mid-write, so at
+ * most one structured clone/write is ever in flight.
+ */
+const runSearchIndexWrite = createCoalescedWriter(async () => {
+  try {
+    while (indexDirty || fullEnrichmentPending) {
+      ensureIndexEnriched();
+      indexDirty = false;
+      const committed = await putSearchIndex(state.locale, state.versionSignature, {
+        entries,
+        indexedTables: [...indexedTables],
+        schemaVersion: SEARCH_INDEX_SCHEMA_VERSION,
+      });
+      if (!committed) {
+        // Keep the index dirty so the next flush retries the snapshot instead
+        // of reporting `ready` for a write that never reached IndexedDB.
+        indexDirty = true;
+        return;
+      }
+      lastPersistAt = Date.now();
+      tablesSincePersist = 0;
+    }
+  } catch (error) {
+    indexDirty = true;
+    console.error('[manifest] Failed to write the search index:', error);
+  }
+});
+
+async function persistSearchIndex(): Promise<void> {
+  await runSearchIndexWrite();
+}
+
+/**
+ * Force a committed snapshot of the current search index. Every transition to
+ * `phase: 'ready'` goes through this so a reload immediately afterwards boots
+ * from the full cache rather than resuming background indexing.
+ */
+async function flushSearchIndex(): Promise<void> {
+  for (let attempt = 0; attempt < SEARCH_INDEX_PERSIST_ATTEMPTS; attempt += 1) {
+    await persistSearchIndex();
+    if (!indexDirty && !fullEnrichmentPending) return;
+  }
+  console.error('[manifest] Search index still has unpersisted changes after flushing');
+}
+
+/**
+ * Stage 3 batching: write after every `SEARCH_INDEX_PERSIST_TABLE_BATCH` tables
+ * or once `SEARCH_INDEX_PERSIST_INTERVAL_MS` elapsed; otherwise leave the dirty
+ * index for the next batch or the final flush. Outside background indexing a
+ * single user-triggered table load persists immediately.
+ */
+async function maybePersistSearchIndex(): Promise<void> {
+  if (
+    isBackgroundIndexing() &&
+    !shouldFlushSearchIndex(tablesSincePersist, lastPersistAt, Date.now())
+  ) {
+    return;
+  }
+  await persistSearchIndex();
 }
 
 function getOrCreateTableStatus(table: string): TableStatus {
@@ -952,6 +1169,10 @@ function resetEngineState(): void {
   categoryNameMap.clear();
   loadingPromises.clear();
   fullItemCount = 0;
+  fullEnrichmentPending = true;
+  indexDirty = false;
+  tablesSincePersist = 0;
+  lastPersistAt = 0;
 }
 
 function applyCachedState(
@@ -969,11 +1190,112 @@ function applyCachedState(
   rebuildEntryLookups();
   recomputeLatestSeasonFromEntries();
   for (const table of Object.keys(meta.componentPaths)) getOrCreateTableStatus(table);
-  for (const table of indexedTables) {
-    const status = getOrCreateTableStatus(table);
-    status.indexed = true;
+  for (const table of cached.indexedTables) getOrCreateTableStatus(table);
+  // Indexed tables are fully restored from IndexedDB, so they must report as
+  // loaded with their real entry counts. Leaving them unloaded is what made a
+  // cache boot show 0/98 tables and a download icon on every row.
+  for (const cachedTable of deriveCachedTableStatuses(
+    meta.componentPaths,
+    cached.indexedTables,
+    cached.entries,
+  )) {
+    const status = getOrCreateTableStatus(cachedTable.name);
+    status.indexed = cachedTable.indexed;
+    status.loaded = cachedTable.loaded;
+    status.loading = false;
+    status.count = cachedTable.count;
   }
   syncArtifactPerksTableStatus();
+  // The cached snapshot was written after a full enrichment pass by the prior
+  // session, so no re-enrichment is needed until a dependency table changes.
+  fullEnrichmentPending = false;
+  indexDirty = false;
+  tablesSincePersist = 0;
+  lastPersistAt = Date.now();
+}
+
+export interface CachedTableState {
+  name: string;
+  count: number;
+  indexed: boolean;
+  loaded: boolean;
+}
+
+/**
+ * Derive the per-table status for an IndexedDB cache boot.
+ *
+ * Search index entries carry the canonical table name (Lite inventory entries
+ * are folded into DestinyInventoryItemDefinition), so counts must be tallied
+ * through `canonicalTableName`, not the raw indexed table list. The Lite and
+ * full inventory tables describe the same definitions, so indexing either one
+ * makes both statuses loaded with the canonical entry count.
+ */
+export function deriveCachedTableStatuses(
+  componentPaths: Readonly<Record<string, string>>,
+  cachedIndexedTables: readonly string[],
+  cachedEntries: readonly SearchIndexEntry[],
+): CachedTableState[] {
+  const countsByTable = new Map<string, number>();
+  for (const entry of cachedEntries) {
+    const canonical = canonicalTableName(entry.table);
+    countsByTable.set(canonical, (countsByTable.get(canonical) ?? 0) + 1);
+  }
+
+  const cachedTables = new Set<string>();
+  for (const table of cachedIndexedTables) cachedTables.add(table);
+  if (
+    cachedTables.has(INVENTORY_ITEM_TABLE) ||
+    cachedTables.has(INVENTORY_ITEM_LITE_TABLE)
+  ) {
+    cachedTables.add(INVENTORY_ITEM_TABLE);
+    cachedTables.add(INVENTORY_ITEM_LITE_TABLE);
+  }
+
+  const tableNames = new Set<string>(Object.keys(componentPaths));
+  for (const table of cachedIndexedTables) tableNames.add(table);
+
+  const statuses: CachedTableState[] = [];
+  for (const table of tableNames) {
+    if (!cachedTables.has(table)) continue;
+    statuses.push({
+      name: table,
+      count: countsByTable.get(table) ?? countsByTable.get(canonicalTableName(table)) ?? 0,
+      indexed: true,
+      loaded: true,
+    });
+  }
+  return statuses;
+}
+
+/**
+ * Number of cached search entries for the canonical inventory table. Lite and
+ * full inventory entries both canonicalize to DestinyInventoryItemDefinition.
+ */
+function countInventoryEntries(): number {
+  let count = 0;
+  for (const entry of entries) {
+    if (canonicalTableName(entry.table) === INVENTORY_ITEM_TABLE) count += 1;
+  }
+  return count;
+}
+
+/**
+ * Cache boots restore item summaries only; the full-item buckets live in a
+ * separate IndexedDB store. Verify them asynchronously so the canonical
+ * inventory table reports `hasFullData` accurately without delaying the
+ * instant cache boot.
+ */
+async function refreshCachedFullItemStatus(): Promise<void> {
+  if (!state.componentPaths[INVENTORY_ITEM_TABLE]) return;
+  const status = getOrCreateTableStatus(INVENTORY_ITEM_TABLE);
+  if (status.hasFullData || status.loading) return;
+  const hasFull = await hasFullItemsCached(state.locale, state.versionSignature);
+  if (!hasFull || status.hasFullData || status.loading) return;
+  status.hasFullData = true;
+  status.loaded = true;
+  if (status.count === 0) status.count = countInventoryEntries();
+  emitStatus();
+  emitTables();
 }
 
 // ---------------------------------------------------------------------------
@@ -997,6 +1319,9 @@ async function init(
     const cachedIsCurrent = cached?.schemaVersion === SEARCH_INDEX_SCHEMA_VERSION;
     if (meta && cachedIsCurrent) {
       applyCachedState(meta, cached);
+      // Full inventory buckets are stored separately from the search index;
+      // verify them in the background so cached boots stay instant.
+      void refreshCachedFullItemStatus();
       state.phase = 'ready';
       emitStatus(true);
       emitTables(true);
@@ -1006,6 +1331,7 @@ async function init(
         if (updated) {
           enrichIndexedEntries();
           emitCatalog();
+          void persistSearchIndex();
         }
       });
       // Resume background indexing for tables a prior visit did not finish.
@@ -1050,17 +1376,20 @@ async function init(
   if (!coreTables.includes(CATEGORY_TABLE)) coreTables.push(CATEGORY_TABLE);
   await loadTablesInParallel(coreTables, 4);
 
+  // Persist before flipping to `ready`: a reload the instant the UI says Ready
+  // must read this snapshot back, not an older one.
+  await flushSearchIndex();
   state.phase = 'ready';
   emitStatus(true);
   emitTables(true);
   emitCatalog();
-  await persistSearchIndex();
 
   // Future-proof the mappings with a non-blocking remote refresh.
   void refreshD2aiMappingsFromRemote().then((updated) => {
     if (updated) {
       enrichIndexedEntries();
       emitCatalog();
+      void persistSearchIndex();
     }
   });
 
@@ -1070,10 +1399,11 @@ async function init(
   void (async () => {
     try {
       await loadTablesInParallel(SECONDARY_INDEX_TABLES, 4);
-      await persistSearchIndex();
       emitCatalog();
       await indexRemainingTables();
     } finally {
+      // Always leave a durable, fully enriched index before reporting ready.
+      await flushSearchIndex();
       state.phase = 'ready';
       state.currentTable = undefined;
       emitStatus(true);
@@ -1096,7 +1426,7 @@ async function backgroundUpdateCheck(): Promise<void> {
 /** Tables handled by the streaming full-item loader rather than the JSON path. */
 const FULL_ITEM_TABLES = new Set<string>([
   INVENTORY_ITEM_TABLE,
-  'DestinyInventoryItemLiteDefinition',
+  INVENTORY_ITEM_LITE_TABLE,
 ]);
 
 /** Tables in componentPaths that are not yet indexed (and not full-item tables). */
@@ -1115,7 +1445,7 @@ async function indexRemainingTables(): Promise<void> {
   const remaining = computeRemainingTables();
   if (remaining.length === 0) return;
   await loadTablesInParallel(remaining, 4);
-  await persistSearchIndex();
+  await flushSearchIndex();
   emitCatalog();
 }
 
@@ -1127,6 +1457,8 @@ async function resumeBackgroundIndexing(): Promise<void> {
   try {
     await indexRemainingTables();
   } finally {
+    // Flush any batched writes before the UI reports a completed index.
+    await flushSearchIndex();
     state.phase = 'ready';
     state.currentTable = undefined;
     emitStatus(true);
@@ -1190,35 +1522,78 @@ async function doLoadTable(table: string, explicit: boolean): Promise<void> {
   if (table === INVENTORY_ITEM_TABLE) {
     state.currentTable = table;
     emitStatus();
-    const res = await fetchComponentResponse(path);
-    if (!res.body) throw new Error(`No response body for ${table}`);
-    await streamIntoBuckets(res.body);
-    status.loaded = true;
-    status.hasFullData = true;
-    status.count = fullItemCount;
-    status.indexed = indexedTables.has(table);
-    state.currentTable = undefined;
+    // Full inventory data lives in per-item IndexedDB buckets. If those
+    // buckets are already cached, never re-download the (very large) table.
+    if (await hasFullItemsCached(state.locale, state.versionSignature)) {
+      status.loaded = true;
+      status.hasFullData = true;
+      status.indexed =
+        indexedTables.has(table) || indexedTables.has(INVENTORY_ITEM_LITE_TABLE);
+      if (status.count === 0) status.count = countInventoryEntries();
+      state.currentTable = undefined;
+    } else {
+      const res = await fetchComponentResponse(path);
+      if (!res.body) throw new Error(`No response body for ${table}`);
+      await streamIntoBuckets(res.body);
+      status.loaded = true;
+      status.hasFullData = true;
+      status.count = fullItemCount;
+      status.indexed =
+        indexedTables.has(table) || indexedTables.has(INVENTORY_ITEM_LITE_TABLE);
+      state.currentTable = undefined;
+    }
   } else {
     state.currentTable = table;
     emitStatus();
-    const data = await fetchComponentJson(path);
-    await putTableData(state.locale, state.versionSignature, table, data);
+    // The table store is keyed by manifest version signature: reuse a table
+    // already on disk instead of re-downloading it from Bungie. Cache boots
+    // restore only the search summaries, so this is the hot path for loading
+    // raw definitions of a table that is already indexed.
+    let data = await getTableData(state.locale, state.versionSignature, table);
+    if (!data) {
+      data = await fetchComponentJson(path);
+      await putTableData(state.locale, state.versionSignature, table, data);
+    }
     tableDataMap.set(table, data);
     status.loaded = true;
     status.hasFullData = true;
     status.count = Object.keys(data).length;
     state.currentTable = undefined;
 
+    const enrichmentDependency = isEnrichmentDependencyTable(table);
+    let indexedNewTable = false;
     if (!indexedTables.has(table)) {
-      appendEntries(buildEntries(table, data));
+      const newEntries = buildEntries(table, data);
+      appendEntries(newEntries);
       indexedTables.add(table);
       status.indexed = true;
-      await persistSearchIndex();
+      indexedNewTable = true;
+      indexDirty = true;
+      if (enrichmentDependency) {
+        // Dependency data just landed: one full pass makes it visible to every
+        // entry, and the coalesced persist below flushes it.
+        fullEnrichmentPending = true;
+      } else {
+        // Tables with no cross-table impact only need their own new entries
+        // enriched, avoiding a full ~277k-entry rescan per table.
+        enrichNewEntries(newEntries);
+      }
       // Collectible-derived source tags + source counts become available the
       // moment collectibles land, so refresh the filter catalog immediately.
       if (table === 'DestinyCollectibleDefinition') emitCatalog();
     } else {
       status.indexed = true;
+      if (enrichmentDependency) {
+        // Raw data for an already-indexed dependency table can unlock more
+        // cross-table metadata for entries indexed earlier.
+        fullEnrichmentPending = true;
+        indexDirty = true;
+      }
+    }
+
+    if (indexedNewTable || enrichmentDependency) {
+      if (indexedNewTable) tablesSincePersist += 1;
+      await maybePersistSearchIndex();
     }
   }
   emitTables(explicit);
@@ -1284,14 +1659,26 @@ async function streamIntoBuckets(body: ReadableStream<Uint8Array>): Promise<void
 
 async function loadAllTables(): Promise<void> {
   loadAllInProgress = true;
+  // `ready` must mean "the cache I just read is durable". While this
+  // user-triggered load changes the index, report the busy phase and only
+  // return to `ready` after the final flush commits.
+  const wasReady = state.phase === 'ready';
+  if (wasReady) {
+    state.phase = 'indexing-secondary';
+    emitStatus(true);
+  }
   try {
     const all = Object.keys(state.componentPaths);
     const remaining = all.filter((table) => !getOrCreateTableStatus(table).loaded);
     await loadTablesInParallel(remaining, 4);
-    await persistSearchIndex();
     emitCatalog();
   } finally {
     loadAllInProgress = false;
+    await flushSearchIndex();
+    if (wasReady) {
+      state.phase = 'ready';
+      state.currentTable = undefined;
+    }
     emitStatus(true);
     emitTables(true);
   }

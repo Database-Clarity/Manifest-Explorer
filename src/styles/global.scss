@@ -1,5 +1,12 @@
 @use './tokens';
 
+@font-face {
+  font-family: 'Clarity Cut';
+  src: url('../assets/fonts/ClarityCut-Variable.woff2') format('woff2');
+  font-weight: 400 900;
+  font-display: swap;
+}
+
 *,
 *::before,
 *::after {

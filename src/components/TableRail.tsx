@@ -1,5 +1,13 @@
 /// <reference types="vite/client" />
-import { useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
+import {
+  memo,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type PointerEvent,
+  type ReactNode,
+} from 'react';
 import type { TableStatus } from '../types/manifest';
 import {
   canonicalTableName,
@@ -95,7 +103,7 @@ function dedupeTables(tables: TableStatus[]): TableStatus[] {
   return [...byTableName.values()];
 }
 
-export function TableRail({
+export const TableRail = memo(function TableRail({
   width,
   collapsed,
   onToggleCollapse,
@@ -108,50 +116,64 @@ export function TableRail({
   const dragRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
 
   const tables = useExplorerStore((state) => state.tables);
-  const filters = useExplorerStore((state) => state.filters);
+  const tableFilter = useExplorerStore((state) => state.filters.table);
   const manifestStatus = useExplorerStore((state) => state.manifestStatus);
 
-  const realTables = tables.filter((table) => table.name !== 'ArtifactPerks');
-  const loadedCount =
-    realTables.length > 0
-      ? realTables.filter((table) => table.loaded).length
-      : manifestStatus.loadedTableCount;
-  const totalCount =
-    realTables.length > 0 ? realTables.length : manifestStatus.totalTableCount;
-  const hasUnloadedTables = totalCount > loadedCount;
+  const { loadedCount, totalCount, hasUnloadedTables } = useMemo(() => {
+    const realTables = tables.filter((table) => table.name !== 'ArtifactPerks');
+    const loaded =
+      realTables.length > 0
+        ? realTables.filter((table) => table.loaded).length
+        : manifestStatus.loadedTableCount;
+    const total = realTables.length > 0 ? realTables.length : manifestStatus.totalTableCount;
+    return { loadedCount: loaded, totalCount: total, hasUnloadedTables: total > loaded };
+  }, [tables, manifestStatus]);
 
   const normalizedFilter = filterText.trim().toLowerCase();
-  const uniqueTables = dedupeTables(tables);
+  const uniqueTables = useMemo(() => dedupeTables(tables), [tables]);
 
-  const coreTables = uniqueTables
-    .filter(
-      (table) =>
-        CORE_TABLE_SET.has(canonicalTableName(table.name)) &&
-        matchesFilter(table, normalizedFilter),
-    )
-    .sort(
-      (a, b) =>
-        (CORE_TABLE_RANK.get(canonicalTableName(a.name)) ?? 99) -
-        (CORE_TABLE_RANK.get(canonicalTableName(b.name)) ?? 99),
-    );
+  const coreTables = useMemo(
+    () =>
+      uniqueTables
+        .filter(
+          (table) =>
+            CORE_TABLE_SET.has(canonicalTableName(table.name)) &&
+            matchesFilter(table, normalizedFilter),
+        )
+        .sort(
+          (a, b) =>
+            (CORE_TABLE_RANK.get(canonicalTableName(a.name)) ?? 99) -
+            (CORE_TABLE_RANK.get(canonicalTableName(b.name)) ?? 99),
+        ),
+    [uniqueTables, normalizedFilter],
+  );
 
-  const otherGroups = TABLE_GROUP_ORDER.map(([group, label]) => ({
-    group,
-    label,
-    tables: uniqueTables
-      .filter(
-        (table) =>
-          !CORE_TABLE_SET.has(canonicalTableName(table.name)) &&
-          (table.group === group || (group === 'gameplay' && table.group === 'primary')) &&
-          matchesFilter(table, normalizedFilter),
-      )
-      .sort((a, b) => a.shortName.localeCompare(b.shortName)),
-  })).filter((entry) => entry.tables.length > 0);
+  const otherGroups = useMemo(
+    () =>
+      TABLE_GROUP_ORDER.map(([group, label]) => ({
+        group,
+        label,
+        tables: uniqueTables
+          .filter(
+            (table) =>
+              !CORE_TABLE_SET.has(canonicalTableName(table.name)) &&
+              (table.group === group || (group === 'gameplay' && table.group === 'primary')) &&
+              matchesFilter(table, normalizedFilter),
+          )
+          .sort((a, b) => a.shortName.localeCompare(b.shortName)),
+      })).filter((entry) => entry.tables.length > 0),
+    [uniqueTables, normalizedFilter],
+  );
 
-  const groups = [
-    ...(coreTables.length > 0 ? [{ group: 'primary' as const, label: 'Core', tables: coreTables }] : []),
-    ...otherGroups,
-  ];
+  const groups = useMemo(
+    () => [
+      ...(coreTables.length > 0
+        ? [{ group: 'primary' as const, label: 'Core', tables: coreTables }]
+        : []),
+      ...otherGroups,
+    ],
+    [coreTables, otherGroups],
+  );
 
   if (collapsed) {
     return (
@@ -191,7 +213,12 @@ export function TableRail({
     if (drag === null || drag.pointerId !== event.pointerId) {
       return;
     }
-    onResize(clampRailWidth(drag.startWidth + (event.clientX - drag.startX)));
+    // Pointer-move events fire far more often than the clamped width can
+    // change (and clamp at the min/max bounds); skip redundant store writes.
+    const nextWidth = clampRailWidth(drag.startWidth + (event.clientX - drag.startX));
+    if (nextWidth !== width) {
+      onResize(nextWidth);
+    }
   }
 
   function handleResizePointerEnd(event: PointerEvent<HTMLDivElement>): void {
@@ -223,7 +250,10 @@ export function TableRail({
     }
 
     event.preventDefault();
-    onResize(clampRailWidth(next));
+    const nextWidth = clampRailWidth(next);
+    if (nextWidth !== width) {
+      onResize(nextWidth);
+    }
   }
 
   return (
@@ -265,9 +295,9 @@ export function TableRail({
       <div className={styles.scroll}>
         <button
           type="button"
-          className={cx(styles.row, filters.table === 'all' && styles.rowSelected)}
+          className={cx(styles.row, tableFilter === 'all' && styles.rowSelected)}
           onClick={() => onSelectTable('all')}
-          aria-current={filters.table === 'all' ? 'true' : undefined}
+          aria-current={tableFilter === 'all' ? 'true' : undefined}
           title="Search every indexed table"
         >
           <span className={styles.rowName}>All indexed</span>
@@ -281,8 +311,8 @@ export function TableRail({
             <h2 className={styles.groupTitle}>{group.label}</h2>
             {group.tables.map((table) => {
               const selected =
-                filters.table !== 'all' &&
-                canonicalTableName(table.name) === canonicalTableName(filters.table);
+                tableFilter !== 'all' &&
+                canonicalTableName(table.name) === canonicalTableName(tableFilter);
               return (
                 <button
                   key={table.name}
@@ -347,4 +377,4 @@ export function TableRail({
       />
     </aside>
   );
-}
+});

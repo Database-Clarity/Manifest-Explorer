@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import type {
   BungieLocale,
   ClarityDescriptionEntry,
@@ -33,6 +41,15 @@ import {
   readLastSeenChangelogVersion,
   writeLastSeenChangelogVersion,
 } from './data/changelog';
+import {
+  cacheKey,
+  clarityCache,
+  clearInspectorCaches,
+  detailCache,
+  evictInspectorEntry,
+  referencesCache,
+  variantsCache,
+} from './utils/inspectorCache';
 import styles from './App.module.scss';
 
 const TAB_KEYS: readonly InspectorTab[] = [
@@ -75,11 +92,21 @@ function isEditableTarget(target: EventTarget | null): boolean {
 
 function flushActiveInspectorDomScroll(): void {
   const scroller = document.querySelector<HTMLElement>(
-    'aside[aria-label="Definition inspector"] [data-inspector-scroll="true"]',
+    'aside[aria-label="Definition inspector"] [data-inspector-panel-active="true"] [data-inspector-scroll="true"]',
   );
   if (!scroller) return;
   const st = useExplorerStore.getState();
   st.saveEntryScroll(st.activeTab, scroller.scrollTop);
+}
+
+function cacheDefinition(payload: DefinitionDetailPayload): DefinitionDetailPayload {
+  const key = cacheKey(payload.table, payload.hash);
+  const cached = detailCache.get(key);
+  if (cached && !cached.isLite && payload.isLite) {
+    return cached;
+  }
+  detailCache.set(key, payload);
+  return payload;
 }
 
 export function App(): ReactNode {
@@ -102,6 +129,9 @@ export function App(): ReactNode {
   );
   const [appUpdateAvailable, setAppUpdateAvailable] = useState(false);
   const [appUpdateDismissed, setAppUpdateDismissed] = useState(false);
+  const lastManifestVersionRef = useRef(
+    useExplorerStore.getState().manifestStatus.versionSignature,
+  );
 
   const markAppUpdateAvailable = useCallback((_latestBuildId: string) => {
     setAppUpdateAvailable(true);
@@ -125,7 +155,6 @@ export function App(): ReactNode {
   const setInspectorWidth = useSettingsStore((s) => s.setInspectorWidth);
 
   // Explorer state
-  const query = useExplorerStore((s) => s.query);
   const deepSearch = useExplorerStore((s) => s.deepSearch);
   const filters = useExplorerStore((s) => s.filters);
   const manifestStatus = useExplorerStore((s) => s.manifestStatus);
@@ -162,14 +191,23 @@ export function App(): ReactNode {
   const buildHashUrl = useExplorerStore((s) => s.buildHashUrl);
 
   const activeEntry = historyIndex >= 0 ? (history[historyIndex] ?? null) : null;
-  const currentRef: DefinitionRef | null = activeEntry
-    ? {
-        table: activeEntry.table,
-        hash: activeEntry.hash,
-        label: activeEntry.label,
-        icon: activeEntry.icon,
-      }
-    : null;
+  const currentRef: DefinitionRef | null = useMemo(
+    () =>
+      activeEntry
+        ? {
+            table: activeEntry.table,
+            hash: activeEntry.hash,
+            label: activeEntry.label,
+            icon: activeEntry.icon,
+          }
+        : null,
+    [
+      activeEntry?.table,
+      activeEntry?.hash,
+      activeEntry?.label,
+      activeEntry?.icon,
+    ],
+  );
 
   // Inspector detail states
   const [detail, setDetail] = useState<DefinitionDetailPayload | null>(null);
@@ -305,12 +343,54 @@ export function App(): ReactNode {
     activeSessionIndex,
     history,
     historyIndex,
-    query,
     deepSearch,
     filters.table,
     buildHashUrl,
     syncBrowserHistory,
   ]);
+
+  // Keep query keystrokes out of App's render cycle. Only publish a debounced
+  // query to React; URL synchronization can use the store's latest snapshot.
+  const [debouncedQuery, setDebouncedQuery] = useState(
+    () => useExplorerStore.getState().query,
+  );
+  useEffect(() => {
+    const initialQuery = useExplorerStore.getState().query;
+    setDebouncedQuery((current) =>
+      current === initialQuery ? current : initialQuery,
+    );
+    let timer: number | null = null;
+    const unsubscribe = useExplorerStore.subscribe((state, previousState) => {
+      if (
+        state.query !== previousState.query ||
+        state.deepSearch !== previousState.deepSearch
+      ) {
+        if (timer !== null) {
+          window.clearTimeout(timer);
+          timer = null;
+        }
+        const trimmed = state.query.trim();
+        if (state.query.length === 0) {
+          setDebouncedQuery(state.query);
+        } else {
+          const isDeepQuery = state.deepSearch || /^deep:/i.test(trimmed);
+          timer = window.setTimeout(
+            () => setDebouncedQuery(state.query),
+            isDeepQuery ? 450 : 280,
+          );
+        }
+      }
+      if (state.query !== previousState.query) {
+        syncBrowserHistory('replace');
+      }
+    });
+    return () => {
+      unsubscribe();
+      if (timer !== null) {
+        window.clearTimeout(timer);
+      }
+    };
+  }, [syncBrowserHistory]);
 
   // Worker subscriptions + boot
   const bootManifest = useCallback(
@@ -328,6 +408,10 @@ export function App(): ReactNode {
 
   useEffect(() => {
     const unsubStatus = manifestClient.onStatus((status) => {
+      if (lastManifestVersionRef.current !== status.versionSignature) {
+        lastManifestVersionRef.current = status.versionSignature;
+        clearInspectorCaches();
+      }
       setManifestStatus(status);
     });
     const unsubTables = manifestClient.onTables((tables) => {
@@ -353,7 +437,16 @@ export function App(): ReactNode {
   );
 
   const manifestReady =
-    manifestStatus.indexedEntryCount > 0 || manifestStatus.phase === 'ready';
+    manifestStatus.locale === locale &&
+    (manifestStatus.indexedEntryCount > 0 || manifestStatus.phase === 'ready');
+
+  useLayoutEffect(() => {
+    if (lastManifestVersionRef.current === manifestStatus.versionSignature) {
+      return;
+    }
+    lastManifestVersionRef.current = manifestStatus.versionSignature;
+    clearInspectorCaches();
+  }, [manifestStatus.versionSignature]);
 
   // Background-resolve display names, icons & co-table flags for EVERY open tab
   // and EVERY history/future entry (including inactive tabs and hydrated URLs).
@@ -399,22 +492,6 @@ export function App(): ReactNode {
     hydrateEntrySummaries,
   ]);
 
-  // Debounce typed queries cleanly so background table indexing can never cancel/starve typing.
-  const [debouncedQuery, setDebouncedQuery] = useState(query);
-  useEffect(() => {
-    const trimmed = query.trim();
-    if (trimmed.length === 0) {
-      setDebouncedQuery(query);
-      return;
-    }
-    const isDeepQuery = deepSearch || /^deep:/i.test(trimmed);
-    const delay = isDeepQuery ? 450 : 280;
-    const timer = window.setTimeout(() => {
-      setDebouncedQuery(query);
-    }, delay);
-    return () => window.clearTimeout(timer);
-  }, [query, deepSearch]);
-
   // Run search whenever debouncedQuery, deepSearch, filters, sort, fuzzy
   // settings, query logic, or indexed entry count changes
   useEffect(() => {
@@ -423,7 +500,10 @@ export function App(): ReactNode {
     const baseChanged = baseSearchKey !== lastBaseKeyRef.current;
     lastBaseKeyRef.current = baseSearchKey;
 
-    if (manifestStatus.indexedEntryCount === 0 && manifestStatus.phase !== 'ready') {
+    if (
+      manifestStatus.locale !== locale ||
+      (manifestStatus.indexedEntryCount === 0 && manifestStatus.phase !== 'ready')
+    ) {
       return;
     }
 
@@ -488,79 +568,158 @@ export function App(): ReactNode {
     fuzzySearch,
     fuzziness,
     queryPrecedence,
+    locale,
     manifestStatus.indexedEntryCount,
     manifestStatus.phase,
     setSearchResults,
     setSearching,
   ]);
 
-  // Load selected definition progressively (instant Lite/cached -> background full upgrade)
-  const loadFullForCurrent = useCallback((ref: DefinitionRef, seq: number) => {
-    setLoadingFull(true);
-    void manifestClient
-      .getDefinition(ref.table, ref.hash, true)
-      .then((full) => {
-        if (seq !== detailSeqRef.current) {
-          return;
-        }
-        setDetail(full);
-        setLoadingFull(false);
-      })
-      .catch(() => {
+  // Load selected definition progressively (instant cached/Lite -> full upgrade).
+  const loadFullForCurrent = useCallback(
+    (ref: DefinitionRef, seq: number) => {
+      const cached = detailCache.get(cacheKey(ref.table, ref.hash));
+      if (cached && !cached.isLite) {
         if (seq === detailSeqRef.current) {
+          setDetail(cached);
+          setDetailLoading(false);
           setLoadingFull(false);
         }
-      });
-  }, []);
+        return;
+      }
 
-  useEffect(() => {
+      setLoadingFull(true);
+      void manifestClient
+        .getDefinition(ref.table, ref.hash, true)
+        .then((payload) => {
+          const full = cacheDefinition(payload);
+          if (seq !== detailSeqRef.current) {
+            return;
+          }
+          setDetail(full);
+          setDetailLoading(false);
+          setLoadingFull(Boolean(full.isLite));
+        })
+        .catch(() => {
+          if (seq === detailSeqRef.current) {
+            setLoadingFull(false);
+          }
+        });
+    },
+    [],
+  );
+
+  useLayoutEffect(() => {
+    const seq = ++detailSeqRef.current;
     if (!currentRef) {
       setDetail(null);
       setDetailError(null);
       setDetailLoading(false);
       setLoadingFull(false);
-      setVariants([]);
       setReferences(null);
+      setReferencesLoading(false);
       setClarityEntry(null);
+      setClarityLoading(false);
       return;
     }
 
-    if (!manifestReady) {
-      setDetailLoading(true);
-      return;
-    }
-
-    const seq = ++detailSeqRef.current;
-    setDetail(null);
-    setDetailLoading(true);
+    const key = cacheKey(currentRef.table, currentRef.hash);
+    const cached = detailCache.get(key);
     setDetailError(null);
-    setLoadingFull(false);
     setReferences(null);
-    setClarityEntry(null);
+    setReferencesLoading(false);
+
+    if (cached) {
+      setDetail(cached);
+      setDetailLoading(false);
+      setLoadingFull(Boolean(cached.isLite && manifestReady));
+      const dp = cached.data.displayProperties as
+        | { name?: string; icon?: string }
+        | undefined;
+      const resolvedName =
+        (typeof dp?.name === 'string' && dp.name.trim()) ||
+        (typeof cached.data.statName === 'string' && cached.data.statName.trim()) ||
+        (typeof cached.data.progressDescription === 'string' &&
+          cached.data.progressDescription.trim()) ||
+        '';
+      updateEntryMeta(cached.table, cached.hash, {
+        ...(resolvedName ? { label: resolvedName } : {}),
+        ...(typeof dp?.icon === 'string' ? { icon: dp.icon } : {}),
+        hasCoTables: cached.coTables.length > 0,
+      });
+      if (cached.isLite && manifestReady) {
+        loadFullForCurrent(currentRef, seq);
+      }
+    } else {
+      setDetail(null);
+      setDetailLoading(true);
+      setLoadingFull(false);
+    }
+
+    const clarityRelevant =
+      currentRef.table === 'DestinyInventoryItemDefinition' ||
+      currentRef.table === 'DestinySandboxPerkDefinition';
+    if (showClarityDescriptions && clarityRelevant) {
+      const cachedClarity = clarityCache.get(key);
+      if (cachedClarity !== undefined) {
+        setClarityEntry(cachedClarity);
+        setClarityLoading(false);
+      } else if (manifestReady) {
+        setClarityEntry(null);
+        setClarityLoading(true);
+        void manifestClient
+          .getClarityDescription(currentRef.hash)
+          .then((entry) => {
+            const value = entry ?? null;
+            clarityCache.set(key, value);
+            if (seq === detailSeqRef.current) {
+              setClarityEntry(value);
+              setClarityLoading(false);
+            }
+          })
+          .catch(() => {
+            if (seq === detailSeqRef.current) {
+              setClarityLoading(false);
+            }
+          });
+      } else {
+        setClarityEntry(null);
+        setClarityLoading(false);
+      }
+    } else {
+      setClarityEntry(null);
+      setClarityLoading(false);
+    }
+
+    if (cached || !manifestReady) {
+      return;
+    }
 
     void manifestClient
       .getDefinition(currentRef.table, currentRef.hash, false)
       .then((payload) => {
+        const resolved = cacheDefinition(payload);
         if (seq !== detailSeqRef.current) {
           return;
         }
-        setDetail(payload);
+        setDetail(resolved);
         setDetailLoading(false);
-        const dp = payload.data.displayProperties as
+        const dp = resolved.data.displayProperties as
           | { name?: string; icon?: string }
           | undefined;
         const resolvedName =
           (typeof dp?.name === 'string' && dp.name.trim()) ||
-          (typeof payload.data.statName === 'string' && payload.data.statName.trim()) ||
-          (typeof payload.data.progressDescription === 'string' &&
-            payload.data.progressDescription.trim()) ||
+          (typeof resolved.data.statName === 'string' &&
+            resolved.data.statName.trim()) ||
+          (typeof resolved.data.progressDescription === 'string' &&
+            resolved.data.progressDescription.trim()) ||
           '';
-        updateEntryMeta(payload.table, payload.hash, {
+        updateEntryMeta(resolved.table, resolved.hash, {
           ...(resolvedName ? { label: resolvedName } : {}),
           ...(typeof dp?.icon === 'string' ? { icon: dp.icon } : {}),
-          hasCoTables: payload.coTables.length > 0,
+          hasCoTables: resolved.coTables.length > 0,
         });
-        if (payload.isLite) {
+        if (resolved.isLite) {
           loadFullForCurrent(currentRef, seq);
         }
       })
@@ -574,70 +733,111 @@ export function App(): ReactNode {
           err instanceof Error ? err.message : 'Unable to load this definition.',
         );
       });
-
-    // Fetch variants in parallel (fast in-memory worker scan)
-    setVariantsLoading(true);
-    void manifestClient
-      .getVariants(currentRef.table, currentRef.hash)
-      .then((list) => {
-        if (seq === detailSeqRef.current) {
-          setVariants(list);
-          setVariantsLoading(false);
-        }
-      })
-      .catch(() => {
-        if (seq === detailSeqRef.current) {
-          setVariants([]);
-          setVariantsLoading(false);
-        }
-      });
-
-    // Fetch Clarity community note if enabled and relevant
-    if (
-      showClarityDescriptions &&
-      (currentRef.table === 'DestinyInventoryItemDefinition' ||
-        currentRef.table === 'DestinySandboxPerkDefinition')
-    ) {
-      setClarityLoading(true);
-      void manifestClient
-        .getClarityDescription(currentRef.hash)
-        .then((entry) => {
-          if (seq === detailSeqRef.current) {
-            setClarityEntry(entry ?? null);
-            setClarityLoading(false);
-          }
-        })
-        .catch(() => {
-          if (seq === detailSeqRef.current) {
-            setClarityEntry(null);
-            setClarityLoading(false);
-          }
-        });
-    } else {
-      setClarityLoading(false);
-    }
   }, [
     currentRef?.table,
     currentRef?.hash,
+    locale,
     manifestReady,
+    manifestStatus.versionSignature,
     showClarityDescriptions,
     detailReloadCounter,
     loadFullForCurrent,
     updateEntryMeta,
   ]);
 
-  // Lazy reverse references scan when References tab is active
-  useEffect(() => {
-    if (!currentRef || activeTab !== 'references') {
+  // Variants are deliberately scanned only when their sub-tab is selected.
+  useLayoutEffect(() => {
+    if (!currentRef) {
+      setVariants([]);
+      setVariantsLoading(false);
       return;
     }
+
+    const key = cacheKey(currentRef.table, currentRef.hash);
+    const cached = variantsCache.get(key);
+    if (cached !== undefined) {
+      setVariants(cached);
+      setVariantsLoading(false);
+      return;
+    }
+
+    setVariants([]);
+    if (activeTab !== 'variants' || !manifestReady) {
+      setVariantsLoading(false);
+      return;
+    }
+
     let cancelled = false;
-    setReferencesLoading(true);
+    setVariantsLoading(true);
+    void manifestClient
+      .getVariants(currentRef.table, currentRef.hash)
+      .then((list) => {
+        variantsCache.set(key, list);
+        if (!cancelled) {
+          setVariants(list);
+          setVariantsLoading(false);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setVariants([]);
+          setVariantsLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    currentRef?.table,
+    currentRef?.hash,
+    locale,
+    activeTab,
+    manifestReady,
+    manifestStatus.versionSignature,
+    detailReloadCounter,
+  ]);
+
+  // Reverse references use stale-while-revalidate as additional tables load.
+  useLayoutEffect(() => {
+    if (!currentRef) {
+      setReferences(null);
+      setReferencesLoading(false);
+      return;
+    }
+    if (activeTab !== 'references') {
+      setReferences(null);
+      setReferencesLoading(false);
+      return;
+    }
+
+    const key = cacheKey(currentRef.table, currentRef.hash);
+    const cached = referencesCache.get(key);
+    if (cached) {
+      setReferences(cached.data);
+      setReferencesLoading(false);
+      if (
+        cached.loadedTableCount === manifestStatus.loadedTableCount ||
+        !manifestReady
+      ) {
+        return;
+      }
+    } else {
+      setReferences(null);
+      if (!manifestReady) {
+        setReferencesLoading(false);
+        return;
+      }
+      setReferencesLoading(true);
+    }
+
+    let cancelled = false;
+    const loadedTableCount = manifestStatus.loadedTableCount;
     void manifestClient
       .getReverseReferences(currentRef.hash, currentRef.table)
-      .then((res) => {
+      .then((data) => {
+        referencesCache.set(key, { data, loadedTableCount });
         if (!cancelled) {
-          setReferences(res);
+          setReferences(data);
           setReferencesLoading(false);
         }
       })
@@ -649,23 +849,48 @@ export function App(): ReactNode {
     return () => {
       cancelled = true;
     };
-  }, [currentRef?.table, currentRef?.hash, activeTab, refReloadCounter]);
+  }, [
+    currentRef?.table,
+    currentRef?.hash,
+    locale,
+    activeTab,
+    manifestStatus.loadedTableCount,
+    manifestStatus.versionSignature,
+    manifestReady,
+    refReloadCounter,
+    detailReloadCounter,
+  ]);
 
-  // Fetch pinned diff baseline when needed
-  useEffect(() => {
+  // A pinned baseline reuses full details from the same bounded detail cache.
+  useLayoutEffect(() => {
     if (!pinnedDiffRef) {
       setPinnedDetail(null);
       setPinnedLoading(false);
       return;
     }
+    const key = cacheKey(pinnedDiffRef.table, pinnedDiffRef.hash);
+    const cached = detailCache.get(key);
+    if (cached && !cached.isLite) {
+      setPinnedDetail(cached);
+      setPinnedLoading(false);
+      return;
+    }
+    if (!manifestReady) {
+      setPinnedDetail(cached ?? null);
+      setPinnedLoading(false);
+      return;
+    }
+
     let cancelled = false;
+    setPinnedDetail(cached ?? null);
     setPinnedLoading(true);
     void manifestClient
       .getDefinition(pinnedDiffRef.table, pinnedDiffRef.hash, true)
-      .then((res) => {
+      .then((payload) => {
+        const full = cacheDefinition(payload);
         if (!cancelled) {
-          setPinnedDetail(res);
-          setPinnedLoading(false);
+          setPinnedDetail(full);
+          setPinnedLoading(Boolean(full.isLite));
         }
       })
       .catch(() => {
@@ -676,7 +901,13 @@ export function App(): ReactNode {
     return () => {
       cancelled = true;
     };
-  }, [pinnedDiffRef?.table, pinnedDiffRef?.hash]);
+  }, [
+    pinnedDiffRef?.table,
+    pinnedDiffRef?.hash,
+    locale,
+    manifestReady,
+    manifestStatus.versionSignature,
+  ]);
 
   // Actions
   const handleSelectTable = useCallback(
@@ -803,6 +1034,7 @@ export function App(): ReactNode {
   }, []);
 
   const handleClearCache = useCallback(() => {
+    clearInspectorCaches();
     void manifestClient
       .clearCache()
       .then(() => {
@@ -816,6 +1048,7 @@ export function App(): ReactNode {
 
   const handleLocaleChange = useCallback(
     (nextLocale: BungieLocale) => {
+      clearInspectorCaches();
       setLocale(nextLocale);
       pushNotice({ tone: 'info', message: `Switched language to ${nextLocale}` });
     },
@@ -969,6 +1202,29 @@ export function App(): ReactNode {
     }
     handleJumpToHistoryIndex(active.historyIndex + 1);
   }, [handleJumpToHistoryIndex]);
+
+  const handleOpenHelp = useCallback(() => setHelpOpen(true), []);
+  const handleRetryBoot = useCallback(
+    () => bootManifest(locale, bungieApiKey, true),
+    [bootManifest, bungieApiKey, locale],
+  );
+  const handleLoadFullItem = useCallback(() => {
+    if (currentRef) {
+      loadFullForCurrent(currentRef, detailSeqRef.current);
+    }
+  }, [currentRef, loadFullForCurrent]);
+  const handleRetryDetail = useCallback(() => {
+    if (currentRef) {
+      evictInspectorEntry(currentRef.table, currentRef.hash);
+    }
+    setDetailReloadCounter((count) => count + 1);
+  }, [currentRef]);
+  const handleToggleRail = useCallback(() => toggleRail(), [toggleRail]);
+  const handleRailResize = useCallback((width: number) => setRailWidth(width), [setRailWidth]);
+  const handleInspectorResize = useCallback(
+    (width: number) => setInspectorWidth(width),
+    [setInspectorWidth],
+  );
 
   const handleSwitchSession = useCallback(
     (index: number) => {
@@ -1160,7 +1416,7 @@ export function App(): ReactNode {
         onCheckUpdates={handleCheckUpdates}
         onClearCache={handleClearCache}
         onLoadAllTables={handleLoadAllTables}
-        onOpenHelp={() => setHelpOpen(true)}
+        onOpenHelp={handleOpenHelp}
         onLocaleChange={handleLocaleChange}
         onSelectTable={handleSelectTable}
       />
@@ -1192,8 +1448,8 @@ export function App(): ReactNode {
         <TableRail
           width={railWidth}
           collapsed={railCollapsed}
-          onToggleCollapse={toggleRail}
-          onResize={setRailWidth}
+          onToggleCollapse={handleToggleRail}
+          onResize={handleRailResize}
           onSelectTable={handleSelectTable}
           onLoadTable={handleLoadTable}
           onLoadAllTables={handleLoadAllTables}
@@ -1202,13 +1458,13 @@ export function App(): ReactNode {
         {!inspectorMaximized && (
           <ResultsPane
             onOpenItem={handleOpenResult}
-            onRetryBoot={() => bootManifest(locale, bungieApiKey, true)}
+            onRetryBoot={handleRetryBoot}
           />
         )}
 
         <DefinitionInspector
           width={inspectorWidth}
-          onResize={setInspectorWidth}
+          onResize={handleInspectorResize}
           currentRef={currentRef}
           detail={detail}
           loading={detailLoading}
@@ -1228,19 +1484,15 @@ export function App(): ReactNode {
           onNavigateForward={handleNavigateForward}
           onJumpToHistoryIndex={handleJumpToHistoryIndex}
           onSwitchSession={handleSwitchSession}
-          onLoadFullItem={() => {
-            if (currentRef) {
-              loadFullForCurrent(currentRef, detailSeqRef.current);
-            }
-          }}
+          onLoadFullItem={handleLoadFullItem}
           onLoadPriorityTable={handleLoadTable}
-          onRetry={() => setDetailReloadCounter((c) => c + 1)}
+          onRetry={handleRetryDetail}
         />
       </main>
 
       <StatusBar
         onCheckUpdates={handleCheckUpdates}
-        onOpenHelp={() => setHelpOpen(true)}
+        onOpenHelp={handleOpenHelp}
         appUpdateAvailable={appUpdateAvailable}
         onReloadApp={handleReloadApp}
         onOpenChangelog={handleOpenChangelog}

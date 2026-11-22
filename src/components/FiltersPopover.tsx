@@ -172,7 +172,21 @@ function categoryToken(label: string): string {
   return /\s/.test(label) ? `cat:"${label}"` : `cat:${label}`;
 }
 
-export function FiltersPopover({
+/**
+ * Zero-cost shell: while the popover is closed nothing below mounts, so no
+ * store subscription, catalog filter, or chip scan runs on search keystrokes.
+ * `Popover` runs its focus-restore cleanup on unmount (see its `open`-gated
+ * effect), so Escape, outside-click, and anchor-toggle closing all still
+ * return focus to the anchor button exactly as before.
+ */
+export function FiltersPopover(props: FiltersPopoverProps): ReactNode {
+  if (!props.open) {
+    return null;
+  }
+  return <FiltersPopoverBody {...props} />;
+}
+
+function FiltersPopoverBody({
   open,
   onClose,
   anchorRef,
@@ -341,57 +355,54 @@ export function FiltersPopover({
       <div className={styles.body}>
         <div className={styles.header}>
           <h2 className={styles.title}>Filters</h2>
-          <button type="button" className={styles.resetBtn} onClick={handleReset}>
-            Reset filters
-          </button>
-        </div>
-
-        <section className={styles.optionsTop} aria-label="Search options">
-          <div className={styles.optionsRow}>
-            <h3 className={styles.optionsTitle}>Search options</h3>
-            <label className={styles.checkRow}>
+          <div className={styles.optionsInline} role="group" aria-label="Search options">
+            <label className={styles.checkRow} title="Include unnamed definitions">
               <input
                 type="checkbox"
                 checked={includeUnnamed}
                 onChange={(event) => setFilters({ includeUnnamed: event.target.checked })}
+                aria-label="Include unnamed definitions"
               />
-              <span>Include unnamed definitions</span>
+              <span>Unnamed</span>
             </label>
-            <label className={styles.checkRow}>
+            <label className={styles.checkRow} title="Fuzzy search (match typos)">
               <input
                 type="checkbox"
                 checked={fuzzySearch}
                 onChange={(event) => setFuzzySearch(event.target.checked)}
+                aria-label="Fuzzy search (match typos)"
               />
-              <span>Fuzzy search (match typos)</span>
+              <span>Fuzzy</span>
             </label>
+            {fuzzySearch && (
+              <div className={styles.fuzzinessInline}>
+                <input
+                  type="range"
+                  className={styles.range}
+                  min={FUZZINESS_MIN}
+                  max={FUZZINESS_MAX}
+                  step={FUZZINESS_STEP}
+                  value={fuzziness}
+                  onChange={(event) => setFuzziness(Number(event.target.value))}
+                  aria-label="Fuzziness"
+                  aria-valuetext={`${fuzzinessPercent}% · ${fuzzinessTier}`}
+                  title="Fuzziness"
+                />
+                <output
+                  className={styles.fuzzinessReadout}
+                  title={`Fuzziness: ${fuzzinessPercent}% · ${fuzzinessTier}`}
+                  aria-label="Fuzziness"
+                  aria-live="off"
+                >
+                  {fuzzinessPercent}%
+                </output>
+              </div>
+            )}
           </div>
-          {fuzzySearch && (
-            <div className={styles.fuzzinessRow}>
-              <div className={styles.fuzzinessHead}>
-                <span className={styles.fuzzinessLabel}>Fuzziness</span>
-                <span className={styles.fuzzinessReadout}>
-                  {fuzzinessPercent}% · {fuzzinessTier}
-                </span>
-              </div>
-              <input
-                type="range"
-                className={styles.range}
-                min={FUZZINESS_MIN}
-                max={FUZZINESS_MAX}
-                step={FUZZINESS_STEP}
-                value={fuzziness}
-                onChange={(event) => setFuzziness(Number(event.target.value))}
-                aria-label="Search fuzziness"
-                aria-valuetext={`${fuzzinessTier}, ${fuzzinessPercent}%`}
-              />
-              <div className={styles.fuzzinessScale} aria-hidden="true">
-                <span>Strict</span>
-                <span>Loose</span>
-              </div>
-            </div>
-          )}
-        </section>
+          <button type="button" className={styles.resetBtn} onClick={handleReset}>
+            Reset filters
+          </button>
+        </div>
 
         <div className={styles.columns}>
           <div className={styles.col}>

@@ -65,6 +65,60 @@
   color: var(--text);
 }
 
+.collapsibleToggle {
+  @include ctl.contain-focus-rings;
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  width: 100%;
+  min-width: 0;
+  min-height: 2rem;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--hair);
+  border-radius: 0.1875rem;
+  background: var(--strip);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+
+  @media (hover: hover) {
+    &:hover {
+      background: var(--hover);
+    }
+  }
+
+  &:focus-visible {
+    @include ctl.focus-ring;
+  }
+}
+
+.collapsibleTitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.collapsibleCount {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--text2);
+  font-size: 0.75rem;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.collapsibleContent {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  min-width: 0;
+}
+
 .prose {
   margin: 0;
   font-size: 0.875rem;

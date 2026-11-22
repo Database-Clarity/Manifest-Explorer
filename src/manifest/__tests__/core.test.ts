@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { QueryPrecedence, SearchFilters, SearchIndexEntry } from '../../types/manifest';
+import type { QueryPrecedence, SearchFilters, SearchIndexEntry, SortMode } from '../../types/manifest';
 import { computeJsonDiff } from '../diff';
 import {
   CLASS_FILTER_OPTIONS,
@@ -34,6 +34,14 @@ import {
   resolveTableAlias,
 } from '../tables';
 import { SEARCH_INDEX_SCHEMA_VERSION } from '../idb';
+import {
+  SEARCH_INDEX_PERSIST_INTERVAL_MS,
+  SEARCH_INDEX_PERSIST_TABLE_BATCH,
+  createCoalescedWriter,
+  deriveCachedTableStatuses,
+  isEnrichmentDependencyTable,
+  shouldFlushSearchIndex,
+} from '../worker';
 
 const ITEM_TABLE = 'DestinyInventoryItemDefinition';
 const LITE_TABLE = 'DestinyInventoryItemLiteDefinition';
@@ -690,6 +698,114 @@ describe('ranking and filtering', () => {
   });
 });
 
+describe('top-K selection equivalence', () => {
+  const sortModes: SortMode[] = [
+    'relevance',
+    'name-asc',
+    'name-desc',
+    'hash-asc',
+    'hash-desc',
+    'index-desc',
+  ];
+
+  const key = (item: { hash: number; table: string; name: string; index?: number }): string =>
+    `${item.table}|${item.hash}|${item.name}|${item.index ?? ''}`;
+
+  // Deliberate ties in every sort key: duplicate names, duplicate hashes across
+  // tables, equal indexes, unnamed entries and equal relevance scores.
+  const entries: SearchIndexEntry[] = [
+    makeEntry({ hash: 900, name: 'Echo Weapon', index: 1, tierType: 6 }),
+    makeEntry({ hash: 901, name: 'Echo Weapon', index: 1, tierType: 5 }),
+    makeEntry({
+      hash: 902,
+      name: 'Echo Weapon',
+      table: 'DestinySandboxPerkDefinition',
+      index: 1,
+    }),
+    makeEntry({ hash: 501, name: 'Duplicate Hash', table: ITEM_TABLE }),
+    makeEntry({ hash: 501, name: 'Duplicate Hash', table: 'DestinyRecordDefinition' }),
+    makeEntry({ hash: 777, name: '' }),
+    makeEntry({ hash: 778, name: '', isDummy: true }),
+    ...Array.from({ length: 30 }, (_, index) =>
+      makeEntry({
+        hash: 1000 + index,
+        name: `Weapon ${index % 7}`,
+        index: index % 3,
+        tierType: (index % 6) + 1,
+        isDummy: index % 9 === 0,
+      }),
+    ),
+  ];
+
+  const queries = ['', 'weapon', 'echo', '"echo weapon"', 'tier:exotic', 'is:dummy'];
+  const limits = [1, 5, 25, entries.length, entries.length + 3, 0];
+
+  it('returns the exact full-sort slice and total for every sort mode, query and limit', () => {
+    for (const sort of sortModes) {
+      for (const query of queries) {
+        const full = rank(query, entries, { sort });
+        for (const maxResults of limits) {
+          const capped = rank(query, entries, { sort, maxResults });
+          expect(capped.totalMatches).toBe(full.totalMatches);
+          expect(capped.items.length).toBe(Math.min(maxResults, full.totalMatches));
+          expect(capped.items.map(key)).toEqual(full.items.slice(0, maxResults).map(key));
+        }
+      }
+    }
+  });
+
+  it('exercises the bounded heap for broad queries rather than the full-sort path', () => {
+    const broad = rank('', entries);
+    expect(broad.totalMatches).toBeGreaterThan(25);
+    // A few sanity anchors so a broken comparator cannot silently pass.
+    expect(rank('', entries, { sort: 'hash-asc', maxResults: 3 }).items.map((i) => i.hash)).toEqual(
+      [501, 501, 777],
+    );
+    expect(rank('', entries, { sort: 'name-asc', maxResults: 5 }).items.map((i) => i.name)).toEqual([
+      'Duplicate Hash',
+      'Duplicate Hash',
+      'Echo Weapon',
+      'Echo Weapon',
+      'Echo Weapon',
+    ]);
+  });
+
+  it('matches a naive sort for randomized entries, hashes and limits', () => {
+    let seed = 0x2f6e2b1;
+    const random = (): number => {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      return seed / 0x100000000;
+    };
+    const tables = [
+      ITEM_TABLE,
+      'DestinySandboxPerkDefinition',
+      'DestinyRecordDefinition',
+      'DestinyActivityDefinition',
+    ];
+    const randomEntries = Array.from({ length: 80 }, () =>
+      makeEntry({
+        hash: 1 + Math.floor(random() * 40),
+        name: `Item ${Math.floor(random() * 20)}`,
+        table: tables[Math.floor(random() * tables.length)]!,
+        index: Math.floor(random() * 5),
+        tierType: 1 + Math.floor(random() * 6),
+        isDummy: random() < 0.2,
+      }),
+    );
+
+    for (const sort of sortModes) {
+      for (const query of ['', 'item 1', 'tier:>3', 'is:dummy']) {
+        const full = rank(query, randomEntries, { sort });
+        for (const maxResults of [1, 2, 3, 7, 19, 50, 200]) {
+          const capped = rank(query, randomEntries, { sort, maxResults });
+          expect(capped.totalMatches).toBe(full.totalMatches);
+          expect(capped.items.map(key)).toEqual(full.items.slice(0, maxResults).map(key));
+        }
+      }
+    }
+  });
+});
+
 describe('sitewide fuzzy search', () => {
   const fuzzyOn = (threshold: number): SearchContext => ({
     fuzzy: { enabled: true, threshold },
@@ -757,6 +873,152 @@ describe('sitewide fuzzy search', () => {
 describe('search index schema version', () => {
   it('exports a schema version so stale caches are rebuilt', () => {
     expect(SEARCH_INDEX_SCHEMA_VERSION).toBe(5);
+  });
+});
+
+describe('cached manifest boot status', () => {
+  const componentPaths = {
+    DestinyInventoryItemDefinition: '/common/destiny2_content/json/en/items.json',
+    DestinyInventoryItemLiteDefinition: '/common/destiny2_content/json/en/items-lite.json',
+    DestinySandboxPerkDefinition: '/common/destiny2_content/json/en/perks.json',
+    DestinyRecordDefinition: '/common/destiny2_content/json/en/records.json',
+  };
+
+  it('marks cached indexed tables as loaded with exact per-table entry counts', () => {
+    const statuses = deriveCachedTableStatuses(
+      componentPaths,
+      [LITE_TABLE, 'DestinySandboxPerkDefinition'],
+      [
+        makeEntry({ hash: 1 }),
+        makeEntry({ hash: 2 }),
+        makeEntry({ hash: 3 }),
+        makeEntry({ hash: 4, table: 'DestinySandboxPerkDefinition' }),
+      ],
+    );
+    const byName = new Map(statuses.map((status) => [status.name, status]));
+
+    expect(statuses.every((status) => status.loaded && status.indexed)).toBe(true);
+    expect(byName.get(LITE_TABLE)).toMatchObject({ loaded: true, indexed: true, count: 3 });
+    expect(byName.get(ITEM_TABLE)).toMatchObject({ loaded: true, indexed: true, count: 3 });
+    expect(byName.get('DestinySandboxPerkDefinition')).toMatchObject({
+      loaded: true,
+      indexed: true,
+      count: 1,
+    });
+    // Tables that were never indexed stay lazy (no download arrow regression).
+    expect(byName.has('DestinyRecordDefinition')).toBe(false);
+  });
+
+  it('folds Lite inventory entries into the canonical item table count', () => {
+    const statuses = deriveCachedTableStatuses(componentPaths, [LITE_TABLE], [
+      makeEntry({ hash: 10, table: LITE_TABLE }),
+      makeEntry({ hash: 11, table: LITE_TABLE }),
+    ]);
+    const byName = new Map(statuses.map((status) => [status.name, status]));
+
+    expect(byName.get(ITEM_TABLE)?.count).toBe(2);
+    expect(byName.get(LITE_TABLE)?.count).toBe(2);
+  });
+
+  it('reports every indexed component table as loaded on a complete cache boot', () => {
+    const tables = Object.keys(componentPaths);
+    // A completed prior session indexes everything except the full inventory
+    // stream (which is fetched on demand and cached in item buckets instead).
+    const indexedTables = tables.filter((table) => table !== ITEM_TABLE);
+    const entries = [
+      ...Array.from({ length: 5 }, (_, index) => makeEntry({ hash: 100 + index })),
+      ...tables
+        .filter((table) => table !== ITEM_TABLE && table !== LITE_TABLE)
+        .map((table, index) => makeEntry({ hash: 1000 + index, table })),
+    ];
+
+    const statuses = deriveCachedTableStatuses(componentPaths, indexedTables, entries);
+
+    expect(statuses).toHaveLength(tables.length);
+    expect(new Set(statuses.map((status) => status.name))).toEqual(new Set(tables));
+    expect(statuses.every((status) => status.loaded && status.indexed)).toBe(true);
+    expect(statuses.find((status) => status.name === ITEM_TABLE)?.count).toBe(5);
+  });
+});
+
+describe('search index persistence coalescing', () => {
+  it('batches Stage 3 writes by table count or elapsed time', () => {
+    expect(SEARCH_INDEX_PERSIST_TABLE_BATCH).toBe(18);
+    expect(SEARCH_INDEX_PERSIST_INTERVAL_MS).toBe(4_000);
+
+    expect(shouldFlushSearchIndex(0, 10_000, 10_001)).toBe(false);
+    expect(shouldFlushSearchIndex(SEARCH_INDEX_PERSIST_TABLE_BATCH - 1, 10_000, 10_001)).toBe(false);
+    expect(shouldFlushSearchIndex(SEARCH_INDEX_PERSIST_TABLE_BATCH, 10_000, 10_001)).toBe(true);
+    expect(
+      shouldFlushSearchIndex(1, 10_000, 10_000 + SEARCH_INDEX_PERSIST_INTERVAL_MS - 1),
+    ).toBe(false);
+    expect(shouldFlushSearchIndex(1, 10_000, 10_000 + SEARCH_INDEX_PERSIST_INTERVAL_MS)).toBe(true);
+  });
+
+  it('only flags tables whose data feeds cross-table enrichment', () => {
+    for (const table of [
+      'DestinySeasonDefinition',
+      'DestinyArtifactDefinition',
+      'DestinyCollectibleDefinition',
+      ITEM_TABLE,
+      LITE_TABLE,
+    ]) {
+      expect(isEnrichmentDependencyTable(table)).toBe(true);
+    }
+    for (const table of [
+      'DestinyRecordDefinition',
+      'DestinyActivityDefinition',
+      'DestinyLoreDefinition',
+      'DestinyPresentationNodeDefinition',
+      ARTIFACT_PERKS_TABLE,
+    ]) {
+      expect(isEnrichmentDependencyTable(table)).toBe(false);
+    }
+  });
+
+  it('starts a fresh write after a previous write has finished', async () => {
+    let writes = 0;
+    const persist = createCoalescedWriter(async () => {
+      writes += 1;
+    });
+
+    await persist();
+    expect(writes).toBe(1);
+
+    // Regression: a run that completed without awaiting (nothing dirty to
+    // write) used to clear the in-flight slot before it was assigned, pinning
+    // its settled promise there. Every later persist then no-oped, so the UI
+    // reached `Ready · 98/98` with only the Stage 2 snapshot in IndexedDB.
+    await persist();
+    expect(writes).toBe(2);
+    await persist();
+    expect(writes).toBe(3);
+  });
+
+  it('coalesces overlapping writes into a single run', async () => {
+    let writes = 0;
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const persist = createCoalescedWriter(async () => {
+      writes += 1;
+      await gate;
+    });
+
+    const first = persist();
+    const second = persist();
+    expect(second).toBe(first);
+
+    await Promise.resolve();
+    expect(writes).toBe(1);
+
+    release?.();
+    await Promise.all([first, second]);
+    expect(writes).toBe(1);
+
+    await persist();
+    expect(writes).toBe(2);
   });
 });
 

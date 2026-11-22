@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode } from 'react';
+import { memo, useMemo, type ReactNode } from 'react';
 import type { DefinitionRef, ReverseReferenceResponse } from '../../types/manifest';
 import { getFriendlyTableName, getShortTableName } from '../../manifest/tables';
 import { BungieIcon } from '../BungieIcon';
@@ -12,7 +12,7 @@ export interface ReferencesTabProps {
   onLoadPriorityTable: (table: string) => void;
 }
 
-export function ReferencesTab({
+export const ReferencesTab = memo(function ReferencesTab({
   response,
   loading,
   onNavigateRef,
@@ -141,4 +141,4 @@ export function ReferencesTab({
       )}
     </div>
   );
-}
+});

@@ -19,6 +19,35 @@ export const CHANGELOG_STORAGE_KEY = 'clarity-manifest-explorer:last-seen-change
 
 export const CHANGELOG: readonly ChangelogEntry[] = [
   {
+    version: '2026.11.22-1',
+    date: 'Nov 22, 2026',
+    title: 'Image upscaling, faster browsing & Clarity branding',
+    summary: 'View sharper images, move around the explorer faster, and see a refreshed Clarity look.',
+    sections: [
+      {
+        heading: 'Image viewing',
+        items: [
+          'Choose Anime4K or Perk Vector upscaling alongside Smooth, Pixelated, and Original.',
+          'Use the streamlined single-row toolbar to copy an image, download a PNG, or open the upscaled version.',
+        ],
+      },
+      {
+        heading: 'Speed & reliability',
+        items: [
+          'Search is faster, and switching tabs or moving through history is instant without skeleton flashes.',
+          'Cached reloads now restore all 98 manifest tables immediately.',
+        ],
+      },
+      {
+        heading: 'Inspector, filters & branding',
+        items: [
+          'Collapse Sandbox perks and large Linked definitions sections in Overview, and use the compact Filters header.',
+          'See Clarity’s new vector M mark, favicons, Clarity Cut typography, social preview image, and links to Clarity and Ko-Fi.',
+        ],
+      },
+    ],
+  },
+  {
     version: '2026.11.21-4',
     date: 'Nov 21, 2026',
     title: 'Smarter search, Boolean logic & Pretty Find mode',

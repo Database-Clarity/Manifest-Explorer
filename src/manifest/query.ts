@@ -1258,6 +1258,113 @@ export function parseSearchQuery(
 interface ScoredEntry {
   entry: SearchIndexEntry;
   score: number;
+  /** Position in the original scan, used as a stable tie-breaker. */
+  order: number;
+}
+
+type ScoredComparator = (a: ScoredEntry, b: ScoredEntry) => number;
+
+/**
+ * Build the ordering predicate for a sort mode once per search instead of
+ * switching inside every comparison. The final `order` fallback reproduces
+ * `Array.prototype.sort`'s stability, so bounded top-K selection returns the
+ * exact same slice as a full sort.
+ */
+function scoredComparator(sort: SortMode): ScoredComparator {
+  let base: ScoredComparator;
+  switch (sort) {
+    case 'name-asc':
+      base = (a, b) => compareNames(a.entry, b.entry) || b.score - a.score;
+      break;
+    case 'name-desc':
+      base = (a, b) => compareNames(b.entry, a.entry) || b.score - a.score;
+      break;
+    case 'hash-asc':
+      base = (a, b) => a.entry.hash - b.entry.hash;
+      break;
+    case 'hash-desc':
+      base = (a, b) => b.entry.hash - a.entry.hash;
+      break;
+    case 'index-desc':
+      base = (a, b) => {
+        const indexDelta = (b.entry.index ?? -1) - (a.entry.index ?? -1);
+        return indexDelta || compareNames(a.entry, b.entry);
+      };
+      break;
+    case 'relevance':
+    default:
+      base = (a, b) =>
+        b.score - a.score || compareNames(a.entry, b.entry) || a.entry.hash - b.entry.hash;
+      break;
+  }
+  return (a, b) => base(a, b) || a.order - b.order;
+}
+
+/**
+ * Bounded top-K accumulator with the current worst retained candidate at
+ * index 0 (a max-heap under `compare`, where negative means "better").
+ *
+ * The scan reuses a single candidate object, so candidates that cannot beat
+ * the root are rejected without any allocation, and retained slots are
+ * overwritten in place once the heap is full. Total allocation is O(limit)
+ * instead of O(matches).
+ */
+class ScoredEntryTopK {
+  private readonly heap: ScoredEntry[] = [];
+
+  constructor(
+    private readonly limit: number,
+    private readonly compare: ScoredComparator,
+  ) {}
+
+  /** Offer a candidate; `candidate` may be reused by the caller afterwards. */
+  consider(candidate: ScoredEntry): void {
+    if (this.limit <= 0) return;
+    if (this.heap.length < this.limit) {
+      this.heap.push({
+        entry: candidate.entry,
+        score: candidate.score,
+        order: candidate.order,
+      });
+      if (this.heap.length === this.limit) this.heapify();
+      return;
+    }
+    const worst = this.heap[0]!;
+    if (this.compare(candidate, worst) >= 0) return;
+    worst.entry = candidate.entry;
+    worst.score = candidate.score;
+    worst.order = candidate.order;
+    this.siftDown(0);
+  }
+
+  /** The retained candidates sorted best-first. Consumes the heap. */
+  toSortedArray(): ScoredEntry[] {
+    return this.heap.sort(this.compare);
+  }
+
+  private heapify(): void {
+    for (let index = (this.heap.length >> 1) - 1; index >= 0; index -= 1) {
+      this.siftDown(index);
+    }
+  }
+
+  private siftDown(start: number): void {
+    const heap = this.heap;
+    const size = heap.length;
+    let index = start;
+    for (;;) {
+      const left = index * 2 + 1;
+      if (left >= size) return;
+      const right = left + 1;
+      let worse = left;
+      if (right < size && this.compare(heap[right]!, heap[left]!) > 0) worse = right;
+      if (this.compare(heap[worse]!, heap[index]!) <= 0) return;
+      const swap = heap[index]!;
+      heap[index] = heap[worse]!;
+      heap[worse] = swap;
+      index = worse;
+    }
+  }
 }
 
 function hasWordBoundary(haystack: string, needle: string): boolean {
@@ -1444,6 +1551,22 @@ export function fuzzyMatchScore(
   return score;
 }
 
+/**
+ * Cache of the last lowercased parent artifact name. Artifact names repeat
+ * across every perk of the same artifact, so this removes thousands of
+ * per-entry `toLowerCase()` allocations during a scan without changing results.
+ */
+let cachedParentArtifactName: string | undefined;
+let cachedParentArtifactLower = '';
+
+function parentArtifactNameLower(name: string): string {
+  if (name !== cachedParentArtifactName) {
+    cachedParentArtifactName = name;
+    cachedParentArtifactLower = name.toLowerCase();
+  }
+  return cachedParentArtifactLower;
+}
+
 function scoreToken(entry: SearchIndexEntry, token: string, context?: SearchContext): number {
   if (!token) return 0;
   if (entry.nameLower === token) return 500;
@@ -1451,7 +1574,9 @@ function scoreToken(entry: SearchIndexEntry, token: string, context?: SearchCont
   if (hasWordBoundary(entry.nameLower, token)) return 200;
   if (entry.nameLower.includes(token)) return 100;
   if (entry.subtitleLower.includes(token)) return 50;
-  if (entry.parentArtifactName && entry.parentArtifactName.toLowerCase().includes(token)) return 40;
+  if (entry.parentArtifactName && parentArtifactNameLower(entry.parentArtifactName).includes(token)) {
+    return 40;
+  }
   if (entry.descLower.includes(token)) return 20;
   if (context?.fuzzy?.enabled) {
     return fuzzyMatchScore(entry, token, context.fuzzy.threshold);
@@ -1464,7 +1589,8 @@ function textMatches(entry: SearchIndexEntry, token: string): boolean {
     entry.nameLower.includes(token) ||
     entry.subtitleLower.includes(token) ||
     entry.descLower.includes(token) ||
-    (entry.parentArtifactName !== undefined && entry.parentArtifactName.toLowerCase().includes(token))
+    (entry.parentArtifactName !== undefined &&
+      parentArtifactNameLower(entry.parentArtifactName).includes(token))
   );
 }
 
@@ -1509,14 +1635,20 @@ function entryFlag(entry: SearchIndexEntry, key: FlagKey): boolean {
   }
 }
 
-function sourceMatches(entry: SearchIndexEntry, token: string, context?: SearchContext): boolean {
+function sourceMatches(
+  entry: SearchIndexEntry,
+  token: string,
+  normalizedToken: string,
+  context?: SearchContext,
+): boolean {
   if (!token) return false;
-  const norm = normalizeSourceLookup(token);
-  const canonical = context?.sourceAliasToKey?.get(norm);
+  const canonical = context?.sourceAliasToKey?.get(normalizedToken);
   if (canonical && entry.sourceTags?.includes(canonical) === true) return true;
   if (
-    norm.length >= 3 &&
-    entry.sourceTags?.some((tag) => tag === norm || tag.includes(norm)) === true
+    normalizedToken.length >= 3 &&
+    entry.sourceTags?.some(
+      (tag) => tag === normalizedToken || tag.includes(normalizedToken),
+    ) === true
   ) {
     return true;
   }
@@ -1621,24 +1753,56 @@ function tableKey(table: string): string {
   return getShortTableName(table).toLowerCase();
 }
 
-function resolveCategoryNames(
+/**
+ * Table names are a small, fixed set, so memoize their normalized keys instead
+ * of re-running the short-name regex for every entry of every scan.
+ */
+const tableKeyCache = new Map<string, string>();
+
+function cachedTableKey(table: string): string {
+  let key = tableKeyCache.get(table);
+  if (key === undefined) {
+    key = tableKey(table);
+    tableKeyCache.set(table, key);
+  }
+  return key;
+}
+
+const ARTIFACT_PERKS_KEY = tableKey(ARTIFACT_PERKS_TABLE);
+
+function resolveCategoryLowerNames(
   entry: SearchIndexEntry,
-  categoryNameMap: Map<number, string>,
+  categoryLowerNames: Map<number, string>,
 ): string[] | undefined {
   if (!entry.itemCategoryHashes || entry.itemCategoryHashes.length === 0) return undefined;
   const names: string[] = [];
   for (const hash of entry.itemCategoryHashes) {
-    const name = categoryNameMap.get(hash);
-    if (name) names.push(name.toLowerCase());
+    const name = categoryLowerNames.get(hash);
+    if (name) names.push(name);
   }
   return names.length > 0 ? names : undefined;
 }
 
-function categoryMatches(entry: SearchIndexEntry, tokens: readonly string[], map: Map<number, string>): boolean {
+function categoryMatches(
+  entry: SearchIndexEntry,
+  tokens: readonly string[],
+  categoryLowerNames: Map<number, string>,
+): boolean {
   if (tokens.length === 0) return true;
-  const names = resolveCategoryNames(entry, map);
+  const names = resolveCategoryLowerNames(entry, categoryLowerNames);
   if (!names) return false;
   return tokens.every((token) => names.some((name) => name.includes(token)));
+}
+
+/** Build the lowercased category-name lookup once per search, on first use. */
+function ensureCategoryLowerNames(evalCtx: EvalContext): Map<number, string> {
+  let names = evalCtx.categoryLowerNames;
+  if (!names) {
+    names = new Map<number, string>();
+    for (const [hash, name] of evalCtx.categoryNameMap) names.set(hash, name.toLowerCase());
+    evalCtx.categoryLowerNames = names;
+  }
+  return names;
 }
 
 function compareNames(a: SearchIndexEntry, b: SearchIndexEntry): number {
@@ -1679,23 +1843,38 @@ function toResult(entry: SearchIndexEntry): SearchResultItem {
  * their underlying InventoryItem table.
  */
 function matchesTableKey(entry: SearchIndexEntry, key: string): boolean {
-  const artifactPerksKey = tableKey(ARTIFACT_PERKS_TABLE);
-  return key === artifactPerksKey ? entry.isArtifactPerk === true : tableKey(entry.table) === key;
+  return key === ARTIFACT_PERKS_KEY
+    ? entry.isArtifactPerk === true
+    : cachedTableKey(entry.table) === key;
 }
 
 interface EvalContext {
   context: SearchContext | undefined;
   categoryNameMap: Map<number, string>;
+  /** Lowercased category names, built once per search on first use. */
+  categoryLowerNames: Map<number, string> | undefined;
+  /** source token -> normalized lookup key, resolved once per search. */
+  sourceNormTokens: Map<string, string>;
   /** season token -> resolved set of season numbers (undefined = unresolvable). */
   seasonNumbers: Map<string, Set<number> | undefined>;
   /** season token -> resolved single number for `>`/`>=`/`<`/`<=`. */
   seasonComparisonNumbers: Map<string, number | undefined>;
 }
 
+/** Resolve a source token's normalized form once per search, not per entry. */
+function normalizedSourceToken(evalCtx: EvalContext, token: string): string {
+  let norm = evalCtx.sourceNormTokens.get(token);
+  if (norm === undefined) {
+    norm = normalizeSourceLookup(token);
+    evalCtx.sourceNormTokens.set(token, norm);
+  }
+  return norm;
+}
+
 function evaluateAtom(atom: QueryAtom, entry: SearchIndexEntry, evalCtx: EvalContext): boolean {
   switch (atom.kind) {
     case 'table':
-      return matchesTableKey(entry, tableKey(atom.table));
+      return matchesTableKey(entry, cachedTableKey(atom.table));
     case 'tier':
       return entry.tierType !== undefined && compareValues(entry.tierType, atom.op, atom.value);
     case 'damage':
@@ -1721,11 +1900,11 @@ function evaluateAtom(atom: QueryAtom, entry: SearchIndexEntry, evalCtx: EvalCon
       return entry.seasonNumber !== undefined && compareValues(entry.seasonNumber, atom.op, target);
     }
     case 'source':
-      return sourceMatches(entry, atom.value, evalCtx.context);
+      return sourceMatches(entry, atom.value, normalizedSourceToken(evalCtx, atom.value), evalCtx.context);
     case 'trait':
       return traitMatches(entry, atom.value);
     case 'category':
-      return categoryMatches(entry, [atom.value], evalCtx.categoryNameMap);
+      return categoryMatches(entry, [atom.value], ensureCategoryLowerNames(evalCtx));
     case 'flag':
       return entryFlag(entry, atom.flag);
     case 'hash':
@@ -1769,6 +1948,7 @@ interface ScoringInfo {
 
 function collectScoring(ast: QueryNode | null): ScoringInfo {
   const textTokens: string[] = [];
+  const seenTokens = new Set<string>();
   let hashCount = 0;
   const visit = (node: QueryNode, negated: boolean): void => {
     switch (node.type) {
@@ -1782,7 +1962,10 @@ function collectScoring(ast: QueryNode | null): ScoringInfo {
       case 'atom':
         if (negated) return;
         if (node.kind === 'text') {
-          if (!textTokens.includes(node.value)) textTokens.push(node.value);
+          if (!seenTokens.has(node.value)) {
+            seenTokens.add(node.value);
+            textTokens.push(node.value);
+          }
         } else if (node.kind === 'hash') {
           hashCount += 1;
         }
@@ -1867,20 +2050,35 @@ export function scoreAndFilterEntries(
   const evalCtx: EvalContext = {
     context,
     categoryNameMap,
+    categoryLowerNames: undefined,
+    sourceNormTokens: new Map<string, string>(),
     seasonNumbers: collectSeasonNumbers(ast, context),
     seasonComparisonNumbers: collectSeasonComparisonNumbers(ast, context),
   };
 
   const uiTableKey =
     uiFilters.table && uiFilters.table !== 'all' && uiFilters.table !== ''
-      ? tableKey(uiFilters.table)
+      ? cachedTableKey(uiFilters.table)
       : undefined;
 
   const selectedCategories = uiFilters.itemCategoryHashes.filter((hash) => hash !== 0);
 
+  const compare = scoredComparator(sort);
+  // `slice(0, maxResults)` truncates toward zero and clamps negatives to an
+  // empty result, so mirror that exactly for the bounded selection.
+  const limit =
+    maxResults === undefined || !Number.isFinite(maxResults)
+      ? undefined
+      : Math.max(0, Math.trunc(maxResults));
+  const keepAll = limit === undefined || limit >= entries.length;
   const scored: ScoredEntry[] = [];
+  const topK = keepAll ? null : new ScoredEntryTopK(limit ?? 0, compare);
+  // One reusable candidate so rejected entries never allocate.
+  const candidate: ScoredEntry = { entry: entries[0]!, score: 0, order: 0 };
+  let totalMatches = 0;
 
-  for (const entry of entries) {
+  for (let order = 0; order < entries.length; order += 1) {
+    const entry = entries[order]!;
     if (uiTableKey && !matchesTableKey(entry, uiTableKey)) continue;
 
     if (uiFilters.tierTypes.length > 0) {
@@ -1915,37 +2113,23 @@ export function scoreAndFilterEntries(
     if (entry.isDummy) score -= 10;
     else score += 15;
 
-    scored.push({ entry, score });
+    totalMatches += 1;
+    if (topK !== null) {
+      candidate.entry = entry;
+      candidate.score = score;
+      candidate.order = order;
+      topK.consider(candidate);
+    } else {
+      scored.push({ entry, score, order });
+    }
   }
 
-  scored.sort((a, b) => {
-    switch (sort) {
-      case 'name-asc':
-        return compareNames(a.entry, b.entry) || b.score - a.score;
-      case 'name-desc':
-        return compareNames(b.entry, a.entry) || b.score - a.score;
-      case 'hash-asc':
-        return a.entry.hash - b.entry.hash;
-      case 'hash-desc':
-        return b.entry.hash - a.entry.hash;
-      case 'index-desc': {
-        const indexDelta = (b.entry.index ?? -1) - (a.entry.index ?? -1);
-        return indexDelta || compareNames(a.entry, b.entry);
-      }
-      case 'relevance':
-      default:
-        return b.score - a.score || compareNames(a.entry, b.entry) || a.entry.hash - b.entry.hash;
-    }
-  });
-
-  const totalMatches = scored.length;
-  const limited =
-    maxResults === undefined || !Number.isFinite(maxResults)
-      ? scored
-      : scored.slice(0, Math.max(0, maxResults));
+  // Only the retained <= limit winners are sorted; a full sort is kept when
+  // the caller asked for everything (or the limit cannot exclude anything).
+  const selected = topK !== null ? topK.toSortedArray() : scored.sort(compare);
 
   return {
-    items: limited.map(({ entry }) => toResult(entry)),
+    items: selected.map(({ entry }) => toResult(entry)),
     totalMatches,
     durationMs: Date.now() - startedAt,
   };

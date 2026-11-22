@@ -177,6 +177,14 @@ export function ExternalLinkIcon(props: IconProps): ReactNode {
   );
 }
 
+export function HeartIcon(props: IconProps): ReactNode {
+  return (
+    <IconFrame {...props}>
+      <path d="M8 13.25C6.4 12.1 3.25 9.7 3.25 6.9 3.25 5.3 4.5 4 6.05 4c.8 0 1.5.36 1.95.93A2.44 2.44 0 0 1 9.95 4c1.55 0 2.8 1.3 2.8 2.9 0 2.8-3.15 5.2-4.75 6.35Z" />
+    </IconFrame>
+  );
+}
+
 export function BookmarkIcon(props: IconProps): ReactNode {
   return (
     <IconFrame {...props}>
@@ -293,11 +301,6 @@ function useLightTheme(): boolean {
   return light;
 }
 
-/**
- * The Clarity diamond Ghost-shell, using the exact paths from the app favicon.
- * The brand colours are fixed; a dark rotated plate from the light favicon
- * keeps the mark legible on the light "Europa ice" theme.
- */
 export function MaximizeIcon(props: IconProps): ReactNode {
   return (
     <IconFrame {...props}>
@@ -314,7 +317,23 @@ export function MinimizeIcon(props: IconProps): ReactNode {
   );
 }
 
-export function ClarityMark({ size = 20, ...rest }: IconProps): ReactNode {
+/** The green 45°-chamfered octagon shell split into four crisp quadrants. */
+const MANIFEST_OCTAGON_PATH =
+  'M48 470V240L240 48H470V154H283.91L154 283.91V470ZM530 48H760L952 240V470H846V283.91L716.09 154H530ZM952 530V760L760 952H530V846H716.09L846 716.09V530ZM470 952H240L48 760V530H154V716.09L283.91 846H470Z';
+
+/** The cyan ClarityCut-900 micro-cut M, mirror-symmetric around x=500. */
+const MANIFEST_CLARITY_CUT_PATH =
+  'M224.59 704.51V295.49L265.5 254.59H333.67L500 452.96L666.33 254.59H734.5L775.41 295.49V704.51L734.5 745.41H669.39V416.15L500 617.93L330.61 416.15V745.41H265.5Z';
+
+/** The black octagon backing plate used on the light theme. */
+const MANIFEST_PLATE_PATH = 'M208 8H792L992 208V792L792 992H208L8 792V208Z';
+
+/**
+ * The approved 3B-3c strictly-vector Clarity mark: a green chamfered octagon
+ * shell around a cyan micro-cut M. Light mode wraps the same mark in a black
+ * octagon plate so it stays legible on the light "Europa ice" theme.
+ */
+export function ManifestMark({ size = 20, ...rest }: IconProps): ReactNode {
   const light = useLightTheme();
 
   return (
@@ -328,25 +347,22 @@ export function ClarityMark({ size = 20, ...rest }: IconProps): ReactNode {
       focusable="false"
     >
       {light ? (
-        <g transform="matrix(0.661639,-0.661639,0.661639,0.661639,-176.93,494.81)">
-          <path
-            d="M905.216,191.653L905.216,839.301C905.216,880.009 872.166,913.06 831.457,913.06L183.81,913.06C143.101,913.06 110.051,880.009 110.051,839.301L110.051,191.653C110.051,150.945 143.101,117.894 183.81,117.894L831.457,117.894C872.166,117.894 905.216,150.945 905.216,191.653Z"
-            fill="#000"
-          />
-        </g>
-      ) : null}
-      <g transform="matrix(1.09254,0,0,1.09254,-46.2703,-46.2703)">
-        <path
-          d="M87.817,480L480,87.817L480,234.84L234.84,480L87.817,480ZM520,87.817L912.183,480L765.16,480L520,234.84L520,87.817ZM912.183,520L520,912.183L520,765.16L765.16,520L912.183,520ZM480,912.183L87.817,520L234.84,520L480,765.16L480,912.183Z"
-          fill="#24EC54"
-        />
-      </g>
-      <g transform="matrix(0.959048,0,0,0.959048,20.4758,20.4758)">
-        <path
-          d="M617.47,617.47L500,734.941L265.059,500L500,265.059L617.47,382.53L617.5,441.3L558.735,441.265L500,382.53L382.53,500L500,617.47L558.735,558.735L617.5,558.7L617.47,617.47Z"
-          fill="#1CDCFC"
-        />
-      </g>
+        <>
+          <path d={MANIFEST_PLATE_PATH} fill="#000" />
+          <g transform="translate(500 500) scale(0.86) translate(-500 -500)">
+            <path d={MANIFEST_OCTAGON_PATH} fill="#24EC54" />
+            <path d={MANIFEST_CLARITY_CUT_PATH} fill="#1CDCFC" />
+          </g>
+        </>
+      ) : (
+        <>
+          <path d={MANIFEST_OCTAGON_PATH} fill="#24EC54" />
+          <path d={MANIFEST_CLARITY_CUT_PATH} fill="#1CDCFC" />
+        </>
+      )}
     </svg>
   );
 }
+
+/** Kept as an alias for existing consumers. */
+export const ClarityMark = ManifestMark;

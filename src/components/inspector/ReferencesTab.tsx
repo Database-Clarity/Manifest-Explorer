@@ -3,6 +3,7 @@ import type { DefinitionRef, ReverseReferenceResponse } from '../../types/manife
 import { getFriendlyTableName, getShortTableName } from '../../manifest/tables';
 import { BungieIcon } from '../BungieIcon';
 import { Skeleton } from '../../ui/Skeleton';
+import { ExternalLinkIcon } from '../../ui/Icons';
 import styles from './InspectorTabs.module.scss';
 
 export interface ReferencesTabProps {
@@ -89,52 +90,62 @@ export const ReferencesTab = memo(function ReferencesTab({
               {getFriendlyTableName(table)} ({refs.length})
             </h3>
             <div className={styles.entityList}>
-              {refs.map((ref) => (
-                <button
-                  key={`${ref.sourceTable}:${ref.sourceHash}`}
-                  type="button"
-                  className={styles.entityRow}
-                  title="Click to open in tab · Ctrl+Click or middle-click for new tab"
-                  onClick={(event) =>
-                    onNavigateRef(
-                      {
-                        table: ref.sourceTable,
-                        hash: ref.sourceHash,
-                        label: ref.sourceName || undefined,
-                        icon: ref.sourceIcon,
-                      },
-                      event.ctrlKey || event.metaKey || event.shiftKey,
-                    )
-                  }
-                  onAuxClick={(event) => {
-                    if (event.button === 1) {
-                      event.preventDefault();
-                      onNavigateRef(
-                        {
-                          table: ref.sourceTable,
-                          hash: ref.sourceHash,
-                          label: ref.sourceName || undefined,
-                          icon: ref.sourceIcon,
-                        },
-                        true,
-                      );
-                    }
-                  }}
-                >
-                  <BungieIcon icon={ref.sourceIcon} size={28} />
-                  <span className={styles.entityText}>
-                    <span className={styles.entityName}>
-                      {ref.sourceName ||
-                        `${getShortTableName(ref.sourceTable)} ${ref.sourceHash}`}
-                    </span>
-                    <span className={`${styles.entitySub} mono`}>
-                      {ref.paths.slice(0, 3).join(', ')}
-                      {ref.paths.length > 3 ? ` (+${ref.paths.length - 3} more)` : ''}
-                    </span>
-                  </span>
-                  <span className={styles.entityHash}>{ref.sourceHash}</span>
-                </button>
-              ))}
+              {refs.map((ref) => {
+                const refName =
+                  ref.sourceName ||
+                  `${getShortTableName(ref.sourceTable)} ${ref.sourceHash}`;
+                const definitionRef: DefinitionRef = {
+                  table: ref.sourceTable,
+                  hash: ref.sourceHash,
+                  label: ref.sourceName || undefined,
+                  icon: ref.sourceIcon,
+                };
+                return (
+                  <div
+                    key={`${ref.sourceTable}:${ref.sourceHash}`}
+                    className={styles.refActionRow}
+                  >
+                    <button
+                      type="button"
+                      className={styles.entityRow}
+                      title="Click to open in tab · Ctrl+Click or middle-click for new tab"
+                      onClick={(event) =>
+                        onNavigateRef(
+                          definitionRef,
+                          event.ctrlKey || event.metaKey || event.shiftKey,
+                        )
+                      }
+                      onAuxClick={(event) => {
+                        if (event.button === 1) {
+                          event.preventDefault();
+                          onNavigateRef(definitionRef, true);
+                        }
+                      }}
+                    >
+                      <BungieIcon icon={ref.sourceIcon} size={28} />
+                      <span className={styles.entityText}>
+                        <span className={styles.entityName}>{refName}</span>
+                        <span className={`${styles.entitySub} mono`}>
+                          {ref.paths.slice(0, 3).join(', ')}
+                          {ref.paths.length > 3
+                            ? ` (+${ref.paths.length - 3} more)`
+                            : ''}
+                        </span>
+                      </span>
+                      <span className={styles.entityHash}>{ref.sourceHash}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.openInNewTabBtn}
+                      aria-label={`Open ${refName} in new tab`}
+                      title={`Open ${refName} in new tab`}
+                      onClick={() => onNavigateRef(definitionRef, true)}
+                    >
+                      <ExternalLinkIcon size={14} />
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           </section>
         ))

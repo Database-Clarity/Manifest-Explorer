@@ -8,6 +8,61 @@
   font-size: 0.8125rem;
 }
 
+.currentAction {
+  @include ctl.button;
+  justify-content: flex-start;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.25rem 0.5rem;
+  text-align: left;
+  white-space: normal;
+}
+
+.currentActionOn {
+  color: var(--accent-ink);
+  border-color: var(--accent-ink);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.currentIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.currentText {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.0625rem;
+  min-width: 0;
+}
+
+.currentTitle {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.currentName {
+  overflow: hidden;
+  color: var(--text2);
+  font-size: 0.6875rem;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (hover: hover) {
+  .currentActionOn:hover:not(:disabled) {
+    color: var(--accent-ink);
+    border-color: var(--accent-ink);
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+  }
+}
+
 .switchRow {
   display: flex;
   align-items: center;

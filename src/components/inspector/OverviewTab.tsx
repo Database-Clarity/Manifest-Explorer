@@ -22,7 +22,11 @@ import { bungieAssetUrl } from '../../manifest/hash';
 import { getShortTableName } from '../../manifest/tables';
 import { BungieIcon } from '../BungieIcon';
 import { Skeleton } from '../../ui/Skeleton';
-import { ChevronDownIcon, ChevronRightIcon } from '../../ui/Icons';
+import {
+  ChevronDownIcon,
+  ChevronRightIcon,
+  ExternalLinkIcon,
+} from '../../ui/Icons';
 import { getTierColorVar } from '../../ui/rarity';
 import styles from './InspectorTabs.module.scss';
 
@@ -61,15 +65,24 @@ interface RefButtonProps {
   className: string | undefined;
   title?: string;
   onNavigate: NavigateRef;
+  openInNewTabLabel?: string;
   children: ReactNode;
 }
 
 /**
  * Every definition link opens in place on a plain click and in a new inspector
- * tab on Ctrl/Cmd+Click or middle-click.
+ * tab on Ctrl/Cmd+Click or middle-click. Rows can additionally expose an
+ * explicit new-tab action for touch users.
  */
-function RefButton({ ref, className, title, onNavigate, children }: RefButtonProps): ReactNode {
-  return (
+function RefButton({
+  ref,
+  className,
+  title,
+  onNavigate,
+  openInNewTabLabel,
+  children,
+}: RefButtonProps): ReactNode {
+  const mainButton = (
     <button
       type="button"
       className={className}
@@ -87,6 +100,25 @@ function RefButton({ ref, className, title, onNavigate, children }: RefButtonPro
     >
       {children}
     </button>
+  );
+
+  if (!openInNewTabLabel) {
+    return mainButton;
+  }
+
+  return (
+    <div className={styles.refActionRow}>
+      {mainButton}
+      <button
+        type="button"
+        className={styles.openInNewTabBtn}
+        aria-label={`Open ${openInNewTabLabel} in new tab`}
+        title={`Open ${openInNewTabLabel} in new tab`}
+        onClick={() => onNavigate(ref, true)}
+      >
+        <ExternalLinkIcon size={14} />
+      </button>
+    </div>
   );
 }
 
@@ -559,6 +591,9 @@ function LinkedDefinitionsSection({
                   }}
                   className={styles.entityRow}
                   onNavigate={onNavigate}
+                  openInNewTabLabel={
+                    entity.name || `${getShortTableName(entity.table)} ${entity.hash}`
+                  }
                 >
                   <BungieIcon icon={entity.icon} size={28} />
                   <span className={styles.entityText}>

@@ -70,6 +70,14 @@ const STAGE_PADDING = 32;
 const FEEDBACK_MS = 1_800;
 const DOWNLOAD_URL_REVOKE_MS = 1_000;
 const OPEN_TAB_URL_REVOKE_MS = 60_000;
+const FOCUSABLE_SELECTOR = [
+  'a[href]',
+  'button:not([disabled])',
+  'input:not([disabled]):not([type="hidden"])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(',');
 
 const SCALING_OPTIONS: ReadonlyArray<{
   value: ScalingMode;
@@ -233,6 +241,13 @@ function openBlobInNewTab(blob: Blob): void {
   window.setTimeout(() => URL.revokeObjectURL(objectUrl), OPEN_TAB_URL_REVOKE_MS);
 }
 
+/** Visible, enabled controls inside the lightbox card, in tab order. */
+function getFocusableElements(container: HTMLElement): HTMLElement[] {
+  return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
+    (element) => element.getClientRects().length > 0,
+  );
+}
+
 export function ImageLightbox({
   url,
   path,
@@ -263,9 +278,53 @@ export function ImageLightbox({
   const dpr = readDevicePixelRatio();
 
   useEffect(() => {
+    // Remember the trigger so closing the viewer can hand focus back to it.
+    const previouslyFocused =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const frame = window.requestAnimationFrame(() => closeButtonRef.current?.focus());
     dialogRef.current?.focus({ preventScroll: true });
-    return () => window.cancelAnimationFrame(frame);
+
+    const handleFocusTrap = (event: KeyboardEvent): void => {
+      if (event.key !== 'Tab') return;
+      const dialog = dialogRef.current;
+      if (!dialog) return;
+
+      const focusable = getFocusableElements(dialog);
+      if (focusable.length === 0) {
+        event.preventDefault();
+        dialog.focus({ preventScroll: true });
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!first || !last) return;
+
+      const active = document.activeElement;
+      const activeInside = active instanceof Node && dialog.contains(active);
+      if (event.shiftKey) {
+        if (!activeInside || active === first || active === dialog) {
+          event.preventDefault();
+          last.focus({ preventScroll: true });
+        }
+        return;
+      }
+
+      if (!activeInside || active === last || active === dialog) {
+        event.preventDefault();
+        first.focus({ preventScroll: true });
+      }
+    };
+
+    document.addEventListener('keydown', handleFocusTrap, true);
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.removeEventListener('keydown', handleFocusTrap, true);
+      if (previouslyFocused?.isConnected) {
+        previouslyFocused.focus({ preventScroll: true });
+      }
+    };
   }, []);
 
   useEffect(() => {

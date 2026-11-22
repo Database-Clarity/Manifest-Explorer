@@ -169,7 +169,12 @@
 @include theme.mobile {
   .statusBar {
     gap: 0.375rem;
-    padding: 0 var(--page-x);
+    height: calc(1.5rem + env(safe-area-inset-bottom, 0px));
+    min-height: calc(1.5rem + env(safe-area-inset-bottom, 0px));
+    padding-top: 0;
+    padding-right: max(var(--page-x), env(safe-area-inset-right, 0px));
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    padding-left: max(var(--page-x), env(safe-area-inset-left, 0px));
   }
 
   .indexed {

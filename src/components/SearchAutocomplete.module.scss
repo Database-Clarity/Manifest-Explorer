@@ -1,3 +1,5 @@
+@use '../styles/variables' as theme;
+
 /**
  * Filter autocomplete dropdown. Anchored by `.searchField` in Header so it sits
  * directly under the search input; clarity control surface, compact rows.
@@ -11,6 +13,7 @@
   display: flex;
   flex-direction: column;
   max-height: min(22rem, calc(100dvh - 5rem));
+  max-width: calc(100vw - 1rem);
   overflow: hidden;
   background: var(--raised);
   border: 1px solid var(--pop-edge);
@@ -107,4 +110,15 @@
   font-size: 0.625rem;
   white-space: nowrap;
   overflow: hidden;
+}
+
+@include theme.mobile-or-coarse {
+  .option {
+    min-height: 2.25rem;
+  }
+
+  /* Keyboard-only hints consume too much of the narrow footer on phones. */
+  .footer {
+    display: none;
+  }
 }

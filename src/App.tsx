@@ -65,6 +65,26 @@ interface HistoryTabState {
   manifestExplorer: true;
   sessionId: string;
   historyIndex: number;
+  mobileInspector?: true;
+}
+
+function buildSearchHashUrl(
+  query: string,
+  deepSearch: boolean,
+  table: string,
+): string {
+  const params = new URLSearchParams();
+  if (query.length > 0) {
+    params.set('q', query);
+  }
+  if (deepSearch) {
+    params.set('deep', '1');
+  }
+  if (table.length > 0 && table !== 'all') {
+    params.set('table', table);
+  }
+  const queryString = params.toString();
+  return queryString.length > 0 ? `#/?${queryString}` : '#/';
 }
 
 function isTextInputTarget(target: EventTarget | null): boolean {
@@ -129,6 +149,11 @@ export function App(): ReactNode {
   );
   const [appUpdateAvailable, setAppUpdateAvailable] = useState(false);
   const [appUpdateDismissed, setAppUpdateDismissed] = useState(false);
+  const [isNarrowLayout, setIsNarrowLayout] = useState(
+    () =>
+      typeof window !== 'undefined' &&
+      window.matchMedia('(max-width: 900px)').matches,
+  );
   const lastManifestVersionRef = useRef(
     useExplorerStore.getState().manifestStatus.versionSignature,
   );
@@ -165,6 +190,7 @@ export function App(): ReactNode {
   const historyIndex = useExplorerStore((s) => s.historyIndex);
   const activeTab = useExplorerStore((s) => s.activeTab);
   const pinnedDiffRef = useExplorerStore((s) => s.pinnedDiffRef);
+  const mobileInspectorOpen = useExplorerStore((s) => s.mobileInspectorOpen);
 
   const setManifestStatus = useExplorerStore((s) => s.setManifestStatus);
   const setTables = useExplorerStore((s) => s.setTables);
@@ -185,6 +211,7 @@ export function App(): ReactNode {
   const jumpToHistoryIndex = useExplorerStore((s) => s.jumpToHistoryIndex);
   const restoreHistoryPoint = useExplorerStore((s) => s.restoreHistoryPoint);
   const closeInspector = useExplorerStore((s) => s.closeInspector);
+  const setMobileInspectorOpen = useExplorerStore((s) => s.setMobileInspectorOpen);
   const setActiveTab = useExplorerStore((s) => s.setActiveTab);
   const pushNotice = useExplorerStore((s) => s.pushNotice);
   const hydrateFromHashUrl = useExplorerStore((s) => s.hydrateFromHashUrl);
@@ -231,10 +258,13 @@ export function App(): ReactNode {
 
   const syncBrowserHistory = useCallback((mode: 'replace' | 'push') => {
     const st = useExplorerStore.getState();
-    const nextHash = st.buildHashUrl();
+    const nextHash =
+      isNarrowLayout && !st.mobileInspectorOpen
+        ? buildSearchHashUrl(st.query, st.deepSearch, st.filters.table)
+        : st.buildHashUrl();
     const active =
       st.activeSessionIndex >= 0 ? st.sessions[st.activeSessionIndex] : undefined;
-    const historyState: HistoryTabState | null = active
+    let historyState: HistoryTabState | null = active
       ? {
           manifestExplorer: true,
           sessionId: active.id,
@@ -242,8 +272,37 @@ export function App(): ReactNode {
         }
       : null;
 
+    if (isNarrowLayout) {
+      const existingState =
+        window.history.state && typeof window.history.state === 'object'
+          ? (window.history.state as Record<string, unknown>)
+          : {};
+      if (st.mobileInspectorOpen) {
+        historyState = {
+          ...existingState,
+          ...(historyState ?? {}),
+          mobileInspector: true,
+        } as HistoryTabState;
+      } else {
+        const {
+          manifestExplorer: _manifestExplorer,
+          sessionId: _sessionId,
+          historyIndex: _historyIndex,
+          mobileInspector: _mobileInspector,
+          ...otherState
+        } = existingState;
+        historyState = Object.keys(otherState).length > 0
+          ? (otherState as unknown as HistoryTabState)
+          : null;
+      }
+    }
+
     if (active) {
-      if (mode === 'push') {
+      if (isNarrowLayout && mode === 'replace') {
+        // Mobile navigation stays on one inspector history entry, so those
+        // replaced tab-history points are not browser-history destinations.
+        maxPushedBySessionRef.current.delete(active.id);
+      } else if (mode === 'push') {
         maxPushedBySessionRef.current.set(active.id, active.historyIndex);
       } else if (!maxPushedBySessionRef.current.has(active.id)) {
         maxPushedBySessionRef.current.set(active.id, active.historyIndex);
@@ -260,6 +319,14 @@ export function App(): ReactNode {
     window.setTimeout(() => {
       syncingHashRef.current = false;
     }, 0);
+  }, [isNarrowLayout]);
+
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 900px)');
+    const updateLayout = (): void => setIsNarrowLayout(media.matches);
+    updateLayout();
+    media.addEventListener('change', updateLayout);
+    return () => media.removeEventListener('change', updateLayout);
   }, []);
 
   // Hydrate initial URL hash & unify browser back/forward with the tab's history/future
@@ -272,7 +339,8 @@ export function App(): ReactNode {
     let popTimer: number | null = null;
 
     const onPopState = (event: PopStateEvent): void => {
-      if (syncingHashRef.current) {
+      const isMobile = window.matchMedia('(max-width: 900px)').matches;
+      if (syncingHashRef.current && !isMobile) {
         return;
       }
       flushActiveInspectorDomScroll();
@@ -284,7 +352,40 @@ export function App(): ReactNode {
         window.clearTimeout(popTimer);
       }
 
-      const state = event.state as Partial<HistoryTabState> | null;
+      const state = event.state as
+        | (Partial<HistoryTabState> & { mobileInspector?: boolean })
+        | null;
+
+      if (isMobile) {
+        if (state?.mobileInspector !== true) {
+          // The previous entry is the search screen. Keep every inspector tab
+          // and its history in the store so Forward or another result can
+          // reopen the inspector without rebuilding the tab group.
+          setMobileInspectorOpen(false);
+        } else {
+          const current = useExplorerStore.getState();
+          if (current.sessions.length > 0) {
+            if (
+              state.manifestExplorer === true &&
+              typeof state.sessionId === 'string' &&
+              typeof state.historyIndex === 'number'
+            ) {
+              restoreHistoryPoint(state.sessionId, state.historyIndex);
+            }
+            setMobileInspectorOpen(true);
+          } else {
+            hydrateFromHashUrl(currentHash);
+          }
+        }
+
+        // Keep the popstate guard active past Chromium's trailing hashchange.
+        popTimer = window.setTimeout(() => {
+          popTimer = null;
+          applyingPopStateRef.current = false;
+        }, 50);
+        return;
+      }
+
       let restored = false;
       if (
         state &&
@@ -327,7 +428,12 @@ export function App(): ReactNode {
       window.removeEventListener('popstate', onPopState);
       window.removeEventListener('hashchange', onHashChange);
     };
-  }, [hydrateFromHashUrl, restoreHistoryPoint, syncBrowserHistory]);
+  }, [
+    hydrateFromHashUrl,
+    restoreHistoryPoint,
+    setMobileInspectorOpen,
+    syncBrowserHistory,
+  ]);
 
   // Keep URL hash synchronized without clobbering pushed tab history entries
   useEffect(() => {
@@ -345,6 +451,8 @@ export function App(): ReactNode {
     historyIndex,
     deepSearch,
     filters.table,
+    isNarrowLayout,
+    mobileInspectorOpen,
     buildHashUrl,
     syncBrowserHistory,
   ]);
@@ -1076,6 +1184,7 @@ export function App(): ReactNode {
         return;
       }
 
+      const wasMobileInspectorOpen = useExplorerStore.getState().mobileInspectorOpen;
       flushActiveInspectorDomScroll();
       const rawFilter = item.deepMatch
         ? useExplorerStore.getState().query.trim().replace(/^deep:\s*/i, '').trim()
@@ -1092,9 +1201,11 @@ export function App(): ReactNode {
         true,
         rawFilter && rawFilter.length > 0 ? rawFilter : undefined,
       );
-      syncBrowserHistory('replace');
+      syncBrowserHistory(
+        isNarrowLayout && !wasMobileInspectorOpen ? 'push' : 'replace',
+      );
     },
-    [openInNewTab, pushNotice, syncBrowserHistory],
+    [isNarrowLayout, openInNewTab, pushNotice, syncBrowserHistory],
   );
 
   const handleNavigateRef = useCallback(
@@ -1134,6 +1245,7 @@ export function App(): ReactNode {
           : undefined;
 
       if (
+        !isNarrowLayout &&
         nextActive &&
         prevActive &&
         nextActive.id === prevActive.id &&
@@ -1144,7 +1256,7 @@ export function App(): ReactNode {
         syncBrowserHistory('replace');
       }
     },
-    [navigateInTab, openInNewTab, syncBrowserHistory],
+    [isNarrowLayout, navigateInTab, openInNewTab, syncBrowserHistory],
   );
 
   // Unified Back / Forward / Timeline Jump — keeps browser history cursor in lockstep
@@ -1164,6 +1276,13 @@ export function App(): ReactNode {
 
       flushActiveInspectorDomScroll();
 
+      if (isNarrowLayout) {
+        if (jumpToHistoryIndex(targetIdx)) {
+          syncBrowserHistory('replace');
+        }
+        return;
+      }
+
       const curHist = window.history.state as Partial<HistoryTabState> | null;
       const maxPushed = maxPushedBySessionRef.current.get(active.id) ?? -1;
       if (
@@ -1180,7 +1299,7 @@ export function App(): ReactNode {
         syncBrowserHistory('replace');
       }
     },
-    [jumpToHistoryIndex, syncBrowserHistory],
+    [isNarrowLayout, jumpToHistoryIndex, syncBrowserHistory],
   );
 
   const handleNavigateBack = useCallback(() => {
@@ -1417,6 +1536,7 @@ export function App(): ReactNode {
         onClearCache={handleClearCache}
         onLoadAllTables={handleLoadAllTables}
         onOpenHelp={handleOpenHelp}
+        onOpenChangelog={handleOpenChangelog}
         onLocaleChange={handleLocaleChange}
         onSelectTable={handleSelectTable}
       />
@@ -1455,39 +1575,43 @@ export function App(): ReactNode {
           onLoadAllTables={handleLoadAllTables}
         />
 
-        {!inspectorMaximized && (
+        {(isNarrowLayout
+          ? !mobileInspectorOpen
+          : !inspectorMaximized) && (
           <ResultsPane
             onOpenItem={handleOpenResult}
             onRetryBoot={handleRetryBoot}
           />
         )}
 
-        <DefinitionInspector
-          width={inspectorWidth}
-          onResize={handleInspectorResize}
-          currentRef={currentRef}
-          detail={detail}
-          loading={detailLoading}
-          loadingFull={loadingFull}
-          error={detailError}
-          variants={variants}
-          variantsLoading={variantsLoading}
-          references={references}
-          referencesLoading={referencesLoading}
-          pinnedDetail={pinnedDetail}
-          pinnedLoading={pinnedLoading}
-          clarityEntry={clarityEntry}
-          clarityLoading={clarityLoading}
-          showClarity={showClarityDescriptions}
-          onNavigateRef={handleNavigateRef}
-          onNavigateBack={handleNavigateBack}
-          onNavigateForward={handleNavigateForward}
-          onJumpToHistoryIndex={handleJumpToHistoryIndex}
-          onSwitchSession={handleSwitchSession}
-          onLoadFullItem={handleLoadFullItem}
-          onLoadPriorityTable={handleLoadTable}
-          onRetry={handleRetryDetail}
-        />
+        {currentRef && (!isNarrowLayout || mobileInspectorOpen) && (
+          <DefinitionInspector
+            width={inspectorWidth}
+            onResize={handleInspectorResize}
+            currentRef={currentRef}
+            detail={detail}
+            loading={detailLoading}
+            loadingFull={loadingFull}
+            error={detailError}
+            variants={variants}
+            variantsLoading={variantsLoading}
+            references={references}
+            referencesLoading={referencesLoading}
+            pinnedDetail={pinnedDetail}
+            pinnedLoading={pinnedLoading}
+            clarityEntry={clarityEntry}
+            clarityLoading={clarityLoading}
+            showClarity={showClarityDescriptions}
+            onNavigateRef={handleNavigateRef}
+            onNavigateBack={handleNavigateBack}
+            onNavigateForward={handleNavigateForward}
+            onJumpToHistoryIndex={handleJumpToHistoryIndex}
+            onSwitchSession={handleSwitchSession}
+            onLoadFullItem={handleLoadFullItem}
+            onLoadPriorityTable={handleLoadTable}
+            onRetry={handleRetryDetail}
+          />
+        )}
       </main>
 
       <StatusBar

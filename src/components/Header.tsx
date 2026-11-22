@@ -1,5 +1,7 @@
 /// <reference types="vite/client" />
 import {
+  useEffect,
+  useLayoutEffect,
   memo,
   useId,
   useMemo,
@@ -12,9 +14,14 @@ import {
   type ReactNode,
   type RefObject,
 } from 'react';
+import {
+  CHANGELOG,
+  computeChangelogOpenState,
+  readLastSeenChangelogVersion,
+} from '../data/changelog';
 import type { BungieLocale, SortMode, TableStatus } from '../types/manifest';
 import { BUNGIE_LOCALES } from '../types/manifest';
-import { getShortTableName } from '../manifest/tables';
+import { getFriendlyTableName, getShortTableName } from '../manifest/tables';
 import { useCollectorStore } from '../stores/collector';
 import { useExplorerStore } from '../stores/explorer';
 import { useSettingsStore } from '../stores/settings';
@@ -42,17 +49,18 @@ import { SettingsPopover } from './SettingsPopover';
 import styles from './Header.module.scss';
 
 export interface HeaderProps {
-  searchInputRef: RefObject<HTMLInputElement | null>;
+  searchInputRef: RefObject<HTMLInputElement | HTMLTextAreaElement | null>;
   onCheckUpdates: () => void;
   onClearCache: () => void;
   onLoadAllTables: () => void;
   onOpenHelp: () => void;
+  onOpenChangelog?: () => void;
   onLocaleChange: (locale: BungieLocale) => void;
   onSelectTable: (table: string) => void;
 }
 
 type MenuName = 'filters' | 'collector' | 'settings' | 'tables';
-type MenuSource = 'desktop' | 'mobile';
+type MenuSource = 'desktop' | 'mobile' | 'settings';
 
 interface MenuState {
   name: MenuName;
@@ -87,12 +95,22 @@ function cx(...parts: Array<string | false | null | undefined>): string {
  * currently in the query (each chip writes one) plus the popover-only
  * "include unnamed definitions" toggle.
  */
-function countActiveFilters(query: string, includeUnnamed: boolean): number {
-  return countQueryFilterTokens(query) + (includeUnnamed ? 1 : 0);
+function countActiveFilters(
+  query: string,
+  includeUnnamed: boolean,
+  deepSearch: boolean,
+): number {
+  return countQueryFilterTokens(query) + (includeUnnamed ? 1 : 0) + (deepSearch ? 1 : 0);
 }
 
 function formatBadge(count: number): string {
   return count > 99 ? '99+' : String(count);
+}
+
+function hasUnseenChangelog(): boolean {
+  return (
+    computeChangelogOpenState(readLastSeenChangelogVersion(), CHANGELOG).unseenVersions.length > 0
+  );
 }
 
 /**
@@ -145,17 +163,51 @@ function dedupeTables(tables: TableStatus[]): TableStatus[] {
   return [...byShortName.values()];
 }
 
+function matchesTableFilter(table: TableStatus, filter: string): boolean {
+  if (filter.length === 0) return true;
+  const compactFilter = filter.replace(/\s+/g, '');
+  const names = [table.name, table.shortName, getFriendlyTableName(table.name)];
+  return names.some((name) => {
+    const normalized = name.toLowerCase();
+    return (
+      normalized.includes(filter) || normalized.replace(/\s+/g, '').includes(compactFilter)
+    );
+  });
+}
+
+function resizeSearchTextarea(input: HTMLTextAreaElement, focused: boolean): void {
+  input.style.height = '';
+  if (!focused) {
+    input.style.overflowY = 'hidden';
+    return;
+  }
+
+  const maxHeight = Number.parseFloat(window.getComputedStyle(input).maxHeight) || 120;
+  const contentHeight = input.scrollHeight;
+  const desiredHeight = Math.min(contentHeight, maxHeight);
+  input.style.height = `${desiredHeight}px`;
+  input.style.overflowY = contentHeight > maxHeight ? 'auto' : 'hidden';
+}
+
 export const Header = memo(function Header({
   searchInputRef,
   onCheckUpdates,
   onClearCache,
   onLoadAllTables,
   onOpenHelp,
+  onOpenChangelog,
   onLocaleChange,
   onSelectTable,
 }: HeaderProps): ReactNode {
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [searchFocused, setSearchFocused] = useState(false);
+  const [isMobileViewport, setIsMobileViewport] = useState(
+    () =>
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(max-width: 700px)').matches,
+  );
+  const [tableSearch, setTableSearch] = useState('');
   const [searchCaret, setSearchCaret] = useState(0);
   const [suggestionIndex, setSuggestionIndex] = useState(-1);
   const [suggestionsDismissed, setSuggestionsDismissed] = useState(false);
@@ -171,11 +223,11 @@ export const Header = memo(function Header({
   const query = useExplorerStore((state) => state.query);
   const setQuery = useExplorerStore((state) => state.setQuery);
   const deepSearch = useExplorerStore((state) => state.deepSearch);
-  const toggleDeepSearch = useExplorerStore((state) => state.toggleDeepSearch);
   const tableFilter = useExplorerStore((state) => state.filters.table);
   const includeUnnamed = useExplorerStore((state) => state.filters.includeUnnamed);
   const setTableFilter = useExplorerStore((state) => state.setTableFilter);
   const setMobileInspectorOpen = useExplorerStore((state) => state.setMobileInspectorOpen);
+  const sessions = useExplorerStore((state) => state.sessions);
   const tables = useExplorerStore((state) => state.tables);
   const filterCatalog = useExplorerStore((state) => state.filterCatalog);
   const indexedEntryCount = useExplorerStore((state) => state.manifestStatus.indexedEntryCount);
@@ -187,7 +239,7 @@ export const Header = memo(function Header({
   const collectedCount = useCollectorStore((state) => state.items.length);
   const collectMode = useCollectorStore((state) => state.collectMode);
 
-  const activeFilterCount = countActiveFilters(query, includeUnnamed);
+  const activeFilterCount = countActiveFilters(query, includeUnnamed, deepSearch);
   // These only depend on the table list, not the query: keep them stable so
   // search keystrokes (which re-render Header via `query`) never re-dedupe or
   // re-group the 115+ table rows.
@@ -196,6 +248,50 @@ export const Header = memo(function Header({
     () => uniqueTables.some((table) => !table.loaded),
     [uniqueTables],
   );
+  const groupedTables = useMemo(
+    () =>
+      TABLE_GROUP_ORDER.map(([group, label]) => ({
+        group,
+        label,
+        tables: uniqueTables.filter((table) => table.group === group),
+      })).filter((entry) => entry.tables.length > 0),
+    [uniqueTables],
+  );
+  const filteredGroupedTables = useMemo(() => {
+    const normalized = tableSearch.trim().toLowerCase();
+    return groupedTables
+      .map((group) => ({
+        ...group,
+        tables: group.tables.filter((table) => matchesTableFilter(table, normalized)),
+      }))
+      .filter((group) => group.tables.length > 0);
+  }, [groupedTables, tableSearch]);
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const media = window.matchMedia('(max-width: 700px)');
+    const updateViewport = () => setIsMobileViewport(media.matches);
+    updateViewport();
+    media.addEventListener('change', updateViewport);
+    return () => media.removeEventListener('change', updateViewport);
+  }, []);
+
+  useLayoutEffect(() => {
+    const input = searchInputRef.current;
+    if (!(input instanceof HTMLTextAreaElement)) return;
+
+    resizeSearchTextarea(input, searchFocused);
+  }, [query, searchFocused, isMobileViewport, searchInputRef]);
+
+  useEffect(() => {
+    const input = searchInputRef.current;
+    if (!(input instanceof HTMLTextAreaElement)) return;
+
+    const resizeSearch = () =>
+      resizeSearchTextarea(input, document.activeElement === input);
+    window.addEventListener('resize', resizeSearch);
+    return () => window.removeEventListener('resize', resizeSearch);
+  }, [searchInputRef]);
 
   // Tokenizing the catalog (115 sources, 28 seasons, categories) only matters
   // while the dropdown can actually appear; skip it whenever the input is not
@@ -213,16 +309,6 @@ export const Header = memo(function Header({
       ? suggestionIndex
       : -1;
 
-  const groupedTables = useMemo(
-    () =>
-      TABLE_GROUP_ORDER.map(([group, label]) => ({
-        group,
-        label,
-        tables: uniqueTables.filter((table) => table.group === group),
-      })).filter((entry) => entry.tables.length > 0),
-    [uniqueTables],
-  );
-
   const selectedTable =
     tableFilter === 'all' ? null : uniqueTables.find((table) => table.name === tableFilter);
   const activeTableLabel =
@@ -236,7 +322,11 @@ export const Header = memo(function Header({
     menu?.name === 'filters' && menu.source === 'mobile' ? filtersMobileRef : filtersDesktopRef;
   const filtersAlign = menu?.name === 'filters' && menu.source === 'mobile' ? 'end' : 'start';
   const collectorAnchorRef =
-    menu?.name === 'collector' && menu.source === 'mobile' ? collectorMobileRef : collectorDesktopRef;
+    menu?.name === 'collector' && menu.source === 'mobile'
+      ? collectorMobileRef
+      : menu?.name === 'collector' && menu.source === 'settings'
+        ? settingsRef
+        : collectorDesktopRef;
 
   function toggleMenu(name: MenuName, source: MenuSource): void {
     setMenu((current) =>
@@ -261,7 +351,7 @@ export const Header = memo(function Header({
   }
 
   /** Keeps the tracked caret in sync without resetting the highlight needlessly. */
-  function syncSearchCaret(input: HTMLInputElement): number {
+  function syncSearchCaret(input: HTMLInputElement | HTMLTextAreaElement): number {
     const caret = input.selectionStart ?? input.value.length;
     if (caret !== searchCaret) {
       setSearchCaret(caret);
@@ -270,14 +360,15 @@ export const Header = memo(function Header({
     return caret;
   }
 
-  function handleSearchChange(event: ChangeEvent<HTMLInputElement>): void {
-    setQuery(event.target.value);
-    setSearchCaret(event.target.selectionStart ?? event.target.value.length);
+  function handleSearchChange(event: ChangeEvent<HTMLTextAreaElement>): void {
+    const value = event.target.value.replace(/\r?\n+/g, ' ');
+    setQuery(value);
+    setSearchCaret(Math.min(event.target.selectionStart ?? value.length, value.length));
     setSuggestionIndex(-1);
     setSuggestionsDismissed(false);
   }
 
-  function handleSearchFocus(event: FocusEvent<HTMLInputElement>): void {
+  function handleSearchFocus(event: FocusEvent<HTMLTextAreaElement>): void {
     setSearchFocused(true);
     setSearchCaret(event.currentTarget.selectionStart ?? event.currentTarget.value.length);
     setSuggestionsDismissed(false);
@@ -289,11 +380,11 @@ export const Header = memo(function Header({
     setSuggestionsDismissed(false);
   }
 
-  function handleSearchClick(event: MouseEvent<HTMLInputElement>): void {
+  function handleSearchClick(event: MouseEvent<HTMLTextAreaElement>): void {
     syncSearchCaret(event.currentTarget);
   }
 
-  function handleSearchKeyUp(event: KeyboardEvent<HTMLInputElement>): void {
+  function handleSearchKeyUp(event: KeyboardEvent<HTMLTextAreaElement>): void {
     // These keys are handled in keydown; accepting moves the caret on the next
     // frame, so resyncing here would overwrite it with the stale position.
     if (
@@ -326,7 +417,7 @@ export const Header = memo(function Header({
     }
   }
 
-  function handleSearchKeyDown(event: KeyboardEvent<HTMLInputElement>): void {
+  function handleSearchKeyDown(event: KeyboardEvent<HTMLTextAreaElement>): void {
     const input = event.currentTarget;
     const caret = input.selectionStart ?? input.value.length;
     const current = buildSearchSuggestions(query, caret, filterCatalog, tables);
@@ -339,6 +430,21 @@ export const Header = memo(function Header({
         setSuggestionsDismissed(true);
         setSuggestionIndex(-1);
       }
+      return;
+    }
+
+    if (event.key === 'Enter') {
+      if (open && suggestionIndex >= 0 && suggestionIndex < current.length) {
+        const chosen = current[suggestionIndex];
+        if (chosen) {
+          event.preventDefault();
+          event.stopPropagation();
+          acceptSuggestion(chosen);
+          return;
+        }
+      }
+      event.preventDefault();
+      if (isMobileViewport) input.blur();
       return;
     }
 
@@ -368,18 +474,11 @@ export const Header = memo(function Header({
       return;
     }
 
-    if (event.key === 'Enter') {
-      if (suggestionIndex < 0 || suggestionIndex >= current.length) return;
-      const chosen = current[suggestionIndex];
-      if (!chosen) return;
-      event.preventDefault();
-      event.stopPropagation();
-      acceptSuggestion(chosen);
-    }
   }
 
   function handleSelectTable(table: string): void {
     onSelectTable(table);
+    setTableSearch('');
     setMenu(null);
   }
 
@@ -396,7 +495,12 @@ export const Header = memo(function Header({
   return (
     <>
       <header className={styles.header}>
-        <div className={styles.bar}>
+        <div
+          className={cx(
+            styles.bar,
+            searchFocused && isMobileViewport && styles.barSearchFocused,
+          )}
+        >
           <button
             type="button"
             className={styles.brand}
@@ -423,9 +527,9 @@ export const Header = memo(function Header({
           <div className={styles.searchCluster}>
             <div className={styles.searchField}>
               <SearchIcon size={14} className={styles.searchIcon} />
-              <input
-                ref={searchInputRef}
-                type="search"
+              <textarea
+                ref={searchInputRef as RefObject<HTMLTextAreaElement | null>}
+                rows={1}
                 className={styles.searchInput}
                 value={query}
                 onChange={handleSearchChange}
@@ -435,9 +539,13 @@ export const Header = memo(function Header({
                 onKeyDown={handleSearchKeyDown}
                 onKeyUp={handleSearchKeyUp}
                 placeholder={
-                  deepSearch
-                    ? 'Deep search inside JSON keys & values…'
-                    : 'Search name, hash, or (damage:solar or damage:arc) tier:exotic…'
+                  isMobileViewport
+                    ? deepSearch
+                      ? 'Deep search JSON…'
+                      : 'Search name/hash…'
+                    : deepSearch
+                      ? 'Deep search inside JSON keys & values…'
+                      : 'Search name, hash, or (damage:solar or damage:arc) tier:exotic…'
                 }
                 aria-label={deepSearch ? 'Deep search inside manifest JSON' : 'Search the manifest'}
                 role="combobox"
@@ -453,6 +561,7 @@ export const Header = memo(function Header({
                 autoCorrect="off"
                 spellCheck={false}
                 enterKeyHint="search"
+                wrap="soft"
               />
               {query.length > 0 ? (
                 <button
@@ -481,7 +590,11 @@ export const Header = memo(function Header({
             <button
               ref={filtersDesktopRef}
               type="button"
-              className={cx(styles.iconBtn, styles.desktopOnly, activeFilterCount > 0 && styles.iconBtnOn)}
+              className={cx(
+                styles.iconBtn,
+                styles.desktopOnly,
+                activeFilterCount > 0 && styles.iconBtnOn,
+              )}
               onClick={() => toggleMenu('filters', 'desktop')}
               aria-label={
                 activeFilterCount > 0 ? `Filters, ${activeFilterCount} active` : 'Filters'
@@ -498,15 +611,6 @@ export const Header = memo(function Header({
               )}
             </button>
 
-            <button
-              type="button"
-              className={cx(styles.deepBtn, deepSearch && styles.iconBtnOn)}
-              onClick={toggleDeepSearch}
-              aria-pressed={deepSearch}
-              title="Deep Search — scan raw JSON keys and values across definitions instead of only names and descriptions"
-            >
-              Deep Search
-            </button>
           </div>
 
           <select
@@ -559,7 +663,7 @@ export const Header = memo(function Header({
           <button
             ref={settingsRef}
             type="button"
-            className={styles.iconBtn}
+            className={cx(styles.iconBtn, styles.settingsBtn)}
             onClick={() => toggleMenu('settings', 'desktop')}
             aria-label="Settings"
             aria-expanded={settingsOpen}
@@ -618,25 +722,39 @@ export const Header = memo(function Header({
             ))}
           </select>
 
-          <button
-            ref={collectorMobileRef}
-            type="button"
-            className={cx(styles.iconBtn, collectMode && styles.iconBtnOn)}
-            onClick={() => toggleMenu('collector', 'mobile')}
-            aria-label={
-              collectedCount > 0 ? `Collected items, ${collectedCount}` : 'Collected items'
-            }
-            aria-expanded={collectorOpen}
-            aria-haspopup="dialog"
-            title="Collected items"
-          >
-            <BookmarkIcon size={15} />
-            {collectedCount > 0 && (
-              <span className={styles.badge} aria-hidden="true">
-                {formatBadge(collectedCount)}
-              </span>
-            )}
-          </button>
+          {sessions.length > 0 && (
+            <button
+              type="button"
+              className={styles.tabsBtn}
+              onClick={() => setMobileInspectorOpen(true)}
+              aria-label={`Return to open tabs, ${sessions.length}`}
+              title={`Open tabs (${sessions.length})`}
+            >
+              Tabs ({sessions.length})
+            </button>
+          )}
+
+          {(collectMode || collectedCount > 0) && (
+            <button
+              ref={collectorMobileRef}
+              type="button"
+              className={cx(styles.iconBtn, collectMode && styles.iconBtnOn)}
+              onClick={() => toggleMenu('collector', 'mobile')}
+              aria-label={
+                collectedCount > 0 ? `Collected items, ${collectedCount}` : 'Collected items'
+              }
+              aria-expanded={collectorOpen}
+              aria-haspopup="dialog"
+              title="Collected items"
+            >
+              <BookmarkIcon size={15} />
+              {collectedCount > 0 && (
+                <span className={styles.badge} aria-hidden="true">
+                  {formatBadge(collectedCount)}
+                </span>
+              )}
+            </button>
+          )}
         </div>
       </header>
 
@@ -649,6 +767,20 @@ export const Header = memo(function Header({
           label="Tables"
           width="16rem"
         >
+          <div className={styles.menuSearchWrap}>
+            <SearchIcon size={12} className={styles.menuSearchIcon} />
+            <input
+              type="search"
+              className={styles.menuSearch}
+              value={tableSearch}
+              onChange={(event) => setTableSearch(event.target.value)}
+              placeholder="Filter tables…"
+              aria-label="Filter tables"
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </div>
+
           <div className={styles.menuSection}>
             <button
               type="button"
@@ -661,7 +793,7 @@ export const Header = memo(function Header({
             </button>
           </div>
 
-          {groupedTables.map((group) => (
+          {filteredGroupedTables.map((group) => (
             <section key={group.group} className={styles.menuSection}>
               <h2 className={styles.menuTitle}>{group.label}</h2>
               {group.tables.map((table) => {
@@ -686,6 +818,10 @@ export const Header = memo(function Header({
               })}
             </section>
           ))}
+
+          {tableSearch.trim().length > 0 && filteredGroupedTables.length === 0 && (
+            <p className={styles.menuEmpty}>No tables match “{tableSearch.trim()}”.</p>
+          )}
 
           {hasUnloadedTables && (
             <div className={styles.menuFooter}>
@@ -717,6 +853,10 @@ export const Header = memo(function Header({
         onCheckUpdates={onCheckUpdates}
         onClearCache={onClearCache}
         onLoadAllTables={onLoadAllTables}
+        onOpenChangelog={onOpenChangelog}
+        onOpenHelp={onOpenHelp}
+        onOpenCollector={() => setMenu({ name: 'collector', source: 'settings' })}
+        hasUnseenChangelog={hasUnseenChangelog()}
         onLocaleChange={onLocaleChange}
       />
     </>

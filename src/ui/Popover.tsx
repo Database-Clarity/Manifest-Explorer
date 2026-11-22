@@ -28,6 +28,8 @@ export interface PopoverProps {
 interface Position {
   top: number;
   left: number;
+  maxHeight: number;
+  maxWidth: number;
 }
 
 const VIEWPORT_INSET = 8;
@@ -61,30 +63,48 @@ export function Popover({
 
       const rect = anchor.getBoundingClientRect();
       const panel = panelRef.current;
-      const panelWidth = panel?.offsetWidth ?? rect.width;
-      const panelHeight = panel?.offsetHeight ?? 0;
-      const viewportWidth = window.innerWidth;
-      const viewportHeight = window.innerHeight;
+      // visualViewport tracks the actually visible area above the mobile
+      // keyboard (and any pinch-zoom pan), where innerHeight does not.
+      const visualViewport = window.visualViewport;
+      const viewportLeft = visualViewport?.offsetLeft ?? 0;
+      const viewportTop = visualViewport?.offsetTop ?? 0;
+      const viewportWidth = visualViewport?.width ?? window.innerWidth;
+      const viewportHeight = visualViewport?.height ?? window.innerHeight;
+      const maxWidth = Math.max(0, viewportWidth - VIEWPORT_INSET * 2);
+      const maxHeight = Math.max(0, viewportHeight - VIEWPORT_INSET * 2);
+      const panelWidth = Math.min(panel?.offsetWidth ?? rect.width, maxWidth);
+      const panelHeight = Math.min(panel?.offsetHeight ?? 0, maxHeight);
 
+      const minLeft = viewportLeft + VIEWPORT_INSET;
+      const maxLeft = Math.max(
+        minLeft,
+        viewportLeft + viewportWidth - panelWidth - VIEWPORT_INSET,
+      );
       const preferredLeft = align === 'end' ? rect.right - panelWidth : rect.left;
-      const maxLeft = Math.max(VIEWPORT_INSET, viewportWidth - panelWidth - VIEWPORT_INSET);
-      const left = Math.min(Math.max(preferredLeft, VIEWPORT_INSET), maxLeft);
+      const left = Math.min(Math.max(preferredLeft, minLeft), maxLeft);
 
-      const maxTop = Math.max(VIEWPORT_INSET, viewportHeight - panelHeight - VIEWPORT_INSET);
+      const minTop = viewportTop + VIEWPORT_INSET;
+      const maxTop = Math.max(
+        minTop,
+        viewportTop + viewportHeight - panelHeight - VIEWPORT_INSET,
+      );
       let top = rect.bottom + ANCHOR_GAP;
-      if (top + panelHeight > viewportHeight - VIEWPORT_INSET) {
+      if (top + panelHeight > viewportTop + viewportHeight - VIEWPORT_INSET) {
         const above = rect.top - panelHeight - ANCHOR_GAP;
-        top = above >= VIEWPORT_INSET && above <= maxTop ? above : maxTop;
+        top = above >= minTop && above <= maxTop ? above : maxTop;
       }
-      top = Math.min(Math.max(top, VIEWPORT_INSET), maxTop);
+      top = Math.min(Math.max(top, minTop), maxTop);
 
-      setPosition({ top, left });
+      setPosition({ top, left, maxHeight, maxWidth });
     };
 
     updatePosition();
 
+    const visualViewport = window.visualViewport;
     window.addEventListener('resize', updatePosition);
     window.addEventListener('scroll', updatePosition, true);
+    visualViewport?.addEventListener('resize', updatePosition);
+    visualViewport?.addEventListener('scroll', updatePosition);
 
     const observer =
       typeof ResizeObserver !== 'undefined' ? new ResizeObserver(updatePosition) : null;
@@ -97,6 +117,8 @@ export function Popover({
     return () => {
       window.removeEventListener('resize', updatePosition);
       window.removeEventListener('scroll', updatePosition, true);
+      visualViewport?.removeEventListener('resize', updatePosition);
+      visualViewport?.removeEventListener('scroll', updatePosition);
       observer?.disconnect();
       window.cancelAnimationFrame(frame);
     };
@@ -160,6 +182,8 @@ export function Popover({
     top: position?.top ?? 0,
     left: position?.left ?? 0,
     width,
+    maxHeight: position?.maxHeight,
+    maxWidth: position?.maxWidth,
     visibility: position ? 'visible' : 'hidden',
   };
 

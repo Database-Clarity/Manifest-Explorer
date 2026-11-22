@@ -172,7 +172,9 @@ export function ChangelogDialog({
         </div>
 
         <div className={styles.footer}>
-          <p className={styles.footerNote}>Reopen anytime from What’s new in the bottom bar.</p>
+          <p className={styles.footerNote}>
+            Reopen anytime from What’s new in the bottom bar or Settings.
+          </p>
           <button type="button" className={styles.doneButton} onClick={() => onCloseRef.current()}>
             Got it
           </button>

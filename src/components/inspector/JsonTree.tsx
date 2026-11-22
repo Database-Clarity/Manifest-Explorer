@@ -543,6 +543,14 @@ const JsonNode = memo(function JsonNode({
     const objectKeyRef = isArray
       ? null
       : resolveObjectKeyRef(nodeKey, parentKey, resolvedRefs);
+    const objectRefTarget: DefinitionRef | null = objectKeyRef
+      ? {
+          table: objectKeyRef.table,
+          hash: objectKeyRef.hash,
+          label: objectKeyRef.name || undefined,
+          icon: objectKeyRef.icon,
+        }
+      : null;
     const count = isArray
       ? (value as unknown[]).length
       : Object.keys(value as Record<string, unknown>).length;
@@ -553,30 +561,14 @@ const JsonNode = memo(function JsonNode({
     const summary = isArray ? `[${count}]` : `{${count}}`;
 
     const handleObjectRefClick = (event: MouseEvent<HTMLButtonElement>): void => {
-      if (!objectKeyRef) return;
-      onNavigateRef(
-        {
-          table: objectKeyRef.table,
-          hash: objectKeyRef.hash,
-          label: objectKeyRef.name || undefined,
-          icon: objectKeyRef.icon,
-        },
-        event.ctrlKey || event.metaKey,
-      );
+      if (!objectRefTarget) return;
+      onNavigateRef(objectRefTarget, event.ctrlKey || event.metaKey);
     };
 
     const handleObjectRefAuxClick = (event: MouseEvent<HTMLButtonElement>): void => {
-      if (event.button === 1 && objectKeyRef) {
+      if (event.button === 1 && objectRefTarget) {
         event.preventDefault();
-        onNavigateRef(
-          {
-            table: objectKeyRef.table,
-            hash: objectKeyRef.hash,
-            label: objectKeyRef.name || undefined,
-            icon: objectKeyRef.icon,
-          },
-          true,
-        );
+        onNavigateRef(objectRefTarget, true);
       }
     };
 
@@ -609,16 +601,31 @@ const JsonNode = memo(function JsonNode({
           </button>
           <span className={styles.containerMeta}>{summary}</span>
           {objectKeyRef && (
-            <button
-              type="button"
-              className={`${styles.annotation} ${styles.annotationRef} ${styles.refBadge}`}
-              onClick={handleObjectRefClick}
-              onAuxClick={handleObjectRefAuxClick}
-              title={`Click to inspect · Ctrl+Click or middle-click for new tab (${objectKeyRef.table}:${objectKeyRef.hash}${objectKeyRef.subtitle ? ` — ${objectKeyRef.subtitle}` : ''})`}
-            >
-              <span className={styles.refTable}>{getShortTableName(objectKeyRef.table)}</span>
-              <span className={styles.refName}>&quot;{objectKeyRef.name || 'Unnamed'}&quot;</span>
-            </button>
+            <span className={styles.refLinkGroup}>
+              <button
+                type="button"
+                className={`${styles.annotation} ${styles.annotationRef} ${styles.refBadge}`}
+                onClick={handleObjectRefClick}
+                onAuxClick={handleObjectRefAuxClick}
+                title={`Click to inspect · Ctrl+Click or middle-click for new tab (${objectKeyRef.table}:${objectKeyRef.hash}${objectKeyRef.subtitle ? ` — ${objectKeyRef.subtitle}` : ''})`}
+              >
+                <span className={styles.refTable}>{getShortTableName(objectKeyRef.table)}</span>
+                <span className={styles.refName}>&quot;{objectKeyRef.name || 'Unnamed'}&quot;</span>
+              </button>
+              <button
+                type="button"
+                className={styles.refOpenBtn}
+                onClick={() => {
+                  if (objectRefTarget) {
+                    onNavigateRef(objectRefTarget, true);
+                  }
+                }}
+                title={`Open ${objectKeyRef.name || getShortTableName(objectKeyRef.table)} in a new tab`}
+                aria-label={`Open ${objectKeyRef.name || getShortTableName(objectKeyRef.table)} in a new tab`}
+              >
+                <ExternalLinkIcon size={11} />
+              </button>
+            </span>
           )}
           {peek && <span className={styles.peek}>{peek}</span>}
           {swatch && (
@@ -692,56 +699,49 @@ const JsonNode = memo(function JsonNode({
     typeof value === 'number'
       ? resolveHashForNode(nodeKey, parentKey, value, resolvedRefs)
       : null;
+  const resolvedRefTarget: DefinitionRef | null = resolvedRef
+    ? {
+        table: resolvedRef.table,
+        hash: resolvedRef.hash,
+        label: resolvedRef.name || undefined,
+        icon: resolvedRef.icon,
+      }
+    : null;
   const lazyTargetTable =
     !resolvedRef && typeof value === 'number' && Number.isInteger(value) && value > 0
       ? getTargetTablesForField(nodeKey, parentKey)[0]
       : undefined;
   const lazyHash =
     lazyTargetTable !== undefined && typeof value === 'number' ? toUnsignedHash(value) : null;
+  const lazyRefTarget: DefinitionRef | null =
+    lazyTargetTable !== undefined && lazyHash !== null
+      ? { table: lazyTargetTable, hash: lazyHash }
+      : null;
   const isImage = isBungieImagePath(value);
   const escapedString =
     typeof value === 'string' ? JSON.stringify(value).slice(1, -1) : null;
 
   const handleRefClick = (event: MouseEvent<HTMLButtonElement>): void => {
-    if (!resolvedRef) return;
-    onNavigateRef(
-      {
-        table: resolvedRef.table,
-        hash: resolvedRef.hash,
-        label: resolvedRef.name || undefined,
-        icon: resolvedRef.icon,
-      },
-      event.ctrlKey || event.metaKey,
-    );
+    if (!resolvedRefTarget) return;
+    onNavigateRef(resolvedRefTarget, event.ctrlKey || event.metaKey);
   };
 
   const handleRefAuxClick = (event: MouseEvent<HTMLButtonElement>): void => {
-    if (event.button === 1 && resolvedRef) {
+    if (event.button === 1 && resolvedRefTarget) {
       event.preventDefault();
-      onNavigateRef(
-        {
-          table: resolvedRef.table,
-          hash: resolvedRef.hash,
-          label: resolvedRef.name || undefined,
-          icon: resolvedRef.icon,
-        },
-        true,
-      );
+      onNavigateRef(resolvedRefTarget, true);
     }
   };
 
   const handleLazyRefClick = (event: MouseEvent<HTMLButtonElement>): void => {
-    if (!lazyTargetTable || lazyHash === null) return;
-    onNavigateRef(
-      { table: lazyTargetTable, hash: lazyHash },
-      event.ctrlKey || event.metaKey,
-    );
+    if (!lazyRefTarget) return;
+    onNavigateRef(lazyRefTarget, event.ctrlKey || event.metaKey);
   };
 
   const handleLazyRefAuxClick = (event: MouseEvent<HTMLButtonElement>): void => {
-    if (event.button !== 1 || !lazyTargetTable || lazyHash === null) return;
+    if (event.button !== 1 || !lazyRefTarget) return;
     event.preventDefault();
-    onNavigateRef({ table: lazyTargetTable, hash: lazyHash }, true);
+    onNavigateRef(lazyRefTarget, true);
   };
 
   return (
@@ -778,16 +778,31 @@ const JsonNode = memo(function JsonNode({
         )}
 
         {resolvedRef && (
-          <button
-            type="button"
-            className={`${styles.annotation} ${styles.annotationRef} ${styles.refBadge}`}
-            onClick={handleRefClick}
-            onAuxClick={handleRefAuxClick}
-            title={`Click to inspect · Ctrl+Click or middle-click for new tab (${resolvedRef.table}:${resolvedRef.hash}${resolvedRef.subtitle ? ` — ${resolvedRef.subtitle}` : ''})`}
-          >
-            <span className={styles.refTable}>{getShortTableName(resolvedRef.table)}</span>
-            <span className={styles.refName}>&quot;{resolvedRef.name || 'Unnamed'}&quot;</span>
-          </button>
+          <span className={styles.refLinkGroup}>
+            <button
+              type="button"
+              className={`${styles.annotation} ${styles.annotationRef} ${styles.refBadge}`}
+              onClick={handleRefClick}
+              onAuxClick={handleRefAuxClick}
+              title={`Click to inspect · Ctrl+Click or middle-click for new tab (${resolvedRef.table}:${resolvedRef.hash}${resolvedRef.subtitle ? ` — ${resolvedRef.subtitle}` : ''})`}
+            >
+              <span className={styles.refTable}>{getShortTableName(resolvedRef.table)}</span>
+              <span className={styles.refName}>&quot;{resolvedRef.name || 'Unnamed'}&quot;</span>
+            </button>
+            <button
+              type="button"
+              className={styles.refOpenBtn}
+              onClick={() => {
+                if (resolvedRefTarget) {
+                  onNavigateRef(resolvedRefTarget, true);
+                }
+              }}
+              title={`Open ${resolvedRef.name || getShortTableName(resolvedRef.table)} in a new tab`}
+              aria-label={`Open ${resolvedRef.name || getShortTableName(resolvedRef.table)} in a new tab`}
+            >
+              <ExternalLinkIcon size={11} />
+            </button>
+          </span>
         )}
 
         {!resolvedRef && enumInfo && (
@@ -799,16 +814,31 @@ const JsonNode = memo(function JsonNode({
         )}
 
         {!resolvedRef && !enumInfo && lazyTargetTable && lazyHash !== null && (
-          <button
-            type="button"
-            className={`${styles.annotation} ${styles.annotationLazy} ${styles.refBadge}`}
-            onClick={handleLazyRefClick}
-            onAuxClick={handleLazyRefAuxClick}
-            title={`Table not loaded yet — click to load ${lazyTargetTable} and open ${lazyHash} · Ctrl+Click or middle-click for new tab`}
-          >
-            <span className={styles.lazyLabel}>Open {getShortTableName(lazyTargetTable)}</span>
-            <span className={styles.lazyHash}>{lazyHash}</span>
-          </button>
+          <span className={styles.refLinkGroup}>
+            <button
+              type="button"
+              className={`${styles.annotation} ${styles.annotationLazy} ${styles.refBadge}`}
+              onClick={handleLazyRefClick}
+              onAuxClick={handleLazyRefAuxClick}
+              title={`Table not loaded yet — click to load ${lazyTargetTable} and open ${lazyHash} · Ctrl+Click or middle-click for new tab`}
+            >
+              <span className={styles.lazyLabel}>Open {getShortTableName(lazyTargetTable)}</span>
+              <span className={styles.lazyHash}>{lazyHash}</span>
+            </button>
+            <button
+              type="button"
+              className={styles.refOpenBtn}
+              onClick={() => {
+                if (lazyRefTarget) {
+                  onNavigateRef(lazyRefTarget, true);
+                }
+              }}
+              title={`Open ${getShortTableName(lazyTargetTable)} ${lazyHash} in a new tab`}
+              aria-label={`Open ${getShortTableName(lazyTargetTable)} ${lazyHash} in a new tab`}
+            >
+              <ExternalLinkIcon size={11} />
+            </button>
+          </span>
         )}
 
         <div className={styles.rowActions}>
@@ -843,6 +873,41 @@ const JsonNode = memo(function JsonNode({
 });
 
 const FILTER_PERSIST_DEBOUNCE_MS = 200;
+const COMPACT_TOOLBAR_QUERY = '(max-width: 700px)';
+
+const SEARCH_PLACEHOLDERS = {
+  filter: { full: 'Filter keys or values…', compact: 'Filter…' },
+  find: { full: 'Find in JSON…', compact: 'Find…' },
+} as const;
+
+let compactToolbarQuery: MediaQueryList | null | undefined;
+
+function getCompactToolbarQuery(): MediaQueryList | null {
+  if (compactToolbarQuery !== undefined) {
+    return compactToolbarQuery;
+  }
+  compactToolbarQuery =
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia(COMPACT_TOOLBAR_QUERY)
+      : null;
+  return compactToolbarQuery;
+}
+
+/** Narrow layouts swap in short placeholders so the toolbar input never clips. */
+function useCompactToolbar(): boolean {
+  return useSyncExternalStore(
+    (onStoreChange) => {
+      const query = getCompactToolbarQuery();
+      if (!query) {
+        return () => {};
+      }
+      query.addEventListener('change', onStoreChange);
+      return () => query.removeEventListener('change', onStoreChange);
+    },
+    () => getCompactToolbarQuery()?.matches ?? false,
+    () => false,
+  );
+}
 
 export const JsonTree = memo(function JsonTree({
   data,
@@ -863,6 +928,7 @@ export const JsonTree = memo(function JsonTree({
     seq: number;
   }>({ mode: 'default', seq: 0 });
   const [lightbox, setLightbox] = useState<{ url: string; path: string } | null>(null);
+  const compactToolbar = useCompactToolbar();
   const treeRef = useRef<HTMLDivElement>(null);
   const expansionStore = useMemo(() => createExpansionStore(initialExpanded ?? {}), []);
 
@@ -1067,6 +1133,10 @@ export const JsonTree = memo(function JsonTree({
     onCopyRef.current(text, label);
   }, []);
 
+  const searchPlaceholder = compactToolbar
+    ? SEARCH_PLACEHOLDERS[searchMode].compact
+    : SEARCH_PLACEHOLDERS[searchMode].full;
+
   return (
     <div className={styles.wrapper}>
       <div className={styles.toolbar}>
@@ -1077,7 +1147,7 @@ export const JsonTree = memo(function JsonTree({
           onChange={(e) => handleFilterChange(e.target.value)}
           onBlur={flushFilterPersist}
           onKeyDown={handleSearchKeyDown}
-          placeholder={searchMode === 'filter' ? 'Filter keys or values…' : 'Find in JSON…'}
+          placeholder={searchPlaceholder}
           aria-label={searchMode === 'filter' ? 'Filter JSON keys or values' : 'Find in JSON'}
         />
         <div className={styles.searchModes} role="group" aria-label="JSON search mode">

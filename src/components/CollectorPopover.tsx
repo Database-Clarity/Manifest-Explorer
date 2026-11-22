@@ -2,10 +2,10 @@
 import { useState, type ReactNode, type RefObject } from 'react';
 import type { CollectorExportFormat } from '../stores/collector';
 import { formatCollectedItems, useCollectorStore, type CollectedItem } from '../stores/collector';
-import { useExplorerStore } from '../stores/explorer';
+import { fallbackEntryLabel, useExplorerStore } from '../stores/explorer';
 import { bungieAssetUrl } from '../manifest/hash';
 import { getShortTableName } from '../manifest/tables';
-import { BookmarkIcon, CloseIcon, DownloadIcon } from '../ui/Icons';
+import { BookmarkIcon, CheckIcon, CloseIcon, DownloadIcon, PlusIcon } from '../ui/Icons';
 import { Popover } from '../ui/Popover';
 import styles from './CollectorPopover.module.scss';
 
@@ -55,11 +55,49 @@ function CollectorPopoverBody({ open, onClose, anchorRef }: CollectorPopoverProp
   const collectMode = useCollectorStore((state) => state.collectMode);
   const items = useCollectorStore((state) => state.items);
   const toggleCollectMode = useCollectorStore((state) => state.toggleCollectMode);
+  const toggleItem = useCollectorStore((state) => state.toggleItem);
   const removeItem = useCollectorStore((state) => state.removeItem);
   const clearAll = useCollectorStore((state) => state.clearAll);
 
   const openInNewTab = useExplorerStore((state) => state.openInNewTab);
   const pushNotice = useExplorerStore((state) => state.pushNotice);
+
+  // Primitive selectors keep the popover render stitching cheap while still
+  // tracking the active inspector definition (the store's `currentRef`).
+  const activeTable = useExplorerStore((state) => state.history[state.historyIndex]?.table);
+  const activeHash = useExplorerStore((state) => state.history[state.historyIndex]?.hash);
+  const activeLabel = useExplorerStore((state) => state.history[state.historyIndex]?.label);
+  const activeIcon = useExplorerStore((state) => state.history[state.historyIndex]?.icon);
+
+  const currentRef =
+    activeTable !== undefined && activeHash !== undefined
+      ? { table: activeTable, hash: activeHash >>> 0 }
+      : null;
+  const currentName =
+    currentRef === null
+      ? ''
+      : activeLabel?.trim() || fallbackEntryLabel(currentRef);
+  const currentSubtitle = currentRef === null ? '' : getShortTableName(currentRef.table);
+  const currentCollected =
+    currentRef !== null &&
+    items.some((item) => item.table === currentRef.table && item.hash === currentRef.hash);
+
+  function handleToggleCurrent(): void {
+    if (currentRef === null) {
+      return;
+    }
+    toggleItem({
+      table: currentRef.table,
+      hash: currentRef.hash,
+      name: currentName,
+      subtitle: currentSubtitle,
+      ...(activeIcon ? { icon: activeIcon } : {}),
+    });
+    pushNotice({
+      tone: 'info',
+      message: currentCollected ? 'Removed from collector' : 'Added to collector',
+    });
+  }
 
   function handleInspect(item: CollectedItem): void {
     openInNewTab({
@@ -128,6 +166,30 @@ function CollectorPopoverBody({ open, onClose, anchorRef }: CollectorPopoverProp
       width="21rem"
     >
       <div className={styles.body}>
+        {currentRef !== null ? (
+          <button
+            type="button"
+            className={`${styles.currentAction} ${currentCollected ? styles.currentActionOn : ''}`}
+            aria-pressed={currentCollected}
+            onClick={handleToggleCurrent}
+            title={
+              currentCollected
+                ? `Remove ${currentName} from the collector`
+                : `Add ${currentName} to the collector`
+            }
+          >
+            <span className={styles.currentIcon} aria-hidden="true">
+              {currentCollected ? <CheckIcon size={14} /> : <PlusIcon size={14} />}
+            </span>
+            <span className={styles.currentText}>
+              <span className={styles.currentTitle}>
+                {currentCollected ? 'Remove current item' : 'Collect current item'}
+              </span>
+              <span className={styles.currentName}>{currentName}</span>
+            </span>
+          </button>
+        ) : null}
+
         <button
           type="button"
           role="switch"
@@ -181,7 +243,10 @@ function CollectorPopoverBody({ open, onClose, anchorRef }: CollectorPopoverProp
             ))}
           </div>
         ) : (
-          <p className={styles.empty}>No collected items yet. Turn on collect mode, then click results.</p>
+          <p className={styles.empty}>
+            No collected items yet. Use “Collect current item” for the open definition, or turn on
+            collect mode and click results.
+          </p>
         )}
 
         <div className={styles.exportRow}>

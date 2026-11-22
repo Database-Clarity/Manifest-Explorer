@@ -24,7 +24,10 @@
   @include theme.mobile {
     gap: 0.25rem;
     min-height: calc(var(--tap) + 0.5rem);
-    padding: 0.25rem var(--page-x);
+    padding: max(0.25rem, env(safe-area-inset-top))
+      max(var(--page-x), env(safe-area-inset-right))
+      0.25rem
+      max(var(--page-x), env(safe-area-inset-left));
   }
 }
 
@@ -93,10 +96,8 @@
 }
 
 /**
- * The search cluster groups [ search input ] [ Filters ] [ Deep Search ]
- * together at the bar's start. It flexes to fill the bar; the locale select
- * and the trailing icon buttons keep their `margin-left: auto` push to the
- * far right.
+ * The search cluster groups the search field and desktop Filters action. It
+ * flexes to fill the bar; locale and trailing icon buttons sit to the right.
  */
 .searchCluster {
   display: flex;
@@ -121,31 +122,67 @@
 
 .searchIcon {
   position: absolute;
+  top: 50%;
   left: 0.4375rem;
+  transform: translateY(-50%);
   color: var(--text3);
   pointer-events: none;
 }
 
 .searchInput {
   @include ctl.field;
+  display: block;
+  box-sizing: border-box;
   width: 100%;
+  height: 1.75rem;
+  max-height: 7.5rem;
+  min-height: 1.75rem;
+  padding-top: 0.25rem;
+  padding-bottom: 0.25rem;
   padding-left: 1.625rem;
   padding-right: 2.5rem;
+  overflow-x: hidden;
+  overflow-y: hidden;
+  resize: none;
+  line-height: 1.25;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow-wrap: normal;
+  transition: height 120ms ease;
 
-  &::-webkit-search-cancel-button,
-  &::-webkit-search-decoration {
-    appearance: none;
+  &:focus {
+    height: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    overflow-y: auto;
+    text-overflow: clip;
   }
 
   @include theme.mobile {
+    height: var(--tap);
+    min-height: var(--tap);
+    padding-top: 0.625rem;
+    padding-bottom: 0.625rem;
     padding-left: 1.75rem;
     padding-right: 2.5rem;
   }
 }
 
+.searchField:focus-within .searchIcon {
+  top: 0.625rem;
+  transform: none;
+}
+
+.searchField:focus-within .clearSearch {
+  top: 0.125rem;
+  transform: none;
+}
+
 .kbd {
   position: absolute;
   right: 0.4375rem;
+  top: 50%;
+  transform: translateY(-50%);
   min-width: 1.125rem;
   height: 1.125rem;
   padding: 0 0.25rem;
@@ -166,21 +203,6 @@
 
   @include theme.mobile {
     display: none;
-  }
-}
-
-.deepBtn {
-  @include ctl.button;
-  padding: 0 0.5rem;
-  font-size: 0.75rem;
-  color: var(--text2);
-  /* "Deep Search" must stay on one line and keep its width; the search
-     input is the only element allowed to shrink. */
-  white-space: nowrap;
-  flex-shrink: 0;
-
-  @include theme.mobile {
-    padding: 0 0.4375rem;
   }
 }
 
@@ -213,8 +235,10 @@
 
   @include theme.mobile-or-coarse {
     right: 0.125rem;
+    top: 0;
     width: var(--tap);
     height: var(--tap);
+    transform: none;
   }
 }
 
@@ -281,7 +305,10 @@
     gap: 0.25rem;
     min-width: 0;
     min-height: calc(var(--tap) + 0.25rem);
-    padding: 0.25rem var(--page-x);
+    padding: 0.25rem
+      max(var(--page-x), env(safe-area-inset-right))
+      0.25rem
+      max(var(--page-x), env(safe-area-inset-left));
     background: var(--col);
     border-top: 1px solid var(--hair);
     overflow: hidden;
@@ -323,10 +350,59 @@
   }
 }
 
+.tabsBtn {
+  @include ctl.button;
+  flex: 0 0 auto;
+  padding: 0 0.5rem;
+  border-color: var(--accent-ink);
+  background: var(--pri-hover);
+  color: var(--accent-ink);
+  font-size: 0.75rem;
+  font-weight: 650;
+
+  @media (hover: hover) {
+    &:hover:not(:disabled) {
+      border-color: var(--accent-ink);
+      background: var(--sel);
+    }
+  }
+}
+
 .menuSection {
   display: flex;
   flex-direction: column;
   gap: 0.125rem;
+}
+
+.menuSearchWrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  margin-bottom: 0.25rem;
+}
+
+.menuSearchIcon {
+  position: absolute;
+  left: 0.4375rem;
+  color: var(--text3);
+  pointer-events: none;
+}
+
+.menuSearch {
+  @include ctl.field;
+  width: 100%;
+  min-width: 0;
+  padding-left: 1.5rem;
+  font-size: 0.75rem;
+}
+
+.menuEmpty {
+  margin: 0;
+  padding: 0.5rem 0.375rem;
+  color: var(--text2);
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
 }
 
 .menuTitle {
@@ -421,5 +497,38 @@
     min-width: 5.25rem;
     padding: 0 0.25rem;
     font-size: 0.75rem;
+  }
+}
+
+@include theme.mobile {
+  .barSearchFocused {
+    align-items: flex-start;
+    min-height: var(--tap);
+    transition: min-height 120ms ease;
+
+    .brand,
+    .clarityAttribution,
+    .settingsBtn {
+      display: none;
+    }
+
+    .searchCluster {
+      align-items: flex-start;
+      width: 100%;
+      min-height: var(--tap);
+    }
+
+    .searchField {
+      align-items: flex-start;
+      width: 100%;
+      max-width: none;
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .searchInput,
+  .barSearchFocused {
+    transition: none;
   }
 }

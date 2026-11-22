@@ -93,6 +93,10 @@
   &:focus-visible {
     @include ctl.focus-ring;
   }
+
+  @include theme.mobile-or-coarse {
+    min-height: 2.25rem;
+  }
 }
 
 .collapsibleTitle {
@@ -352,6 +356,11 @@
     @include ctl.focus-ring;
     border-radius: 0.1875rem;
   }
+
+  @include theme.mobile-or-coarse {
+    width: 2.25rem;
+    min-height: 2.25rem;
+  }
 }
 
 .socketCatCount {
@@ -414,6 +423,10 @@
 
   &:focus-visible {
     @include ctl.focus-ring;
+  }
+
+  @include theme.mobile-or-coarse {
+    min-height: 2.25rem;
   }
 }
 
@@ -520,6 +533,30 @@
   flex-direction: column;
   border: 1px solid var(--hair);
   background: var(--col);
+  min-width: 0;
+}
+
+.refActionRow {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  border-bottom: 1px solid var(--hair);
+
+  &:last-child {
+    border-bottom: 0;
+  }
+
+  > .entityRow {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
+    border-bottom: 0;
+  }
+
+  &:hover .openInNewTabBtn,
+  &:focus-within .openInNewTabBtn {
+    opacity: 1;
+  }
 }
 
 .entityRow {
@@ -538,6 +575,7 @@
   font-size: 0.8125rem;
   text-align: left;
   cursor: pointer;
+  min-width: 0;
 
   &:last-child {
     border-bottom: 0;
@@ -551,6 +589,39 @@
 
   &:focus-visible {
     @include ctl.focus-ring;
+  }
+}
+
+.openInNewTabBtn {
+  @include ctl.contain-focus-rings;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 2rem;
+  min-width: 2rem;
+  min-height: 2rem;
+  align-self: center;
+  margin: 0 0.375rem;
+  padding: 0;
+  border: 1px solid var(--hair);
+  border-radius: 0.1875rem;
+  background: var(--col);
+  color: var(--text2);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 100ms ease, color 100ms ease, background 100ms ease;
+
+  @media (hover: hover) {
+    &:hover {
+      color: var(--text);
+      background: var(--hover);
+    }
+  }
+
+  &:focus-visible {
+    @include ctl.focus-ring;
+    opacity: 1;
   }
 }
 
@@ -615,6 +686,11 @@
 
   &:last-child {
     border-bottom: 0;
+  }
+
+  &:hover .openInNewTabBtn,
+  &:focus-within .openInNewTabBtn {
+    opacity: 1;
   }
 }
 
@@ -741,6 +817,16 @@
 
 .smallBtn {
   @include ctl.button;
+}
+
+@include theme.mobile-or-coarse {
+  .openInNewTabBtn {
+    width: 2.25rem;
+    min-width: 2.25rem;
+    min-height: 2.25rem;
+    margin: 0 0.25rem;
+    opacity: 1;
+  }
 }
 
 .primaryBtn {

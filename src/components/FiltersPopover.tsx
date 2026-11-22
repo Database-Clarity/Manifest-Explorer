@@ -202,6 +202,8 @@ function FiltersPopoverBody({
   const resetFilters = useExplorerStore((state) => state.resetFilters);
   const filterCatalog = useExplorerStore((state) => state.filterCatalog);
   const includeUnnamed = useExplorerStore((state) => state.filters.includeUnnamed);
+  const deepSearch = useExplorerStore((state) => state.deepSearch);
+  const toggleDeepSearch = useExplorerStore((state) => state.toggleDeepSearch);
 
   const fuzzySearch = useSettingsStore((state) => state.fuzzySearch);
   const fuzziness = useSettingsStore((state) => state.fuzziness);
@@ -373,6 +375,18 @@ function FiltersPopoverBody({
                 aria-label="Fuzzy search (match typos)"
               />
               <span>Fuzzy</span>
+            </label>
+            <label
+              className={styles.checkRow}
+              title="Scan raw JSON keys and values across definitions"
+            >
+              <input
+                type="checkbox"
+                checked={deepSearch}
+                onChange={toggleDeepSearch}
+                aria-label="Deep Search"
+              />
+              <span>Deep Search</span>
             </label>
             {fuzzySearch && (
               <div className={styles.fuzzinessInline}>

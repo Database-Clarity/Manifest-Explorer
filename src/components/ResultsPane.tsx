@@ -15,11 +15,15 @@ import type {
   SortMode,
   ViewMode,
 } from '../types/manifest';
-import { getFriendlyTableName, getShortTableName } from '../manifest/tables';
+import {
+  ARTIFACT_PERKS_TABLE,
+  getFriendlyTableName,
+  getShortTableName,
+} from '../manifest/tables';
 import { useCollectorStore } from '../stores/collector';
 import { useExplorerStore } from '../stores/explorer';
 import { useSettingsStore } from '../stores/settings';
-import { CheckIcon, CloseIcon, GridIcon, ListIcon, PlusIcon } from '../ui/Icons';
+import { CheckIcon, CloseIcon, GridIcon, ListIcon } from '../ui/Icons';
 import { getTierColorVar } from '../ui/rarity';
 import { Skeleton } from '../ui/Skeleton';
 import { BungieIcon } from './BungieIcon';
@@ -43,6 +47,8 @@ const GRID_MIN_CELL_PX = 220;
 const GRID_GUTTER_PX = 16;
 const MOBILE_QUERY = '(max-width: 700px)';
 const COARSE_QUERY = '(max-width: 700px), (pointer: coarse)';
+/** Below this scroller width the table column is replaced by an inline badge. */
+const NARROW_TABLE_BADGE_PX = 560;
 
 const SORT_OPTIONS: ReadonlyArray<{ value: SortMode; label: string }> = [
   { value: 'relevance', label: 'Relevance' },
@@ -135,40 +141,11 @@ function scrollElementTo(element: HTMLElement, top: number): void {
   element.scrollTop = nextTop;
 }
 
-interface CollectButtonProps {
-  item: SearchResultItem;
-  collected: boolean;
-  collectMode: boolean;
-  onToggle: (item: SearchResultItem) => void;
-}
-
-const CollectButton = memo(function CollectButton({
-  item,
-  collected,
-  collectMode,
-  onToggle,
-}: CollectButtonProps): ReactNode {
-  const label = itemLabel(item);
-
+const CollectedBadge = memo(function CollectedBadge(): ReactNode {
   return (
-    <button
-      type="button"
-      className={joinClasses(
-        styles.collectToggle,
-        collected || collectMode ? styles.alwaysOn : '',
-        collected ? styles.collectedToggle : '',
-      )}
-      aria-label={collected ? `Remove ${label} from collector` : `Add ${label} to collector`}
-      aria-pressed={collected}
-      title={collected ? 'Remove from collector' : 'Add to collector'}
-      onClick={(event) => {
-        event.stopPropagation();
-        onToggle(item);
-      }}
-      onKeyDown={stopActivationKeys}
-    >
-      {collected ? <CheckIcon size={13} /> : <PlusIcon size={13} />}
-    </button>
+    <span className={styles.collectBadge} role="img" aria-label="Collected">
+      <CheckIcon size={12} />
+    </span>
   );
 });
 
@@ -182,8 +159,8 @@ interface ResultRowProps {
   collected: boolean;
   collectMode: boolean;
   showTableColumn: boolean;
+  showInlineTable: boolean;
   onActivate: (item: SearchResultItem, index: number) => void;
-  onToggleCollect: (item: SearchResultItem) => void;
   onCopyHash: (hash: number) => void;
   artifactPerksCategory: boolean;
 }
@@ -198,9 +175,9 @@ const ListRow = memo(function ListRow({
   collected,
   collectMode,
   showTableColumn,
+  showInlineTable,
   artifactPerksCategory,
   onActivate,
-  onToggleCollect,
   onCopyHash,
 }: ResultRowProps): ReactNode {
   const tierColor = getTierColorVar(item.tierType);
@@ -211,13 +188,15 @@ const ListRow = memo(function ListRow({
     : undefined;
   const showArtifactOnlySubtitle =
     parentArtifactName !== undefined &&
-    (artifactPerksCategory || (isArtifactPerk && showTableColumn));
+    (artifactPerksCategory || (isArtifactPerk && (showTableColumn || showInlineTable)));
+  const tableBadgeLabel = isArtifactPerk ? 'Artifact Perk' : getShortTableName(item.table);
 
   return (
     <div
       id={`results-option-${index}`}
       className={joinClasses(
         styles.listRow,
+        collectMode ? styles.collectMode : '',
         cursor ? styles.isCursor : '',
         active ? styles.isActive : '',
       )}
@@ -226,7 +205,13 @@ const ListRow = memo(function ListRow({
       aria-selected={cursor}
       aria-posinset={index + 1}
       aria-setsize={setSize}
-      title="Click to open in a new tab"
+      title={
+        collectMode
+          ? collected
+            ? 'Click to remove from collector'
+            : 'Click to add to collector'
+          : 'Click to open in a new tab'
+      }
       onClick={() => onActivate(item, index)}
       onAuxClick={(event) => {
         if (event.button === 1) {
@@ -283,6 +268,16 @@ const ListRow = memo(function ListRow({
               {itemSubtitle(item)}
             </span>
           )}
+          {showInlineTable ? (
+            <span
+              className={styles.rowTableInline}
+              title={
+                isArtifactPerk ? 'Legendary Artifact Perk' : getFriendlyTableName(item.table)
+              }
+            >
+              {tableBadgeLabel}
+            </span>
+          ) : null}
         </span>
         {item.deepMatch && (
           <span
@@ -295,9 +290,7 @@ const ListRow = memo(function ListRow({
         )}
       </span>
       {showTableColumn && (
-        <span className={styles.rowTable}>
-          {isArtifactPerk ? 'Artifact Perk' : getShortTableName(item.table)}
-        </span>
+        <span className={styles.rowTable}>{tableBadgeLabel}</span>
       )}
       <button
         type="button"
@@ -311,12 +304,7 @@ const ListRow = memo(function ListRow({
       >
         {item.hash}
       </button>
-      <CollectButton
-        item={item}
-        collected={collected}
-        collectMode={collectMode}
-        onToggle={onToggleCollect}
-      />
+      {collectMode && collected ? <CollectedBadge /> : null}
     </div>
   );
 });
@@ -329,9 +317,9 @@ const GridCell = memo(function GridCell({
   cursor,
   collected,
   collectMode,
+  showInlineTable,
   artifactPerksCategory,
   onActivate,
-  onToggleCollect,
 }: ResultRowProps): ReactNode {
   const tierColor = getTierColorVar(item.tierType);
   const parentArtifactName = item.parentArtifactName;
@@ -339,12 +327,14 @@ const GridCell = memo(function GridCell({
   const parentArtifactTitle = parentArtifactName
     ? `Legendary Artifact Perk · ${parentArtifactName}`
     : undefined;
+  const tableBadgeLabel = isArtifactPerk ? 'Artifact Perk' : getShortTableName(item.table);
 
   return (
     <div
       id={`results-option-${index}`}
       className={joinClasses(
         styles.gridCell,
+        collectMode ? styles.collectMode : '',
         cursor ? styles.isCursor : '',
         active ? styles.isActive : '',
       )}
@@ -352,7 +342,13 @@ const GridCell = memo(function GridCell({
       aria-selected={cursor}
       aria-posinset={index + 1}
       aria-setsize={setSize}
-      title="Click to open in a new tab"
+      title={
+        collectMode
+          ? collected
+            ? 'Click to remove from collector'
+            : 'Click to add to collector'
+          : 'Click to open in a new tab'
+      }
       onClick={() => onActivate(item, index)}
       onAuxClick={(event) => {
         if (event.button === 1) {
@@ -397,6 +393,16 @@ const GridCell = memo(function GridCell({
               {itemSubtitle(item)}
             </span>
           )}
+          {showInlineTable ? (
+            <span
+              className={styles.rowTableInline}
+              title={
+                isArtifactPerk ? 'Legendary Artifact Perk' : getFriendlyTableName(item.table)
+              }
+            >
+              {tableBadgeLabel}
+            </span>
+          ) : null}
         </span>
         {item.deepMatch ? (
           <span
@@ -409,12 +415,7 @@ const GridCell = memo(function GridCell({
           <span className={styles.gridHash}>{item.hash}</span>
         )}
       </span>
-      <CollectButton
-        item={item}
-        collected={collected}
-        collectMode={collectMode}
-        onToggle={onToggleCollect}
-      />
+      {collectMode && collected ? <CollectedBadge /> : null}
     </div>
   );
 });
@@ -462,7 +463,6 @@ export const ResultsPane = memo(function ResultsPane({
   const collectMode = useCollectorStore((state) => state.collectMode);
   const toggleCollectMode = useCollectorStore((state) => state.toggleCollectMode);
   const collectedItems = useCollectorStore((state) => state.items);
-  const toggleItem = useCollectorStore((state) => state.toggleItem);
 
   const [remPx, setRemPx] = useState(readRootRemPx);
   const [isNarrowPhone, setIsNarrowPhone] = useState(() => mediaMatches(MOBILE_QUERY));
@@ -593,6 +593,12 @@ export const ResultsPane = memo(function ResultsPane({
   const hasActiveFilters =
     trimmedQuery.length > 0 || deepSearch || hasTableFilter || advancedFilterCount > 0;
   const hasResults = results.length > 0;
+  const showTableColumn =
+    filters.table === 'all' && viewportWidth > NARROW_TABLE_BADGE_PX;
+  const showInlineTable =
+    viewportWidth > 0 &&
+    viewportWidth <= NARROW_TABLE_BADGE_PX &&
+    (filters.table === 'all' || filters.table === ARTIFACT_PERKS_TABLE);
 
   const showError = phase === 'error' && !hasResults;
   const isBooting = phase === 'idle' || phase === 'fetching-index' || phase === 'loading-core';
@@ -688,19 +694,6 @@ export const ResultsPane = memo(function ResultsPane({
       .catch(() => undefined);
   }, []);
 
-  const handleToggleCollect = useCallback(
-    (item: SearchResultItem) => {
-      toggleItem({
-        table: item.table,
-        hash: item.hash,
-        name: item.name,
-        subtitle: item.subtitle,
-        icon: item.icon,
-      });
-    },
-    [toggleItem],
-  );
-
   const clearQuery = useCallback(() => setQuery(''), [setQuery]);
   const clearTable = useCallback(() => setTableFilter('all'), [setTableFilter]);
 
@@ -758,10 +751,10 @@ export const ResultsPane = memo(function ResultsPane({
             cursor={index === clampedSelectedIndex}
             collected={collectedKeys.has(itemKey)}
             collectMode={collectMode}
-            showTableColumn={filters.table === 'all' && viewportWidth >= 520}
-            artifactPerksCategory={filters.table === 'ArtifactPerks'}
+            showTableColumn={showTableColumn}
+            showInlineTable={showInlineTable}
+            artifactPerksCategory={filters.table === ARTIFACT_PERKS_TABLE}
             onActivate={handleActivate}
-            onToggleCollect={handleToggleCollect}
             onCopyHash={handleCopyHash}
           />,
         );
@@ -788,9 +781,9 @@ export const ResultsPane = memo(function ResultsPane({
               collected={collectedKeys.has(itemKey)}
               collectMode={collectMode}
               showTableColumn={false}
-              artifactPerksCategory={filters.table === 'ArtifactPerks'}
+              showInlineTable={showInlineTable}
+              artifactPerksCategory={filters.table === ARTIFACT_PERKS_TABLE}
               onActivate={handleActivate}
-              onToggleCollect={handleToggleCollect}
               onCopyHash={handleCopyHash}
             />,
           );
@@ -860,7 +853,7 @@ export const ResultsPane = memo(function ResultsPane({
               {hasTableFilter ? (
                 <span className={styles.chip}>
                   <span className={styles.chipLabel} title={filters.table}>
-                    {filters.table === 'ArtifactPerks'
+                    {filters.table === ARTIFACT_PERKS_TABLE
                       ? 'Artifact Perks'
                       : getFriendlyTableName(filters.table)}
                   </span>

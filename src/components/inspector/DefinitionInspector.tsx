@@ -19,13 +19,11 @@ import type {
 } from '../../types/manifest';
 import { toSignedHash, toUnsignedHash } from '../../manifest/hash';
 import { getShortTableName } from '../../manifest/tables';
-import { useCollectorStore } from '../../stores/collector';
 import { fallbackEntryLabel, useExplorerStore } from '../../stores/explorer';
 import { useSettingsStore } from '../../stores/settings';
 import {
   ArrowLeftIcon,
   ArrowRightIcon,
-  CheckIcon,
   ChevronDownIcon,
   CloseIcon,
   CopyIcon,
@@ -34,7 +32,6 @@ import {
   LinkIcon,
   MaximizeIcon,
   MinimizeIcon,
-  PlusIcon,
 } from '../../ui/Icons';
 import { getTierColorVar } from '../../ui/rarity';
 import { Popover } from '../../ui/Popover';
@@ -150,6 +147,7 @@ function DefinitionInspectorImpl({
   const closeOtherSessions = useExplorerStore((s) => s.closeOtherSessions);
   const toggleInspectorMaximized = useExplorerStore((s) => s.toggleInspectorMaximized);
   const closeInspector = useExplorerStore((s) => s.closeInspector);
+  const setMobileInspectorOpen = useExplorerStore((s) => s.setMobileInspectorOpen);
   const setActiveTab = useExplorerStore((s) => s.setActiveTab);
   const saveEntryScroll = useExplorerStore((s) => s.saveEntryScroll);
   const saveEntryJsonState = useExplorerStore((s) => s.saveEntryJsonState);
@@ -160,9 +158,6 @@ function DefinitionInspectorImpl({
 
   const imageScaling = useSettingsStore((s) => s.imageScaling);
 
-  const collectedItems = useCollectorStore((s) => s.items);
-  const toggleCollectItem = useCollectorStore((s) => s.toggleItem);
-
   const activeSession =
     activeSessionIndex >= 0 ? sessions[activeSessionIndex] : undefined;
   const activeEntry =
@@ -171,6 +166,7 @@ function DefinitionInspectorImpl({
   const dragStartRef = useRef<{ x: number; startWidth: number } | null>(null);
   const tabPanelRef = useRef<HTMLDivElement | null>(null);
   const sessionTabsScrollRef = useRef<HTMLDivElement | null>(null);
+  const activeSessionTabRef = useRef<HTMLDivElement | null>(null);
   const sessionMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
   const activeBannerItemRef = useRef<HTMLButtonElement | null>(null);
   const [tabsOverflowing, setTabsOverflowing] = useState(false);
@@ -231,6 +227,16 @@ function DefinitionInspectorImpl({
     observer.observe(element);
     return () => observer.disconnect();
   }, [sessions.length, width]);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      activeSessionTabRef.current?.scrollIntoView({
+        inline: 'nearest',
+        block: 'nearest',
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeSessionIndex, sessions.length, tabsOverflowing, width]);
 
   // Synchronously persist the current scroll container's scrollTop before leaving
   const flushScroll = useCallback(() => {
@@ -341,6 +347,16 @@ function DefinitionInspectorImpl({
     flushScroll();
     onNavigateBack();
   }, [flushScroll, onNavigateBack]);
+
+  const handleMobileBackToResults = useCallback(() => {
+    flushScroll();
+    const state = window.history.state as { mobileInspector?: boolean } | null;
+    if (state?.mobileInspector === true) {
+      window.history.back();
+    } else {
+      setMobileInspectorOpen(false);
+    }
+  }, [flushScroll, setMobileInspectorOpen]);
 
   const handleForwardClick = useCallback(() => {
     flushScroll();
@@ -469,12 +485,6 @@ function DefinitionInspectorImpl({
   const unsignedHash = currentRef ? toUnsignedHash(currentRef.hash) : 0;
   const signedHash = currentRef ? toSignedHash(currentRef.hash) : 0;
 
-  const isCollected = currentRef
-    ? collectedItems.some(
-        (item) => item.table === currentRef.table && item.hash === unsignedHash,
-      )
-    : false;
-
   const rawJsonText = useMemo(() => {
     return detail ? JSON.stringify(detail.data, null, 2) : '';
   }, [detail]);
@@ -550,6 +560,7 @@ function DefinitionInspectorImpl({
               return (
                 <div
                   key={session.id}
+                  ref={isActive ? activeSessionTabRef : undefined}
                   className={`${styles.sessionTab} ${isActive ? styles.sessionTabActive : ''}`}
                   onMouseDown={(e) => {
                     if (e.button === 1) {
@@ -602,22 +613,24 @@ function DefinitionInspectorImpl({
             })}
           </div>
           {(tabsOverflowing || sessions.length >= 6) && (
-            <button
-              ref={sessionMenuTriggerRef}
-              type="button"
-              className={styles.sessionMenuTrigger}
-              aria-label="Show all open tabs"
-              aria-haspopup="dialog"
-              aria-expanded={tabsMenuOpen}
-              title="Show all open tabs"
-              onClick={() => {
-                setTabsMenuFilter('');
-                setTabsMenuOpen((open) => !open);
-              }}
-            >
-              <ChevronDownIcon size={12} />
-              <span>{sessions.length}</span>
-            </button>
+            <div className={styles.sessionOverflowWrap}>
+              <button
+                ref={sessionMenuTriggerRef}
+                type="button"
+                className={styles.sessionMenuTrigger}
+                aria-label="Show all open tabs"
+                aria-haspopup="dialog"
+                aria-expanded={tabsMenuOpen}
+                title="Show all open tabs"
+                onClick={() => {
+                  setTabsMenuFilter('');
+                  setTabsMenuOpen((open) => !open);
+                }}
+              >
+                <ChevronDownIcon size={12} />
+                <span>{sessions.length}</span>
+              </button>
+            </div>
           )}
           <button
             type="button"
@@ -632,12 +645,19 @@ function DefinitionInspectorImpl({
             }
             title={
               sessions.length > 1
-                ? `Copy shareable link for all ${sessions.length} open tabs`
-                : 'Copy shareable link for this tab'
+                ? `Share tabs (${sessions.length})`
+                : 'Share tab'
+            }
+            aria-label={
+              sessions.length > 1
+                ? `Share tabs (${sessions.length})`
+                : 'Share tab'
             }
           >
             <LinkIcon size={12} />
-            <span>{sessions.length > 1 ? `Share tabs (${sessions.length})` : 'Share'}</span>
+            <span className={styles.shareTabsLabel}>
+              {sessions.length > 1 ? `Share tabs (${sessions.length})` : 'Share'}
+            </span>
           </button>
           {(tabsOverflowing || sessions.length >= 6) && (
             <Popover
@@ -787,7 +807,7 @@ function DefinitionInspectorImpl({
           <button
             type="button"
             className={styles.mobileBackBtn}
-            onClick={closeInspector}
+            onClick={handleMobileBackToResults}
             aria-label="Back to results"
             title="Back to results"
           >
@@ -979,28 +999,6 @@ function DefinitionInspectorImpl({
         </div>
 
         <div className={styles.headerActions}>
-          <button
-            type="button"
-            className={`${styles.actionBtn} ${isCollected ? styles.actionActive : ''}`}
-            onClick={() => {
-              toggleCollectItem({
-                table: currentRef.table,
-                hash: unsignedHash,
-                name: itemName,
-                subtitle: itemSubtitle,
-                icon: iconPath,
-              });
-              pushNotice({
-                tone: 'info',
-                message: isCollected ? 'Removed from collector' : 'Added to collector',
-              });
-            }}
-            title={isCollected ? 'Remove from collector (a)' : 'Add to collector (a)'}
-          >
-            {isCollected ? <CheckIcon size={13} /> : <PlusIcon size={13} />}
-            <span>{isCollected ? 'Collected' : 'Collect'}</span>
-          </button>
-
           <button
             type="button"
             className={styles.actionBtn}

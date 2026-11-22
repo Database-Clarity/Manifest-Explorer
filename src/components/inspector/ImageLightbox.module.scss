@@ -260,6 +260,10 @@ $checker-size: 16px;
 }
 
 @include theme.mobile {
+  .backdrop {
+    padding: 0.5rem;
+  }
+
   .card {
     width: calc(100vw - 1rem);
     height: calc(100dvh - 1rem);
@@ -270,19 +274,44 @@ $checker-size: 16px;
     padding: 0.4375rem 0.5rem;
   }
 
+  .group {
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  // Let the long Scaling segmented control wrap inside its own group instead
+  // of forcing the toolbar past the viewport at 360px.
+  .segmented,
+  .zoomGroup {
+    flex-wrap: wrap;
+    gap: 1px;
+    min-width: 0;
+    background: var(--ctl-edge);
+  }
+
+  .segment,
+  .zoomBtn {
+    min-height: var(--tap);
+    padding: 0 0.3125rem;
+    border-right: 0;
+    font-size: 0.6875rem;
+  }
+
+  .toggle {
+    min-height: var(--tap);
+  }
+
   .footer {
     align-items: flex-start;
   }
 
   .actions {
     flex: 1 1 100%;
+    min-width: 0;
     justify-content: flex-start;
   }
 
-  .segment,
-  .zoomBtn {
-    min-height: 1.75rem;
-    padding: 0 0.3125rem;
-    font-size: 0.6875rem;
+  .actionBtn {
+    min-height: var(--tap);
   }
 }

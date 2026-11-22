@@ -4,9 +4,10 @@
   @include ctl.overlay-surface;
   position: fixed;
   z-index: 80;
-  min-width: 12rem;
+  min-width: min(12rem, calc(100vw - 16px));
   max-width: calc(100vw - 16px);
   max-height: calc(100vh - 16px);
+  max-height: calc(100dvh - 16px);
   padding: 0.5rem;
   overflow: auto;
   overscroll-behavior: contain;

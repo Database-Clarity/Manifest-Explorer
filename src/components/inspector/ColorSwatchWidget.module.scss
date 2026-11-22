@@ -1,4 +1,5 @@
 @use '../../styles/controls' as ctl;
+@use '../../styles/variables' as theme;
 
 $checker-size: 8px;
 
@@ -218,4 +219,22 @@ $checker-size: 8px;
   font-size: 0.6875rem;
   font-variant-numeric: tabular-nums;
   text-align: right;
+}
+
+@include theme.mobile-or-coarse {
+  .trigger {
+    min-height: 2rem;
+    padding: 0 0.5rem 0 0.25rem;
+    font-size: 0.75rem;
+  }
+
+  .swatch {
+    width: 0.875rem;
+    height: 0.875rem;
+  }
+
+  .copyBtn {
+    width: var(--tap);
+    height: var(--tap);
+  }
 }

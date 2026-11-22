@@ -1,7 +1,7 @@
 import { memo, type ReactNode } from 'react';
 import type { DefinitionRef, VariantItem } from '../../types/manifest';
 import { BungieIcon } from '../BungieIcon';
-import { DiffIcon } from '../../ui/Icons';
+import { DiffIcon, ExternalLinkIcon } from '../../ui/Icons';
 import { getTierColorVar } from '../../ui/rarity';
 import { Skeleton } from '../../ui/Skeleton';
 import styles from './InspectorTabs.module.scss';
@@ -106,6 +106,15 @@ export const VariantsTab = memo(function VariantsTab({
                   </span>
                 </span>
                 <span className={styles.entityHash}>{item.hash}</span>
+              </button>
+              <button
+                type="button"
+                className={styles.openInNewTabBtn}
+                aria-label={`Open ${item.name || `definition ${item.hash}`} in new tab`}
+                title={`Open ${item.name || `definition ${item.hash}`} in new tab`}
+                onClick={() => onNavigateRef(itemNavRef, true)}
+              >
+                <ExternalLinkIcon size={14} />
               </button>
               {!isCurrent && (
                 <button

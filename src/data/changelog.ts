@@ -19,6 +19,36 @@ export const CHANGELOG_STORAGE_KEY = 'clarity-manifest-explorer:last-seen-change
 
 export const CHANGELOG: readonly ChangelogEntry[] = [
   {
+    version: '2026.11.22-2',
+    date: 'Nov 22, 2026',
+    title: 'A smoother mobile search and navigation experience',
+    summary: 'Search, open tabs, results, and inspector tools are easier to use on mobile.',
+    sections: [
+      {
+        heading: 'Search & filters',
+        items: [
+          'Focused search expands vertically with scrolling for long queries and across the mobile header while typing.',
+          'Deep Search now lives in Filters, with shorter mobile placeholders and searchable Tables options.',
+        ],
+      },
+      {
+        heading: 'Mobile tabs & navigation',
+        items: [
+          'Returning to Results or using browser Back takes you to search while preserving open tabs; use Tabs (N) to return to the inspector.',
+          'Inspector links have touch-friendly Open in new tab actions, with a tidier tab strip and no redundant fullscreen button.',
+        ],
+      },
+      {
+        heading: 'Cleaner results & reachable tools',
+        items: [
+          'Search results no longer have a permanent Collector column; the Collector section keeps a Collect current item action.',
+          'Settings now always provides What’s new, Search help & shortcuts, Collector, Clarity, and Ko-Fi.',
+          'Pretty JSON touch actions, Lightbox focus handling, and safe-area support are improved.',
+        ],
+      },
+    ],
+  },
+  {
     version: '2026.11.22-1',
     date: 'Nov 22, 2026',
     title: 'Image upscaling, faster browsing & Clarity branding',

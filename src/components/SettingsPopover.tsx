@@ -16,6 +16,7 @@ import {
   useSettingsStore,
 } from '../stores/settings';
 import { useExplorerStore } from '../stores/explorer';
+import { useCollectorStore } from '../stores/collector';
 import { ChevronDownIcon, ChevronRightIcon } from '../ui/Icons';
 import { Popover } from '../ui/Popover';
 import styles from './SettingsPopover.module.scss';
@@ -28,6 +29,10 @@ export interface SettingsPopoverProps {
   onClearCache: () => void;
   onLoadAllTables: () => void;
   onLocaleChange: (locale: BungieLocale) => void;
+  onOpenChangelog?: () => void;
+  onOpenHelp: () => void;
+  onOpenCollector: () => void;
+  hasUnseenChangelog?: boolean;
 }
 
 const THEME_OPTIONS: ReadonlyArray<readonly [ThemeMode, string]> = [
@@ -117,6 +122,10 @@ function SettingsPopoverBody({
   onClearCache,
   onLoadAllTables,
   onLocaleChange,
+  onOpenChangelog,
+  onOpenHelp,
+  onOpenCollector,
+  hasUnseenChangelog = false,
 }: SettingsPopoverProps): ReactNode {
   const [confirmClear, setConfirmClear] = useState(false);
   const [keyOpen, setKeyOpen] = useState(false);
@@ -149,6 +158,8 @@ function SettingsPopoverBody({
   const resetSettings = useSettingsStore((state) => state.resetSettings);
 
   const manifestStatus = useExplorerStore((state) => state.manifestStatus);
+  const collectedCount = useCollectorStore((state) => state.items.length);
+  const collectMode = useCollectorStore((state) => state.collectMode);
 
   const tableTotal = manifestStatus.totalTableCount > 0 ? manifestStatus.totalTableCount : 98;
   const fuzzinessPercent = Math.round(fuzziness * 100);
@@ -169,6 +180,51 @@ function SettingsPopoverBody({
       width="20rem"
     >
       <div className={styles.body}>
+        <section className={styles.section}>
+          <h2 className={styles.sectionTitle}>About &amp; tools</h2>
+          <div className={styles.aboutActions}>
+            <button
+              type="button"
+              className={styles.aboutBtn}
+              onClick={() => {
+                if (!onOpenChangelog) return;
+                onClose();
+                onOpenChangelog();
+              }}
+              disabled={!onOpenChangelog}
+            >
+              <span>What’s new</span>
+              {hasUnseenChangelog && <span className={styles.aboutBadge}>New</span>}
+            </button>
+            <button
+              type="button"
+              className={styles.aboutBtn}
+              onClick={() => {
+                onClose();
+                onOpenHelp();
+              }}
+            >
+              <span>Search help &amp; shortcuts</span>
+            </button>
+            <button type="button" className={styles.aboutBtn} onClick={onOpenCollector}>
+              <span>Collector</span>
+              {(collectedCount > 0 || collectMode) && (
+                <span className={styles.aboutBadge}>
+                  {collectedCount > 0 ? collectedCount : 'Active'}
+                </span>
+              )}
+            </button>
+          </div>
+          <div className={styles.aboutLinks}>
+            <a href="https://d2clarity.com" target="_blank" rel="noopener noreferrer">
+              Clarity · d2clarity.com
+            </a>
+            <a href="https://ko-fi.com/D2Clarity" target="_blank" rel="noopener noreferrer">
+              Support on Ko-Fi
+            </a>
+          </div>
+        </section>
+
         <section className={styles.section}>
           <h2 className={styles.sectionTitle}>Appearance</h2>
           <div className={styles.row}>

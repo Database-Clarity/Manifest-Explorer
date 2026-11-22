@@ -24,11 +24,6 @@
   padding: 0.1875rem 0.5rem;
   background: var(--col);
   border-bottom: 1px solid var(--hair);
-
-  @include theme.mobile {
-    flex-wrap: nowrap;
-    padding: 0.25rem var(--page-x);
-  }
 }
 
 .headerInfo {
@@ -384,13 +379,30 @@
   border: 1px solid var(--hair);
   border-radius: 0.1875rem;
   background: var(--page);
+}
 
-  @media (max-width: 560px) {
-    display: none;
+.rowTableInline {
+  flex-shrink: 0;
+  max-width: 45%;
+  overflow: hidden;
+  padding: 0 0.25rem;
+  border: 1px solid var(--hair);
+  border-radius: 0.125rem;
+  background: var(--page);
+  color: var(--text3);
+  font-family: var(--code-font-family);
+  font-size: 0.625rem;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
+  @include theme.mobile-or-coarse {
+    max-width: 55%;
   }
 }
 
 .rowHashBtn {
+  position: relative;
   flex-shrink: 0;
   padding: 0.125rem 0.3125rem;
   border: 1px solid transparent;
@@ -401,6 +413,15 @@
   font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
   cursor: pointer;
+
+  // Expand the vertical hit target without growing the visual row chrome.
+  @include theme.mobile-or-coarse {
+    &::before {
+      content: '';
+      position: absolute;
+      inset: -0.5625rem 0;
+    }
+  }
 
   @media (hover: hover) {
     &:hover {
@@ -522,63 +543,26 @@
   font-weight: 700;
 }
 
-.collectToggle {
-  @include ctl.contain-focus-rings;
+.collectMode {
+  cursor: copy;
+}
+
+.collectBadge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  width: 1.5rem;
-  min-height: 1.5rem;
-  padding: 0;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 0.1875rem;
-  color: var(--text3);
-  cursor: pointer;
-
-  &:focus-visible {
-    @include ctl.focus-ring;
-  }
-
-  @media (hover: hover) {
-    &:hover:not(:disabled) {
-      color: var(--text);
-      background: var(--raised);
-      border-color: var(--hair);
-    }
-  }
-
-  @media (hover: none) {
-    color: var(--text2);
-  }
+  width: 1.125rem;
+  height: 1.125rem;
+  border: 1px solid var(--accent-ink);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent-ink);
 
   @include theme.mobile-or-coarse {
-    width: 1.75rem;
-    min-height: 1.75rem;
+    width: 1.25rem;
+    height: 1.25rem;
   }
-}
-
-.collectedToggle {
-  color: var(--accent-ink);
-}
-
-@media (hover: hover) and (pointer: fine) {
-  .collectToggle {
-    opacity: 0;
-  }
-
-  .listRow:hover .collectToggle,
-  .listRow:focus-within .collectToggle,
-  .gridCell:hover .collectToggle,
-  .gridCell:focus-within .collectToggle {
-    opacity: 1;
-  }
-}
-
-.listRow .collectToggle.alwaysOn,
-.gridCell .collectToggle.alwaysOn {
-  opacity: 1;
 }
 
 .stateBody {
@@ -664,15 +648,30 @@
 
 @include theme.mobile {
   .header {
-    padding: 0.25rem 0.5rem;
+    flex-wrap: nowrap;
+    gap: 0.375rem;
+    padding: 0.25rem var(--page-x);
   }
 
+  // Single-row header: the summary may shrink and ellipsize, while the view
+  // controls keep their touch-sized footprint and stay pinned right.
   .headerInfo {
-    flex-basis: 100%;
+    flex: 1 1 auto;
+    flex-wrap: nowrap;
+    min-width: 0;
+  }
+
+  .summary {
+    flex-shrink: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .controls {
-    width: 100%;
+    flex: 0 0 auto;
+    width: auto;
+    margin-left: auto;
     justify-content: flex-end;
   }
 

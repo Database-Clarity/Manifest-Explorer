@@ -19,6 +19,34 @@ export const CHANGELOG_STORAGE_KEY = 'clarity-manifest-explorer:last-seen-change
 
 export const CHANGELOG: readonly ChangelogEntry[] = [
   {
+    version: '2026.11.22-3',
+    date: 'Nov 22, 2026',
+    title: 'Clearer table results and a more compact mobile layout',
+    summary: 'Table filters, search controls, and toggle states are easier to understand and use.',
+    sections: [
+      {
+        heading: 'Tables & unnamed definitions',
+        items: [
+          'Selecting a table now includes its unnamed definitions, with clear Table #hash labels and a Show unnamed hint when those results are hidden.',
+          'LoadoutName, VendorGroup, and MedalTier have clearer extracted names, and Artifact Perks links now survive reloads.',
+        ],
+      },
+      {
+        heading: 'Filters & mobile layout',
+        items: [
+          'Find the searchable Table selector and a plain-English explanation of manifest tables in Filters.',
+          'Selected options stay pinned while searching filters, and mobile puts Filters beside Search and Sort beside the List/Card toggle.',
+        ],
+      },
+      {
+        heading: 'Toggle contrast',
+        items: [
+          'Active List/Card, Filter/Find, Settings, and Lightbox toggles have clearer neutral contrast in both themes.',
+        ],
+      },
+    ],
+  },
+  {
     version: '2026.11.22-2',
     date: 'Nov 22, 2026',
     title: 'A smoother mobile search and navigation experience',

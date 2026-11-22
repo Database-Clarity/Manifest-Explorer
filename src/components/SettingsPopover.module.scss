@@ -131,52 +131,27 @@
 }
 
 .segmented {
-  @include ctl.contain-focus-rings;
-  display: inline-flex;
+  @include ctl.segmented-track;
   flex: 0 1 auto;
   min-width: 0;
-  border: 1px solid var(--ctl-edge);
-  border-radius: 0.25rem;
-  overflow: hidden;
-  background: var(--ctl);
+  max-width: 100%;
 }
 
 .segBtn {
+  @include ctl.segmented-item;
   @include ctl.control-size;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   min-width: 0;
   padding: 0 0.4375rem;
-  border: 0;
-  border-right: 1px solid var(--line);
-  background: transparent;
-  color: var(--text2);
-  font: inherit;
   font-size: 0.6875rem;
   white-space: nowrap;
-  cursor: pointer;
-
-  &:last-child {
-    border-right: 0;
-  }
-
-  @media (hover: hover) {
-    &:hover {
-      background: var(--ctl-hover);
-      color: var(--text);
-    }
-  }
-
-  &:focus-visible {
-    @include ctl.focus-ring;
-  }
 }
 
-.segOn {
-  background: var(--sel);
-  color: var(--text);
-  font-weight: 600;
+.segBtn.segOn,
+.segBtn.segOn:hover:not(:disabled) {
+  @include ctl.segmented-active;
 }
 
 .stepper {

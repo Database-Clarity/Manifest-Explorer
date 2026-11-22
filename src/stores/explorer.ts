@@ -8,7 +8,10 @@ import type {
   SearchFilters,
   SearchResultItem,
   TableStatus,
+  UnnamedMode,
 } from '../types/manifest';
+import { hasPositiveTableScopeInQuery } from '../manifest/query';
+import { ARTIFACT_PERKS_TABLE, TABLE_METADATA, getShortTableName } from '../manifest/tables';
 
 export type NoticeTone = 'info' | 'warn' | 'danger';
 
@@ -57,6 +60,8 @@ export interface ExplorerState {
   results: SearchResultItem[];
   totalMatches: number;
   searchDurationMs: number;
+  scopeEntryCount: number;
+  hiddenUnnamedCount: number;
   searching: boolean;
   selectedResultIndex: number;
 
@@ -83,6 +88,8 @@ export interface ExplorerState {
     totalMatches: number,
     durationMs: number,
     preserveCursor?: boolean,
+    hiddenUnnamedCount?: number,
+    scopeEntryCount?: number,
   ) => void;
   setSearching: (searching: boolean) => void;
   setManifestStatus: (status: Partial<ManifestStatus>) => void;
@@ -159,6 +166,7 @@ export function createDefaultFilters(): SearchFilters {
     itemTypes: [],
     itemCategoryHashes: [],
     includeUnnamed: false,
+    unnamedMode: 'auto',
     onlyRedacted: false,
   };
 }
@@ -191,13 +199,30 @@ export function normalizeTableName(name: string): string {
   if (trimmed.length === 0) {
     return '';
   }
-  if (trimmed.startsWith('Destiny')) {
+  const lookup = trimmed.toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (lookup === 'artifactperks') {
+    return ARTIFACT_PERKS_TABLE;
+  }
+  const knownTable = Object.keys(TABLE_METADATA).find(
+    (table) =>
+      table.toLowerCase().replace(/[^a-z0-9]/g, '') === lookup ||
+      getShortTableName(table).toLowerCase().replace(/[^a-z0-9]/g, '') === lookup,
+  );
+  if (knownTable) {
+    return knownTable;
+  }
+  if (/^Destiny/i.test(trimmed)) {
     return trimmed;
   }
-  if (trimmed.endsWith('Definition')) {
+  if (/Definition$/i.test(trimmed)) {
     return `Destiny${trimmed}`;
   }
   return `Destiny${trimmed}Definition`;
+}
+
+function isKnownTableName(table: string): boolean {
+  if (table === ARTIFACT_PERKS_TABLE) return true;
+  return Object.prototype.hasOwnProperty.call(TABLE_METADATA, table);
 }
 
 export function shortTableName(name: string): string {
@@ -303,6 +328,8 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
   results: [],
   totalMatches: 0,
   searchDurationMs: 0,
+  scopeEntryCount: 0,
+  hiddenUnnamedCount: 0,
   searching: false,
   selectedResultIndex: 0,
 
@@ -325,10 +352,21 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
     set((state) => ({ deepSearch: !state.deepSearch, selectedResultIndex: 0 })),
 
   setFilters: (filters) =>
-    set((state) => ({
-      filters: { ...state.filters, ...filters },
-      selectedResultIndex: 0,
-    })),
+    set((state) => {
+      const nextFilters = { ...state.filters, ...filters };
+      if (filters.unnamedMode !== undefined) {
+        nextFilters.includeUnnamed = filters.unnamedMode === 'always';
+      } else if (filters.includeUnnamed !== undefined) {
+        const currentlyTableScoped =
+          state.filters.table !== 'all' || hasPositiveTableScopeInQuery(state.query);
+        nextFilters.unnamedMode = filters.includeUnnamed
+          ? 'always'
+          : currentlyTableScoped
+            ? 'never'
+            : 'auto';
+      }
+      return { filters: nextFilters, selectedResultIndex: 0 };
+    }),
 
   resetFilters: () =>
     set({
@@ -337,16 +375,32 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
     }),
 
   setTableFilter: (table) =>
-    set((state) => ({
-      filters: { ...state.filters, table },
-      selectedResultIndex: 0,
-    })),
+    set((state) => {
+      const resetUnnamedOverride = table === 'all' && state.filters.unnamedMode === 'never';
+      return {
+        filters: {
+          ...state.filters,
+          table,
+          ...(resetUnnamedOverride ? { unnamedMode: 'auto' as const, includeUnnamed: false } : {}),
+        },
+        selectedResultIndex: 0,
+      };
+    }),
 
-  setSearchResults: (items, totalMatches, durationMs, preserveCursor = false) =>
+  setSearchResults: (
+    items,
+    totalMatches,
+    durationMs,
+    preserveCursor = false,
+    hiddenUnnamedCount = 0,
+    scopeEntryCount = 0,
+  ) =>
     set((state) => ({
       results: items,
       totalMatches: Math.max(0, totalMatches),
       searchDurationMs: Math.max(0, durationMs),
+      hiddenUnnamedCount: Math.max(0, hiddenUnnamedCount),
+      scopeEntryCount: Math.max(0, scopeEntryCount),
       searching: false,
       selectedResultIndex: preserveCursor
         ? Math.min(state.selectedResultIndex, Math.max(0, items.length - 1))
@@ -810,7 +864,14 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
     const query = params.get('q') ?? '';
     const deepSearch = params.get('deep') === '1';
     const tableParam = params.get('table');
-    const table = tableParam && tableParam !== 'all' ? normalizeTableName(tableParam) : 'all';
+    const tableCandidate =
+      tableParam && tableParam !== 'all' ? normalizeTableName(tableParam) : 'all';
+    const table = isKnownTableName(tableCandidate) ? tableCandidate : 'all';
+    const unnamedModeParam = params.get('unnamedMode');
+    const unnamedMode: UnnamedMode =
+      unnamedModeParam === 'always' || unnamedModeParam === 'never'
+        ? unnamedModeParam
+        : 'auto';
 
     let sessions: InspectorSession[] = [];
     let activeIdx = -1;
@@ -848,7 +909,12 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
     set((state) => ({
       query,
       deepSearch,
-      filters: { ...state.filters, table },
+      filters: {
+        ...state.filters,
+        table,
+        unnamedMode,
+        includeUnnamed: unnamedMode === 'always',
+      },
       ...syncActiveSession(sessions, activeIdx),
       pinnedDiffRef: null,
       mobileInspectorOpen: sessions.length > 0,
@@ -867,6 +933,9 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
     }
     if (filters.table.length > 0 && filters.table !== 'all') {
       params.set('table', filters.table);
+    }
+    if (filters.unnamedMode && filters.unnamedMode !== 'auto') {
+      params.set('unnamedMode', filters.unnamedMode);
     }
 
     let base = '#/';

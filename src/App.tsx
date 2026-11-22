@@ -15,6 +15,7 @@ import type {
   InspectorTab,
   ReverseReferenceResponse,
   SearchResultItem,
+  UnnamedMode,
   VariantItem,
 } from './types/manifest';
 import * as manifestClient from './manifest/client';
@@ -72,6 +73,7 @@ function buildSearchHashUrl(
   query: string,
   deepSearch: boolean,
   table: string,
+  unnamedMode: UnnamedMode | undefined,
 ): string {
   const params = new URLSearchParams();
   if (query.length > 0) {
@@ -82,6 +84,9 @@ function buildSearchHashUrl(
   }
   if (table.length > 0 && table !== 'all') {
     params.set('table', table);
+  }
+  if (unnamedMode && unnamedMode !== 'auto') {
+    params.set('unnamedMode', unnamedMode);
   }
   const queryString = params.toString();
   return queryString.length > 0 ? `#/?${queryString}` : '#/';
@@ -184,6 +189,8 @@ export function App(): ReactNode {
   const filters = useExplorerStore((s) => s.filters);
   const manifestStatus = useExplorerStore((s) => s.manifestStatus);
   const results = useExplorerStore((s) => s.results);
+  const scopeEntryCount = useExplorerStore((s) => s.scopeEntryCount);
+  const hiddenUnnamedCount = useExplorerStore((s) => s.hiddenUnnamedCount);
   const selectedResultIndex = useExplorerStore((s) => s.selectedResultIndex);
   const sessions = useExplorerStore((s) => s.sessions);
   const history = useExplorerStore((s) => s.history);
@@ -260,7 +267,12 @@ export function App(): ReactNode {
     const st = useExplorerStore.getState();
     const nextHash =
       isNarrowLayout && !st.mobileInspectorOpen
-        ? buildSearchHashUrl(st.query, st.deepSearch, st.filters.table)
+        ? buildSearchHashUrl(
+            st.query,
+            st.deepSearch,
+            st.filters.table,
+            st.filters.unnamedMode,
+          )
         : st.buildHashUrl();
     const active =
       st.activeSessionIndex >= 0 ? st.sessions[st.activeSessionIndex] : undefined;
@@ -451,6 +463,7 @@ export function App(): ReactNode {
     historyIndex,
     deepSearch,
     filters.table,
+    filters.unnamedMode,
     isNarrowLayout,
     mobileInspectorOpen,
     buildHashUrl,
@@ -658,6 +671,8 @@ export function App(): ReactNode {
             res.totalMatches,
             res.durationMs,
             isBackgroundIndexRefresh,
+            res.hiddenUnnamedCount,
+            res.scopeEntryCount,
           );
         })
         .catch(() => {
@@ -1581,6 +1596,8 @@ export function App(): ReactNode {
           <ResultsPane
             onOpenItem={handleOpenResult}
             onRetryBoot={handleRetryBoot}
+            hiddenUnnamedCount={hiddenUnnamedCount}
+            scopeEntryCount={scopeEntryCount}
           />
         )}
 

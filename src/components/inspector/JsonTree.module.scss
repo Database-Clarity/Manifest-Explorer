@@ -26,34 +26,18 @@
 }
 
 .searchModes {
-  display: inline-flex;
-  align-items: center;
-  flex-shrink: 0;
-  padding: 0.125rem;
-  border: 1px solid var(--line);
-  border-radius: 0.3125rem;
-  background: var(--raised);
+  @include ctl.segmented-track;
 }
 
 .searchModeBtn {
+  @include ctl.segmented-item;
   min-height: 1.625rem;
   padding: 0 0.5rem;
-  border: 0;
-  border-radius: 0.1875rem;
-  background: transparent;
-  color: var(--text2);
-  font: inherit;
   font-size: 0.75rem;
-  cursor: pointer;
 
-  &[aria-pressed='true'] {
-    background: var(--sel);
-    color: var(--text);
-    box-shadow: inset 0 0 0 1px var(--line);
-  }
-
-  &:focus-visible {
-    @include ctl.focus-ring;
+  &[aria-pressed='true'],
+  &[aria-pressed='true']:hover:not(:disabled) {
+    @include ctl.segmented-active;
   }
 }
 

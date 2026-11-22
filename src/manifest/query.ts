@@ -1251,6 +1251,45 @@ export function parseSearchQuery(
   return parsed;
 }
 
+function hasPositiveTableScope(ast: QueryNode | null): boolean {
+  if (ast === null) return false;
+  const visit = (node: QueryNode, negated: boolean): boolean => {
+    switch (node.type) {
+      case 'and':
+      case 'or':
+        return node.children.some((child) => visit(child, negated));
+      case 'not':
+        return visit(node.child, !negated);
+      case 'atom':
+        return node.kind === 'table' && !negated;
+    }
+  };
+  return visit(ast, false);
+}
+
+/** True when the query contains a non-negated `table:` / `t:` atom. */
+export function hasPositiveTableScopeInQuery(query: string): boolean {
+  const availableTables = [...Object.keys(TABLE_METADATA), ARTIFACT_PERKS_TABLE];
+  return hasPositiveTableScope(parseSearchQuery(query, availableTables).ast ?? null);
+}
+
+/**
+ * Apply the backward-compatible unnamed flag and table-scope-aware default.
+ * The UI and worker share this helper so their interpretation cannot drift.
+ */
+export function isUnnamedIncluded(
+  filters: Pick<SearchFilters, 'table' | 'includeUnnamed' | 'unnamedMode'>,
+  query: string,
+): boolean {
+  const mode = filters.unnamedMode ?? 'auto';
+  const tableScoped = filters.table !== 'all' && filters.table !== '';
+  return (
+    mode === 'always' ||
+    (mode !== 'never' &&
+      (filters.includeUnnamed || tableScoped || hasPositiveTableScopeInQuery(query)))
+  );
+}
+
 /* -------------------------------------------------------------------------- */
 /* Ranking and filtering                                                      */
 /* -------------------------------------------------------------------------- */
@@ -1939,6 +1978,60 @@ function evaluateNode(node: QueryNode, entry: SearchIndexEntry, evalCtx: EvalCon
   }
 }
 
+interface ScopePossibility {
+  canMatch: boolean;
+  canFail: boolean;
+}
+
+/**
+ * Project a query AST onto its table atoms. Non-table atoms are treated as
+ * unknown, so the result identifies entries that could match the table portion
+ * of the query without requiring unrelated text/metadata predicates to match.
+ */
+function couldMatchQueryTableScope(node: QueryNode, entry: SearchIndexEntry): boolean {
+  const visit = (current: QueryNode): ScopePossibility => {
+    switch (current.type) {
+      case 'and': {
+        const children = current.children.map(visit);
+        return {
+          canMatch: children.every((child) => child.canMatch),
+          canFail: children.some((child) => child.canFail),
+        };
+      }
+      case 'or': {
+        const children = current.children.map(visit);
+        return {
+          canMatch: children.some((child) => child.canMatch),
+          canFail: children.every((child) => child.canFail),
+        };
+      }
+      case 'not': {
+        const child = visit(current.child);
+        return { canMatch: child.canFail, canFail: child.canMatch };
+      }
+      case 'atom': {
+        if (current.kind !== 'table') return { canMatch: true, canFail: true };
+        const matches = matchesTableKey(entry, cachedTableKey(current.table));
+        return { canMatch: matches, canFail: !matches };
+      }
+    }
+  };
+  return visit(node).canMatch;
+}
+
+function hasTableAtom(ast: QueryNode | null): boolean {
+  if (ast === null) return false;
+  switch (ast.type) {
+    case 'and':
+    case 'or':
+      return ast.children.some(hasTableAtom);
+    case 'not':
+      return hasTableAtom(ast.child);
+    case 'atom':
+      return ast.kind === 'table';
+  }
+}
+
 interface ScoringInfo {
   /** Positive text atoms (ignoring negated subtrees) for relevance scoring. */
   textTokens: string[];
@@ -2060,6 +2153,12 @@ export function scoreAndFilterEntries(
     uiFilters.table && uiFilters.table !== 'all' && uiFilters.table !== ''
       ? cachedTableKey(uiFilters.table)
       : undefined;
+  const tableScoped = uiTableKey !== undefined || hasPositiveTableScope(ast);
+  const unnamedMode = uiFilters.unnamedMode ?? 'auto';
+  const effectiveIncludeUnnamed =
+    unnamedMode === 'always' ||
+    (unnamedMode !== 'never' && (uiFilters.includeUnnamed || tableScoped));
+  const queryHasTableAtom = hasTableAtom(ast);
 
   const selectedCategories = uiFilters.itemCategoryHashes.filter((hash) => hash !== 0);
 
@@ -2076,10 +2175,19 @@ export function scoreAndFilterEntries(
   // One reusable candidate so rejected entries never allocate.
   const candidate: ScoredEntry = { entry: entries[0]!, score: 0, order: 0 };
   let totalMatches = 0;
+  let scopeEntryCount = 0;
+  let hiddenUnnamedCount = 0;
 
   for (let order = 0; order < entries.length; order += 1) {
     const entry = entries[order]!;
     if (uiTableKey && !matchesTableKey(entry, uiTableKey)) continue;
+    if (queryHasTableAtom && ast !== null && !couldMatchQueryTableScope(ast, entry)) continue;
+
+    scopeEntryCount += 1;
+    if (!effectiveIncludeUnnamed && !entry.name) {
+      hiddenUnnamedCount += 1;
+      continue;
+    }
 
     if (uiFilters.tierTypes.length > 0) {
       if (entry.tierType === undefined || !uiFilters.tierTypes.includes(entry.tierType)) continue;
@@ -2098,7 +2206,6 @@ export function scoreAndFilterEntries(
     ) {
       continue;
     }
-    if (!uiFilters.includeUnnamed && !entry.name) continue;
     if (uiFilters.onlyRedacted && entry.isRedacted !== true) continue;
 
     // The search box query AST is the single source of truth for query matching.
@@ -2132,5 +2239,7 @@ export function scoreAndFilterEntries(
     items: selected.map(({ entry }) => toResult(entry)),
     totalMatches,
     durationMs: Date.now() - startedAt,
+    scopeEntryCount,
+    hiddenUnnamedCount,
   };
 }

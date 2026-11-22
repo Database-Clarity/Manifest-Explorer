@@ -95,6 +95,57 @@
   }
 }
 
+// Neutral segmented control: a clearly recessed track with 2px inner padding
+// and gaps so the active item reads as a separate, lifted pill. Deliberately
+// accent-free — the results already communicate their own state.
+@mixin segmented-track {
+  @include contain-focus-rings;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  flex-shrink: 0;
+  background: var(--seg-track);
+  border: 1px solid var(--line);
+  border-radius: 0.3125rem;
+}
+
+// Base item: transparent over the track with muted ink. The 1px transparent
+// border reserves room so the active pill's crisp edge never shifts layout.
+@mixin segmented-item {
+  border: 1px solid transparent;
+  border-radius: 0.1875rem;
+  background: transparent;
+  color: var(--seg-inactive-ink);
+  font: inherit;
+  cursor: pointer;
+
+  @media (hover: hover) {
+    &:hover:not(:disabled) {
+      color: var(--text);
+      background: color-mix(in srgb, var(--seg-active) 55%, transparent);
+    }
+  }
+
+  &:focus-visible {
+    @include focus-ring;
+  }
+
+  &:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+}
+
+// Lifted active pill: neutral surface elevation plus a crisp neutral edge and
+// full-strength foreground. Never an accent fill.
+@mixin segmented-active {
+  color: var(--text);
+  background: var(--seg-active);
+  border-color: var(--seg-active-edge);
+  font-weight: 600;
+}
+
 @mixin field {
   @include control-size;
   padding: 0 0.5rem;

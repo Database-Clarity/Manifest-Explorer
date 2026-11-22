@@ -39,6 +39,14 @@
   --fld: #15181c;
   --fld-edge: #6c7480;
 
+  // Neutral segmented controls (view/mode toggles). Deliberately accent-free:
+  // a recessed track, a lifted neutral pill, and a crisp neutral edge carry the
+  // active state without competing with the results they describe.
+  --seg-track: #14171c;
+  --seg-active: #343b46;
+  --seg-active-edge: #6f7c8e;
+  --seg-inactive-ink: #7d8694;
+
   // Brand & focus
   --accent: #24ec54;
   --accent-ink: #24ec54;
@@ -145,6 +153,14 @@
   --ctl-pressed: #c9d9e5;
   --fld: #ffffff;
   --fld-edge: #5c7488;
+
+  // Neutral segmented controls — recessed cool slate track, crisp white active
+  // pill, neutral slate edge. No accent colour: the results themselves already
+  // communicate the view/mode, so the toggle only needs quiet clarity.
+  --seg-track: #dce6ef;
+  --seg-active: #ffffff;
+  --seg-active-edge: #5a7086;
+  --seg-inactive-ink: #516170;
 
   // Brand & focus
   --accent: #24ec54;

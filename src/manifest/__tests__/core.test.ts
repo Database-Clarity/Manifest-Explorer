@@ -22,7 +22,14 @@ import {
   toSignedHash,
   toUnsignedHash,
 } from '../hash';
-import { boundedEditDistance, parseSearchQuery, scoreAndFilterEntries, type SearchContext } from '../query';
+import {
+  boundedEditDistance,
+  hasPositiveTableScopeInQuery,
+  isUnnamedIncluded,
+  parseSearchQuery,
+  scoreAndFilterEntries,
+  type SearchContext,
+} from '../query';
 import { SEASON_ALIASES, formatShortSeasonName, getD2aiMappings, normalizeSourceLookup } from '../d2ai';
 import {
   ARTIFACT_PERKS_TABLE,
@@ -42,6 +49,7 @@ import {
   isEnrichmentDependencyTable,
   shouldFlushSearchIndex,
 } from '../worker';
+import { createDefaultFilters, normalizeTableName, useExplorerStore } from '../../stores/explorer';
 
 const ITEM_TABLE = 'DestinyInventoryItemDefinition';
 const LITE_TABLE = 'DestinyInventoryItemLiteDefinition';
@@ -91,7 +99,12 @@ function rank(
     entries,
     parseSearchQuery(
       query,
-      [ITEM_TABLE, 'DestinySandboxPerkDefinition', 'DestinyRecordDefinition'],
+      [
+        ITEM_TABLE,
+        'DestinySandboxPerkDefinition',
+        'DestinyRecordDefinition',
+        'DestinyStatGroupDefinition',
+      ],
       options.precedence ?? 'dim',
     ),
     makeFilters(options.filters),
@@ -383,6 +396,22 @@ describe('table metadata and summaries', () => {
     expect(summary.isDummy).toBe(false);
   });
 
+  it('extracts names from loadout names, vendor groups and medal tiers', () => {
+    const loadoutName = extractTableEntrySummary('DestinyLoadoutNameDefinition', '1', {
+      name: 'Loadout name',
+    });
+    const vendorGroup = extractTableEntrySummary('DestinyVendorGroupDefinition', '2', {
+      categoryName: 'Vendor group',
+    });
+    const medalTier = extractTableEntrySummary('DestinyMedalTierDefinition', '3', {
+      tierName: 'Medal tier',
+    });
+
+    expect(loadoutName.name).toBe('Loadout name');
+    expect(vendorGroup.name).toBe('Vendor group');
+    expect(medalTier.name).toBe('Medal tier');
+  });
+
   it('keeps non-item tables intact and detects flags', () => {
     const record = extractTableEntrySummary('DestinyRecordDefinition', '123', {
       displayProperties: { name: 'Flawless', description: 'Complete it.' },
@@ -491,6 +520,30 @@ describe('query parser', () => {
   it('treats unknown prefixes as text', () => {
     const parsed = parseSearchQuery('mystery:value', tables);
     expect(parsed.textTokens).toEqual(['mystery:value']);
+  });
+
+  it('detects only positive table scopes when deciding automatic unnamed inclusion', () => {
+    expect(hasPositiveTableScopeInQuery('table:StatGroup')).toBe(true);
+    expect(hasPositiveTableScopeInQuery('-table:StatGroup')).toBe(false);
+    expect(hasPositiveTableScopeInQuery('not (table:StatGroup)')).toBe(false);
+    expect(
+      isUnnamedIncluded(
+        { table: 'all', includeUnnamed: false, unnamedMode: 'auto' },
+        'table:StatGroup',
+      ),
+    ).toBe(true);
+    expect(
+      isUnnamedIncluded(
+        { table: 'all', includeUnnamed: false, unnamedMode: 'auto' },
+        '-table:StatGroup',
+      ),
+    ).toBe(false);
+    expect(
+      isUnnamedIncluded(
+        { table: 'all', includeUnnamed: false, unnamedMode: 'never' },
+        'table:StatGroup',
+      ),
+    ).toBe(false);
   });
 });
 
@@ -659,6 +712,73 @@ describe('ranking and filtering', () => {
     expect(redacted.items).toHaveLength(0);
   });
 
+  it('automatically includes unnamed StatGroup entries under a table scope', () => {
+    const statGroups = Array.from({ length: 112 }, (_, index) =>
+      makeEntry({
+        hash: 1000 + index,
+        table: 'DestinyStatGroupDefinition',
+        name: '',
+      }),
+    );
+    const defaultFilters = {
+      ...makeFilters(),
+      table: 'DestinyStatGroupDefinition',
+      includeUnnamed: false,
+      unnamedMode: 'auto' as const,
+    };
+
+    const selectedTable = rank('', statGroups, { filters: defaultFilters });
+    expect(selectedTable.items).toHaveLength(112);
+    expect(selectedTable.totalMatches).toBe(112);
+    expect(selectedTable.hiddenUnnamedCount).toBe(0);
+
+    const queryTable = rank('table:StatGroup', statGroups, {
+      filters: { ...defaultFilters, table: 'all' },
+    });
+    expect(queryTable.items).toHaveLength(112);
+    expect(queryTable.totalMatches).toBe(112);
+    expect(queryTable.hiddenUnnamedCount).toBe(0);
+  });
+
+  it('reports all hidden unnamed entries for an explicit never mode inside StatGroup', () => {
+    const statGroups = Array.from({ length: 112 }, (_, index) =>
+      makeEntry({
+        hash: 2000 + index,
+        table: 'DestinyStatGroupDefinition',
+        name: '',
+      }),
+    );
+    const result = rank('', statGroups, {
+      filters: {
+        table: 'DestinyStatGroupDefinition',
+        includeUnnamed: false,
+        unnamedMode: 'never',
+      },
+    });
+
+    expect(result.items).toHaveLength(0);
+    expect(result.totalMatches).toBe(0);
+    expect(result.scopeEntryCount).toBe(112);
+    expect(result.hiddenUnnamedCount).toBe(112);
+  });
+
+  it('excludes and diagnoses unnamed entries globally in auto mode', () => {
+    const entries = [
+      makeEntry({ hash: 1, name: '' }),
+      makeEntry({ hash: 2, name: 'Named item' }),
+      makeEntry({ hash: 3, name: '', table: 'DestinyRecordDefinition' }),
+      makeEntry({ hash: 4, name: 'Named record', table: 'DestinyRecordDefinition' }),
+    ];
+    const result = rank('', entries, {
+      filters: { table: 'all', includeUnnamed: false, unnamedMode: 'auto' },
+    });
+
+    expect(result.items.map((item) => item.hash)).toEqual([2, 4]);
+    expect(result.totalMatches).toBe(2);
+    expect(result.scopeEntryCount).toBe(4);
+    expect(result.hiddenUnnamedCount).toBe(2);
+  });
+
   it('supports all sort modes', () => {
     const entries = [
       makeEntry({ hash: 60, name: 'Charlie', index: 1 }),
@@ -695,6 +815,67 @@ describe('ranking and filtering', () => {
     expect(result.items).toHaveLength(10);
     expect(result.totalMatches).toBe(25);
     expect(result.durationMs).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe('explorer filter and URL state', () => {
+  it('defaults unnamed handling to automatic and keeps the compatibility flag false', () => {
+    expect(createDefaultFilters()).toMatchObject({
+      table: 'all',
+      includeUnnamed: false,
+      unnamedMode: 'auto',
+    });
+  });
+
+  it('synchronizes legacy unnamed toggles and clears per-table exclusions on All tables', () => {
+    const store = useExplorerStore.getState();
+    store.resetFilters();
+    store.setTableFilter('DestinyStatGroupDefinition');
+    store.setFilters({ includeUnnamed: false });
+    expect(useExplorerStore.getState().filters).toMatchObject({
+      includeUnnamed: false,
+      unnamedMode: 'never',
+    });
+
+    useExplorerStore.getState().setTableFilter('all');
+    expect(useExplorerStore.getState().filters).toMatchObject({
+      table: 'all',
+      includeUnnamed: false,
+      unnamedMode: 'auto',
+    });
+
+    useExplorerStore.getState().setFilters({ includeUnnamed: true });
+    expect(useExplorerStore.getState().filters).toMatchObject({
+      includeUnnamed: true,
+      unnamedMode: 'always',
+    });
+    useExplorerStore.getState().resetFilters();
+  });
+
+  it('round-trips ArtifactPerks and explicit unnamed mode through the hash URL', () => {
+    const store = useExplorerStore.getState();
+    store.resetFilters();
+    store.setTableFilter('ArtifactPerks');
+    store.setFilters({ unnamedMode: 'never' });
+
+    expect(normalizeTableName('ArtifactPerks')).toBe('ArtifactPerks');
+    expect(normalizeTableName('artifactperks')).toBe('ArtifactPerks');
+    expect(normalizeTableName('artifact perks')).toBe('ArtifactPerks');
+
+    const url = useExplorerStore.getState().buildHashUrl();
+    expect(url).toContain('table=ArtifactPerks');
+    expect(url).toContain('unnamedMode=never');
+
+    useExplorerStore.getState().hydrateFromHashUrl(url);
+    expect(useExplorerStore.getState().filters).toMatchObject({
+      table: 'ArtifactPerks',
+      includeUnnamed: false,
+      unnamedMode: 'never',
+    });
+
+    useExplorerStore.getState().hydrateFromHashUrl('#/?table=DestinyArtifactPerksDefinition');
+    expect(useExplorerStore.getState().filters.table).toBe('all');
+    useExplorerStore.getState().resetFilters();
   });
 });
 

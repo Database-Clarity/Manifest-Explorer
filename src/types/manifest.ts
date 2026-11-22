@@ -122,6 +122,8 @@ export interface FuzzySearchOptions {
   threshold: number;
 }
 
+export type UnnamedMode = 'auto' | 'always' | 'never';
+
 export interface SearchFilters {
   /** Single selected table or 'all' */
   table: string;
@@ -131,6 +133,8 @@ export interface SearchFilters {
   itemTypes: number[];
   itemCategoryHashes: number[];
   includeUnnamed: boolean;
+  /** Automatic table-scope behavior, with `includeUnnamed` retained for compatibility. */
+  unnamedMode?: UnnamedMode;
   onlyRedacted: boolean;
 }
 
@@ -138,6 +142,10 @@ export interface SearchResponse {
   items: SearchResultItem[];
   totalMatches: number;
   durationMs: number;
+  /** Entries in the active table/query-table scope before unnamed filtering. */
+  scopeEntryCount?: number;
+  /** Unnamed entries hidden by the current unnamed mode. */
+  hiddenUnnamedCount?: number;
 }
 
 export interface TableStatus {

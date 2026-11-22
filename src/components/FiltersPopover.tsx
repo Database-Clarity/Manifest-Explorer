@@ -1,6 +1,8 @@
 /// <reference types="vite/client" />
 import { useMemo, useState, type ReactNode, type RefObject } from 'react';
-import type { FilterOption } from '../types/manifest';
+import type { FilterOption, TableStatus } from '../types/manifest';
+import { getFriendlyTableName, getShortTableName } from '../manifest/tables';
+import { hasPositiveTableScopeInQuery, isUnnamedIncluded } from '../manifest/query';
 import { useExplorerStore } from '../stores/explorer';
 import {
   FUZZINESS_MAX,
@@ -23,7 +25,9 @@ export interface FiltersPopoverProps {
   open: boolean;
   onClose: () => void;
   anchorRef: RefObject<HTMLElement | null>;
-  /** Panel alignment for the active anchor (search cluster vs mobile toolbar). */
+  onSelectTable?: (table: string) => void;
+  onLoadAllTables?: () => void;
+  /** Panel alignment for the active anchor. */
   align?: 'start' | 'end';
 }
 
@@ -161,7 +165,20 @@ interface SourceFilterOption {
   aliases?: string[];
 }
 
+interface TablePickerOption {
+  key: string;
+  table?: TableStatus;
+}
+
 const NUMBER_FORMAT = new Intl.NumberFormat('en-US');
+const TABLE_GROUP_ORDER: ReadonlyArray<TableStatus['group']> = [
+  'primary',
+  'gameplay',
+  'world',
+  'progression',
+  'system',
+];
+const UNFOLDABLE_TABLES: ReadonlySet<string> = new Set(['ArtifactPerks']);
 
 function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter((part): part is string => typeof part === 'string' && part.length > 0).join(' ');
@@ -170,6 +187,61 @@ function cx(...parts: Array<string | false | null | undefined>): string {
 /** Builds the exact `cat:` token for a category label, quoting values with whitespace. */
 function categoryToken(label: string): string {
   return /\s/.test(label) ? `cat:"${label}"` : `cat:${label}`;
+}
+
+/** Mirrors the table picker dedupe so Lite/full siblings never appear twice. */
+function dedupeTables(tables: TableStatus[]): TableStatus[] {
+  const byShortName = new Map<string, TableStatus>();
+
+  for (const table of tables) {
+    const key = getShortTableName(table.name);
+
+    if (UNFOLDABLE_TABLES.has(table.name)) {
+      byShortName.set(key, table);
+      continue;
+    }
+
+    const existing = byShortName.get(key);
+    if (!existing) {
+      byShortName.set(key, table);
+      continue;
+    }
+
+    const existingRank = existing.loaded ? 2 : existing.loading ? 1 : 0;
+    const tableRank = table.loaded ? 2 : table.loading ? 1 : 0;
+    if (
+      tableRank > existingRank ||
+      (tableRank === existingRank && !table.name.endsWith('LiteDefinition'))
+    ) {
+      byShortName.set(key, table);
+    }
+  }
+
+  return [...byShortName.values()];
+}
+
+/** Mirrors the table picker matching for canonical, short, and friendly names. */
+function matchesTableFilter(table: TableStatus, filter: string): boolean {
+  if (filter.length === 0) return true;
+  const compactFilter = filter.replace(/\s+/g, '');
+  const names = [table.name, table.shortName, getFriendlyTableName(table.name)];
+  return names.some((name) => {
+    const normalized = name.toLowerCase();
+    return normalized.includes(filter) || normalized.replace(/\s+/g, '').includes(compactFilter);
+  });
+}
+
+function pinnedFirst<T>(
+  items: readonly T[],
+  pinnedKeys: ReadonlySet<string>,
+  getKey: (item: T) => string,
+): T[] {
+  const pinned: T[] = [];
+  const remaining: T[] = [];
+  for (const item of items) {
+    (pinnedKeys.has(getKey(item)) ? pinned : remaining).push(item);
+  }
+  return [...pinned, ...remaining];
 }
 
 /**
@@ -190,18 +262,27 @@ function FiltersPopoverBody({
   open,
   onClose,
   anchorRef,
+  onSelectTable,
+  onLoadAllTables,
   align = 'start',
 }: FiltersPopoverProps): ReactNode {
   const [categoryQuery, setCategoryQuery] = useState('');
   const [sourceQuery, setSourceQuery] = useState('');
+  const [tableQuery, setTableQuery] = useState('');
+  const [tableDropdownOpen, setTableDropdownOpen] = useState(true);
+  const [sourceDropdownOpen, setSourceDropdownOpen] = useState(true);
+  const [categoryDropdownOpen, setCategoryDropdownOpen] = useState(true);
   const [collapsibleOpen, setCollapsibleOpen] = useState<Record<string, boolean>>({});
 
   const query = useExplorerStore((state) => state.query);
   const setQuery = useExplorerStore((state) => state.setQuery);
   const setFilters = useExplorerStore((state) => state.setFilters);
   const resetFilters = useExplorerStore((state) => state.resetFilters);
+  const setTableFilter = useExplorerStore((state) => state.setTableFilter);
+  const filters = useExplorerStore((state) => state.filters);
   const filterCatalog = useExplorerStore((state) => state.filterCatalog);
-  const includeUnnamed = useExplorerStore((state) => state.filters.includeUnnamed);
+  const tables = useExplorerStore((state) => state.tables);
+  const indexedEntryCount = useExplorerStore((state) => state.manifestStatus.indexedEntryCount);
   const deepSearch = useExplorerStore((state) => state.deepSearch);
   const toggleDeepSearch = useExplorerStore((state) => state.toggleDeepSearch);
 
@@ -217,30 +298,92 @@ function FiltersPopoverBody({
   const sources: readonly SourceFilterOption[] =
     (filterCatalog as { sources?: SourceFilterOption[] }).sources ?? [];
   const categories = filterCatalog.categories;
+  const tableFilter = filters.table;
+  const uniqueTables = useMemo(() => dedupeTables(tables), [tables]);
+  const orderedTables = useMemo(
+    () =>
+      [...uniqueTables].sort(
+        (a, b) => TABLE_GROUP_ORDER.indexOf(a.group) - TABLE_GROUP_ORDER.indexOf(b.group),
+      ),
+    [uniqueTables],
+  );
+  const selectedTableKey =
+    tableFilter === 'all'
+      ? 'all'
+      : (uniqueTables.find(
+          (table) => getShortTableName(table.name) === getShortTableName(tableFilter),
+        )?.name ?? tableFilter);
+  const activeTableLabel =
+    tableFilter === 'all'
+      ? 'All tables'
+      : (uniqueTables.find(
+          (table) => getShortTableName(table.name) === getShortTableName(tableFilter),
+        )?.shortName ?? getFriendlyTableName(tableFilter));
+  const hasUnloadedTables = uniqueTables.some((table) => !table.loaded);
+
+  // Snapshots are intentionally initialized once when this open-only body mounts.
+  // They are refreshed only by opening a searchable details section or editing
+  // its search field, never by changing a selected row.
+  const [pinnedSources, setPinnedSources] = useState<ReadonlySet<string>>(
+    () =>
+      new Set(
+        sources
+          .filter((source) => hasQueryToken(query, `source:${source.key}`))
+          .map((source) => source.key),
+      ),
+  );
+  const [pinnedCategories, setPinnedCategories] = useState<ReadonlySet<string>>(
+    () =>
+      new Set(
+        categories
+          .filter((option) => hasQueryToken(query, categoryToken(option.label)))
+          .map((option) => String(option.value)),
+      ),
+  );
+  const [pinnedTables, setPinnedTables] = useState<ReadonlySet<string>>(
+    () => new Set([selectedTableKey]),
+  );
 
   const normalizedCategoryQuery = categoryQuery.trim().toLowerCase();
   const normalizedSourceQuery = sourceQuery.trim().toLowerCase();
+  const normalizedTableQuery = tableQuery.trim().toLowerCase();
   const filteredCategories = useMemo(
-    () =>
-      categories.filter((option) =>
+    () => {
+      const filtered = categories.filter((option) =>
         normalizedCategoryQuery.length === 0
           ? true
           : option.label.toLowerCase().includes(normalizedCategoryQuery),
-      ),
-    [categories, normalizedCategoryQuery],
+      );
+      return pinnedFirst(filtered, pinnedCategories, (option) => String(option.value));
+    },
+    [categories, normalizedCategoryQuery, pinnedCategories],
   );
   const filteredSources = useMemo(
-    () =>
-      sources.filter((source) => {
+    () => {
+      const filtered = sources.filter((source) => {
         if (normalizedSourceQuery.length === 0) {
           return true;
         }
         return [source.label, source.key, ...(source.aliases ?? [])].some((value) =>
           value.toLowerCase().includes(normalizedSourceQuery),
         );
-      }),
-    [sources, normalizedSourceQuery],
+      });
+      return pinnedFirst(filtered, pinnedSources, (source) => source.key);
+    },
+    [sources, normalizedSourceQuery, pinnedSources],
   );
+  const filteredTableOptions = useMemo(() => {
+    const options: TablePickerOption[] = [];
+    if (normalizedTableQuery.length === 0 || 'all tables'.includes(normalizedTableQuery)) {
+      options.push({ key: 'all' });
+    }
+    for (const table of orderedTables) {
+      if (matchesTableFilter(table, normalizedTableQuery)) {
+        options.push({ key: table.name, table });
+      }
+    }
+    return pinnedFirst(options, pinnedTables, (option) => option.key);
+  }, [orderedTables, normalizedTableQuery, pinnedTables]);
 
   // Skip seasons with no indexed items so empty rows never clutter the list.
   // Seasons without a computed count are kept (treated as non-empty).
@@ -248,6 +391,40 @@ function FiltersPopoverBody({
 
   const fuzzinessPercent = Math.round(fuzziness * 100);
   const fuzzinessTier = fuzzinessLevel(fuzziness);
+  const tableScoped = tableFilter !== 'all' || hasPositiveTableScopeInQuery(query);
+  const effectiveIncludeUnnamed = isUnnamedIncluded(filters, query);
+
+  function refreshPinnedSources(): void {
+    setPinnedSources(
+      new Set(
+        sources
+          .filter((source) => hasQueryToken(query, `source:${source.key}`))
+          .map((source) => source.key),
+      ),
+    );
+  }
+
+  function refreshPinnedCategories(): void {
+    setPinnedCategories(
+      new Set(
+        categories
+          .filter((option) => hasQueryToken(query, categoryToken(option.label)))
+          .map((option) => String(option.value)),
+      ),
+    );
+  }
+
+  function refreshPinnedTables(): void {
+    setPinnedTables(new Set([selectedTableKey]));
+  }
+
+  function handleSelectTable(table: string): void {
+    if (onSelectTable) {
+      onSelectTable(table);
+    } else {
+      setTableFilter(table);
+    }
+  }
 
   function toggleToken(token: string, groupId: FilterGroupId): void {
     setQuery(toggleQueryTokenInGroup(query, token, groupId));
@@ -258,6 +435,10 @@ function FiltersPopoverBody({
     resetFilters();
     setCategoryQuery('');
     setSourceQuery('');
+    setTableQuery('');
+    setPinnedSources(new Set());
+    setPinnedCategories(new Set());
+    setPinnedTables(new Set(['all']));
   }
 
   function renderTokenChip(
@@ -358,11 +539,26 @@ function FiltersPopoverBody({
         <div className={styles.header}>
           <h2 className={styles.title}>Filters</h2>
           <div className={styles.optionsInline} role="group" aria-label="Search options">
-            <label className={styles.checkRow} title="Include unnamed definitions">
+            <label
+              className={styles.checkRow}
+              title="Include definitions without a display name (shown automatically when viewing a specific table)"
+            >
               <input
                 type="checkbox"
-                checked={includeUnnamed}
-                onChange={(event) => setFilters({ includeUnnamed: event.target.checked })}
+                checked={effectiveIncludeUnnamed}
+                onChange={(event) => {
+                  const checked = event.target.checked;
+                  if (checked) {
+                    setFilters({
+                      includeUnnamed: true,
+                      unnamedMode: tableScoped ? 'auto' : 'always',
+                    });
+                  } else if (tableScoped) {
+                    setFilters({ includeUnnamed: false, unnamedMode: 'never' });
+                  } else {
+                    setFilters({ includeUnnamed: false, unnamedMode: 'auto' });
+                  }
+                }}
                 aria-label="Include unnamed definitions"
               />
               <span>Unnamed</span>
@@ -418,6 +614,114 @@ function FiltersPopoverBody({
           </button>
         </div>
 
+        <section className={cx(styles.group, styles.tableGroup)}>
+          <details
+            className={styles.searchableOptions}
+            open={tableDropdownOpen}
+            onToggle={(event) => {
+              const nextOpen = event.currentTarget.open;
+              setTableDropdownOpen(nextOpen);
+              if (nextOpen) refreshPinnedTables();
+            }}
+          >
+            <summary className={styles.searchableSummary}>
+              <span className={styles.groupTitle}>Table</span>
+              <span className={styles.tableSelection}>· {activeTableLabel}</span>
+              <ChevronRightIcon size={11} className={styles.summaryChevron} />
+            </summary>
+            <div className={styles.searchableBody}>
+              <p className={styles.tableDescription}>
+                Bungie’s manifest splits game data into separate definition tables (items, perks,
+                stats, activities, etc.).
+              </p>
+              <div className={styles.searchWrap}>
+                <SearchIcon size={12} className={styles.searchIcon} />
+                <input
+                  type="search"
+                  className={styles.optionSearch}
+                  value={tableQuery}
+                  onChange={(event) => {
+                    setTableQuery(event.target.value);
+                    refreshPinnedTables();
+                  }}
+                  placeholder="Filter tables…"
+                  aria-label="Filter tables"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              </div>
+              <div className={styles.optionList}>
+                {filteredTableOptions.map((option) => {
+                  if (option.key === 'all') {
+                    const selected = tableFilter === 'all';
+                    return (
+                      <button
+                        key="all"
+                        type="button"
+                        className={cx(styles.optionRow, selected && styles.categoryRowOn)}
+                        onClick={() => handleSelectTable('all')}
+                        aria-current={selected ? 'true' : undefined}
+                      >
+                        <span className={styles.optionCheck} aria-hidden="true">
+                          {selected && <CheckIcon size={11} />}
+                        </span>
+                        <span className={styles.optionName}>All tables</span>
+                        <span className={styles.optionCount}>
+                          {NUMBER_FORMAT.format(indexedEntryCount)}
+                        </span>
+                      </button>
+                    );
+                  }
+
+                  const table = option.table;
+                  if (!table) return null;
+                  const selected =
+                    tableFilter !== 'all' &&
+                    getShortTableName(table.name) === getShortTableName(tableFilter);
+                  return (
+                    <button
+                      key={table.name}
+                      type="button"
+                      className={cx(styles.optionRow, selected && styles.categoryRowOn)}
+                      onClick={() => handleSelectTable(table.name)}
+                      aria-current={selected ? 'true' : undefined}
+                      title={table.name}
+                    >
+                      <span className={styles.optionCheck} aria-hidden="true">
+                        {selected && <CheckIcon size={11} />}
+                      </span>
+                      <span className={styles.optionName}>{table.shortName}</span>
+                      <span className={styles.optionCount}>
+                        {table.loaded
+                          ? NUMBER_FORMAT.format(table.count)
+                          : table.loading
+                            ? 'Loading'
+                            : 'Load'}
+                      </span>
+                    </button>
+                  );
+                })}
+                {filteredTableOptions.length === 0 && (
+                  <p className={styles.emptyOptions}>
+                    No tables match “{tableQuery.trim()}”.
+                  </p>
+                )}
+              </div>
+              {hasUnloadedTables && onLoadAllTables && (
+                <div className={styles.tableFooter}>
+                  <button
+                    type="button"
+                    className={styles.tableFooterBtn}
+                    onClick={onLoadAllTables}
+                  >
+                    Load all tables
+                  </button>
+                </div>
+              )}
+            </div>
+          </details>
+        </section>
+
         <div className={styles.columns}>
           <div className={styles.col}>
             {renderChipGroup('Highlights & flags', HIGHLIGHT_OPTIONS, 'highlights')}
@@ -463,94 +767,131 @@ function FiltersPopoverBody({
               <div className={styles.chips}>
                 {SOURCE_OPTIONS.map((option) => renderTokenChip(option, 'source'))}
               </div>
-              <div className={styles.searchWrap}>
-                <SearchIcon size={12} className={styles.searchIcon} />
-                <input
-                  type="search"
-                  className={styles.optionSearch}
-                  value={sourceQuery}
-                  onChange={(event) => setSourceQuery(event.target.value)}
-                  placeholder="Find a raid, dungeon, destination, vendor…"
-                  aria-label="Find a source"
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-              </div>
-              {filteredSources.length > 0 ? (
-                <div className={styles.optionList}>
-                  {filteredSources.map((source) => {
-                    const token = `source:${source.key}`;
-                    const selected = hasQueryToken(query, token);
-                    return (
-                      <button
-                        key={source.key}
-                        type="button"
-                        className={cx(styles.optionRow, selected && styles.categoryRowOn)}
-                        aria-pressed={selected}
-                        title={token}
-                        onClick={() => toggleToken(token, 'source')}
-                      >
-                        <span className={styles.optionCheck} aria-hidden="true">
-                          {selected && <CheckIcon size={11} />}
-                        </span>
-                        <span className={styles.optionName}>{source.label}</span>
-                        <span className={styles.optionCount}>
-                          {NUMBER_FORMAT.format(source.count)}
-                        </span>
-                      </button>
-                    );
-                  })}
+              <details
+                className={styles.searchableOptions}
+                open={sourceDropdownOpen}
+                onToggle={(event) => {
+                  const nextOpen = event.currentTarget.open;
+                  setSourceDropdownOpen(nextOpen);
+                  if (nextOpen) refreshPinnedSources();
+                }}
+              >
+                <summary className={styles.searchableSummary}>
+                  <span className={styles.groupTitle}>Browse sources</span>
+                  <ChevronRightIcon size={11} className={styles.summaryChevron} />
+                </summary>
+                <div className={styles.searchableBody}>
+                  <div className={styles.searchWrap}>
+                    <SearchIcon size={12} className={styles.searchIcon} />
+                    <input
+                      type="search"
+                      className={styles.optionSearch}
+                      value={sourceQuery}
+                      onChange={(event) => {
+                        setSourceQuery(event.target.value);
+                        refreshPinnedSources();
+                      }}
+                      placeholder="Find a raid, dungeon, destination, vendor…"
+                      aria-label="Find a source"
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                  </div>
+                  {filteredSources.length > 0 ? (
+                    <div className={styles.optionList}>
+                      {filteredSources.map((source) => {
+                        const token = `source:${source.key}`;
+                        const selected = hasQueryToken(query, token);
+                        return (
+                          <button
+                            key={source.key}
+                            type="button"
+                            className={cx(styles.optionRow, selected && styles.categoryRowOn)}
+                            aria-pressed={selected}
+                            title={token}
+                            onClick={() => toggleToken(token, 'source')}
+                          >
+                            <span className={styles.optionCheck} aria-hidden="true">
+                              {selected && <CheckIcon size={11} />}
+                            </span>
+                            <span className={styles.optionName}>{source.label}</span>
+                            <span className={styles.optionCount}>
+                              {NUMBER_FORMAT.format(source.count)}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className={styles.emptyOptions}>No sources match that search.</p>
+                  )}
                 </div>
-              ) : (
-                <p className={styles.emptyOptions}>No sources match that search.</p>
-              )}
+              </details>
             </section>
 
             <section className={styles.group}>
-              <h3 className={styles.groupTitle}>Item category</h3>
-              <div className={styles.searchWrap}>
-                <SearchIcon size={12} className={styles.searchIcon} />
-                <input
-                  type="search"
-                  className={styles.optionSearch}
-                  value={categoryQuery}
-                  onChange={(event) => setCategoryQuery(event.target.value)}
-                  placeholder="Find a category…"
-                  aria-label="Find an item category"
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-              </div>
-              {filteredCategories.length > 0 ? (
-                <div className={styles.optionList}>
-                  {filteredCategories.map((option) => {
-                    const token = categoryToken(option.label);
-                    const selected = hasQueryToken(query, token);
-                    return (
-                      <button
-                        key={option.value}
-                        type="button"
-                        className={cx(styles.optionRow, selected && styles.categoryRowOn)}
-                        aria-pressed={selected}
-                        title={token}
-                        onClick={() => toggleToken(token, 'category')}
-                      >
-                        <span className={styles.optionCheck} aria-hidden="true">
-                          {selected && <CheckIcon size={11} />}
-                        </span>
-                        <span className={styles.optionName}>{option.label}</span>
-                        {option.count !== undefined && (
-                          <span className={styles.optionCount}>
-                            {NUMBER_FORMAT.format(option.count)}
-                          </span>
-                        )}
-                      </button>
-                    );
-                  })}
+              <details
+                className={styles.searchableOptions}
+                open={categoryDropdownOpen}
+                onToggle={(event) => {
+                  const nextOpen = event.currentTarget.open;
+                  setCategoryDropdownOpen(nextOpen);
+                  if (nextOpen) refreshPinnedCategories();
+                }}
+              >
+                <summary className={styles.searchableSummary}>
+                  <span className={styles.groupTitle}>Item category</span>
+                  <ChevronRightIcon size={11} className={styles.summaryChevron} />
+                </summary>
+                <div className={styles.searchableBody}>
+                  <div className={styles.searchWrap}>
+                    <SearchIcon size={12} className={styles.searchIcon} />
+                    <input
+                      type="search"
+                      className={styles.optionSearch}
+                      value={categoryQuery}
+                      onChange={(event) => {
+                        setCategoryQuery(event.target.value);
+                        refreshPinnedCategories();
+                      }}
+                      placeholder="Find a category…"
+                      aria-label="Find an item category"
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                  </div>
+                  {filteredCategories.length > 0 ? (
+                    <div className={styles.optionList}>
+                      {filteredCategories.map((option) => {
+                        const token = categoryToken(option.label);
+                        const selected = hasQueryToken(query, token);
+                        return (
+                          <button
+                            key={option.value}
+                            type="button"
+                            className={cx(styles.optionRow, selected && styles.categoryRowOn)}
+                            aria-pressed={selected}
+                            title={token}
+                            onClick={() => toggleToken(token, 'category')}
+                          >
+                            <span className={styles.optionCheck} aria-hidden="true">
+                              {selected && <CheckIcon size={11} />}
+                            </span>
+                            <span className={styles.optionName}>{option.label}</span>
+                            {option.count !== undefined && (
+                              <span className={styles.optionCount}>
+                                {NUMBER_FORMAT.format(option.count)}
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className={styles.emptyOptions}>No categories match that search.</p>
+                  )}
                 </div>
-              ) : (
-                <p className={styles.emptyOptions}>No categories match that search.</p>
-              )}
+              </details>
             </section>
           </div>
         </div>

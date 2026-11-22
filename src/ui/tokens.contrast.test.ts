@@ -51,6 +51,12 @@ const SURFACES = ['--page', '--col', '--raised', '--chrome'] as const;
 const RARITY_SURFACES = ['--page', '--col'] as const;
 const EDGE_TOKENS = ['--ctl-edge', '--fld-edge'] as const;
 const EDGE_SURFACES = ['--page', '--chrome', '--raised'] as const;
+const SEGMENT_TOKENS = [
+  '--seg-track',
+  '--seg-active',
+  '--seg-active-edge',
+  '--seg-inactive-ink',
+] as const;
 
 const AUDITED_TOKENS: readonly string[] = [
   ...TEXT_TOKENS,
@@ -58,6 +64,7 @@ const AUDITED_TOKENS: readonly string[] = [
   ...SURFACES,
   ...EDGE_TOKENS,
   ...EDGE_SURFACES,
+  ...SEGMENT_TOKENS,
   '--stasis-text',
   '--stasis',
   '--warn',
@@ -281,6 +288,26 @@ describe('WCAG AA token contrast', () => {
 
       it('keeps status and accent text at 4.5:1', () => {
         assertContrast(theme, tokens, 'Status contrast', statusRequirements());
+      });
+
+      it('keeps neutral segmented controls legible and visible', () => {
+        assertContrast(theme, tokens, 'Segmented control contrast', [
+          { foreground: '--text', background: '--seg-active', minimum: 4.5 },
+          // WCAG 1.4.11: the active pill's crisp neutral edge against the
+          // recessed track is the primary non-text active-state signal.
+          { foreground: '--seg-active-edge', background: '--seg-track', minimum: 3 },
+          { foreground: '--seg-inactive-ink', background: '--seg-track', minimum: 3 },
+        ]);
+
+        const track = resolveHex(tokens, '--seg-track');
+        const active = resolveHex(tokens, '--seg-active');
+        const separation = contrastRatio(track, active);
+
+        expect(
+          separation,
+          `${theme} --seg-active (${active}) and --seg-track (${track}) need real luminance separation, got ${separation.toFixed(2)}:1`,
+        ).toBeGreaterThanOrEqual(1.2);
+        expect(active.toLowerCase()).not.toBe(track.toLowerCase());
       });
     });
   }

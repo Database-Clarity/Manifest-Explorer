@@ -32,6 +32,10 @@ import styles from './ResultsPane.module.scss';
 export interface ResultsPaneProps {
   onOpenItem: (item: SearchResultItem) => void;
   onRetryBoot: () => void;
+  /** Unnamed definitions hidden by the current unnamed mode in this scope. */
+  hiddenUnnamedCount?: number;
+  /** Entries in the active table/query scope before unnamed filtering. */
+  scopeEntryCount?: number;
 }
 
 const OVERSCAN_ROWS = 10;
@@ -103,7 +107,9 @@ function resultKey(item: SearchResultItem): string {
 }
 
 function itemLabel(item: SearchResultItem): string {
-  return item.name.length > 0 ? item.name : 'Unnamed definition';
+  return item.name.trim().length > 0
+    ? item.name
+    : `${getShortTableName(item.table)} #${item.hash}`;
 }
 
 function itemSubtitle(item: SearchResultItem): string {
@@ -428,6 +434,8 @@ const GridCell = memo(function GridCell({
 export const ResultsPane = memo(function ResultsPane({
   onOpenItem,
   onRetryBoot,
+  hiddenUnnamedCount = 0,
+  scopeEntryCount = 0,
 }: ResultsPaneProps): ReactNode {
   const results = useExplorerStore((state) => state.results);
   const totalMatches = useExplorerStore((state) => state.totalMatches);
@@ -439,11 +447,15 @@ export const ResultsPane = memo(function ResultsPane({
   const deepSearch = useExplorerStore((state) => state.deepSearch);
   const setDeepSearch = useExplorerStore((state) => state.setDeepSearch);
   const filters = useExplorerStore((state) => state.filters);
+  const tables = useExplorerStore((state) => state.tables);
   const selectedResultIndex = useExplorerStore((state) => state.selectedResultIndex);
   const setSelectedResultIndex = useExplorerStore((state) => state.setSelectedResultIndex);
   const setQuery = useExplorerStore((state) => state.setQuery);
   const setTableFilter = useExplorerStore((state) => state.setTableFilter);
+  const setFilters = useExplorerStore((state) => state.setFilters);
   const resetFilters = useExplorerStore((state) => state.resetFilters);
+  const sessionCount = useExplorerStore((state) => state.sessions.length);
+  const setMobileInspectorOpen = useExplorerStore((state) => state.setMobileInspectorOpen);
   // Primitive view of the active inspector tab. Subscribing to the whole
   // `history` array would re-render this pane on every scroll-position or
   // expanded-node save the inspector writes back into the current entry; the
@@ -590,6 +602,22 @@ export const ResultsPane = memo(function ResultsPane({
   const trimmedQuery = query.trim();
   const advancedFilterCount = countAdvancedFilters(filters);
   const hasTableFilter = filters.table !== 'all' && filters.table.length > 0;
+  const selectedTableStatus = hasTableFilter
+    ? tables.find((table) => table.name === filters.table)
+    : undefined;
+  const emptySelectedTable =
+    hasTableFilter && selectedTableStatus?.loaded === true && selectedTableStatus.count === 0;
+  const hiddenUnnamed = Math.max(0, Math.floor(hiddenUnnamedCount));
+  const scopedEntryCount = Math.max(0, Math.floor(scopeEntryCount));
+  const allScopeEntriesHidden = scopedEntryCount > 0 && hiddenUnnamed >= scopedEntryCount;
+  const hiddenUnnamedText = `${formatCount(hiddenUnnamed)} unnamed ${
+    hiddenUnnamed === 1 ? 'definition in this scope is' : 'definitions in this scope are'
+  } hidden.`;
+  const activeTableLabel = hasTableFilter
+    ? filters.table === ARTIFACT_PERKS_TABLE
+      ? 'Artifact Perks'
+      : getFriendlyTableName(filters.table)
+    : '';
   const hasActiveFilters =
     trimmedQuery.length > 0 || deepSearch || hasTableFilter || advancedFilterCount > 0;
   const hasResults = results.length > 0;
@@ -624,6 +652,11 @@ export const ResultsPane = memo(function ResultsPane({
       : hasActiveFilters
         ? `${formatCount(totalMatches)} matches · ${formatDuration(searchDurationMs)}`
         : `${formatCount(totalMatches)} results`;
+
+  // Mobile keeps the header on one row: the full matches · duration summary is
+  // too wide, so show just the compact tabular count.
+  const headerSummaryText =
+    isNarrowPhone && !(searching && !hasResults) ? formatCount(totalMatches) : summaryText;
 
   const clampedSelectedIndex =
     results.length > 0
@@ -701,6 +734,12 @@ export const ResultsPane = memo(function ResultsPane({
     setQuery('');
     resetFilters();
   }, [resetFilters, setQuery]);
+
+  // One tap un-hides every unnamed definition in the current scope; `always`
+  // also overrides any previously chosen "never" mode.
+  const showUnnamed = useCallback(() => {
+    setFilters({ includeUnnamed: true, unnamedMode: 'always' });
+  }, [setFilters]);
 
   // Keep the keyboard-selected row in view when ↑/↓ (or j/k) changes it.
   useEffect(() => {
@@ -811,8 +850,33 @@ export const ResultsPane = memo(function ResultsPane({
   return (
     <section className={styles.pane} aria-label="Search results">
       <header className={styles.header}>
-        <div className={styles.headerInfo}>
-          <span className={styles.summary}>{summaryText}</span>
+        <div
+          className={joinClasses(
+            styles.headerInfo,
+            isNarrowPhone && hasTableFilter ? styles.headerInfoWithTable : '',
+          )}
+        >
+          <span className={styles.summary} title={summaryText}>
+            {headerSummaryText}
+          </span>
+
+          {isNarrowPhone && hasTableFilter ? (
+            <span className={styles.tableChip}>
+              <span className={styles.tableChipLabel} title={activeTableLabel}>
+                {activeTableLabel}
+              </span>
+              <button
+                type="button"
+                className={styles.tableChipClear}
+                aria-label="Clear table filter"
+                title="Clear table filter"
+                onClick={clearTable}
+                onKeyDown={stopActivationKeys}
+              >
+                <CloseIcon size={10} />
+              </button>
+            </span>
+          ) : null}
 
           {hasActiveFilters ? (
             <div className={styles.chips} role="group" aria-label="Active filters">
@@ -853,9 +917,7 @@ export const ResultsPane = memo(function ResultsPane({
               {hasTableFilter ? (
                 <span className={styles.chip}>
                   <span className={styles.chipLabel} title={filters.table}>
-                    {filters.table === ARTIFACT_PERKS_TABLE
-                      ? 'Artifact Perks'
-                      : getFriendlyTableName(filters.table)}
+                    {activeTableLabel}
                   </span>
                   <button
                     type="button"
@@ -892,6 +954,18 @@ export const ResultsPane = memo(function ResultsPane({
         </div>
 
         <div className={styles.controls}>
+          {isNarrowPhone && sessionCount > 0 ? (
+            <button
+              type="button"
+              className={styles.tabsBtn}
+              onClick={() => setMobileInspectorOpen(true)}
+              aria-label={`Return to open tabs, ${sessionCount}`}
+              title={`Open tabs (${sessionCount})`}
+            >
+              Tabs ({sessionCount})
+            </button>
+          ) : null}
+
           <select
             className={styles.sort}
             value={sortMode}
@@ -1005,44 +1079,77 @@ export const ResultsPane = memo(function ResultsPane({
             </div>
           ) : showEmpty ? (
             <div className={styles.stateBlock} role="status">
-              <p className={styles.stateTitle}>No definitions match this query.</p>
-              <p className={styles.stateText}>
-                {trimmedQuery.length > 0
-                  ? 'Try a shorter term, or reset the search to browse the full manifest.'
-                  : 'Clear the active filters to browse the full manifest.'}
-              </p>
-              <div className={styles.stateActions}>
-                {trimmedQuery.length > 0 ? (
-                  <button
-                    type="button"
-                    className={styles.primaryBtn}
-                    onClick={resetSearch}
-                    onKeyDown={stopActivationKeys}
-                  >
-                    Reset search
-                  </button>
-                ) : null}
-                {hasTableFilter || advancedFilterCount > 0 ? (
-                  <button
-                    type="button"
-                    className={trimmedQuery.length > 0 ? styles.secondaryBtn : styles.primaryBtn}
-                    onClick={resetFilters}
-                    onKeyDown={stopActivationKeys}
-                  >
-                    Clear filters
-                  </button>
-                ) : null}
-                {trimmedQuery.length === 0 && !hasTableFilter && advancedFilterCount === 0 ? (
-                  <button
-                    type="button"
-                    className={styles.primaryBtn}
-                    onClick={resetFilters}
-                    onKeyDown={stopActivationKeys}
-                  >
-                    Clear filters
-                  </button>
-                ) : null}
-              </div>
+              {emptySelectedTable ? (
+                <>
+                  <p className={styles.stateTitle}>No definitions in this table.</p>
+                  <p className={styles.stateText}>
+                    This table has no definitions in this manifest version.
+                  </p>
+                  <div className={styles.stateActions}>
+                    <button
+                      type="button"
+                      className={styles.primaryBtn}
+                      onClick={clearTable}
+                      onKeyDown={stopActivationKeys}
+                    >
+                      Show all tables
+                    </button>
+                  </div>
+                </>
+              ) : hiddenUnnamed > 0 ? (
+                <>
+                  <p className={styles.stateTitle}>
+                    {allScopeEntriesHidden
+                      ? 'Only unnamed definitions are in this scope.'
+                      : 'Unnamed definitions are hidden.'}
+                  </p>
+                  <p className={styles.stateText}>{hiddenUnnamedText}</p>
+                  <div className={styles.stateActions}>
+                    <button
+                      type="button"
+                      className={styles.primaryBtn}
+                      onClick={showUnnamed}
+                      onKeyDown={stopActivationKeys}
+                    >
+                      Show unnamed
+                    </button>
+                  </div>
+                </>
+              ) : trimmedQuery.length > 0 ? (
+                <>
+                  <p className={styles.stateTitle}>No definitions match this query.</p>
+                  <p className={styles.stateText}>
+                    Try a shorter term, or reset the search to browse the full manifest.
+                  </p>
+                  <div className={styles.stateActions}>
+                    <button
+                      type="button"
+                      className={styles.primaryBtn}
+                      onClick={resetSearch}
+                      onKeyDown={stopActivationKeys}
+                    >
+                      Reset search
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p className={styles.stateTitle}>Nothing matches the active filters.</p>
+                  <p className={styles.stateText}>
+                    Clear the active filters to browse the full manifest.
+                  </p>
+                  <div className={styles.stateActions}>
+                    <button
+                      type="button"
+                      className={styles.primaryBtn}
+                      onClick={resetFilters}
+                      onKeyDown={stopActivationKeys}
+                    >
+                      Clear filters
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           ) : (
             <div

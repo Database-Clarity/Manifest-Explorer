@@ -19,16 +19,14 @@ import {
   computeChangelogOpenState,
   readLastSeenChangelogVersion,
 } from '../data/changelog';
-import type { BungieLocale, SortMode, TableStatus } from '../types/manifest';
+import type { BungieLocale } from '../types/manifest';
 import { BUNGIE_LOCALES } from '../types/manifest';
-import { getFriendlyTableName, getShortTableName } from '../manifest/tables';
 import { useCollectorStore } from '../stores/collector';
 import { useExplorerStore } from '../stores/explorer';
 import { useSettingsStore } from '../stores/settings';
 import { countQueryFilterTokens } from '../utils/queryTokens';
 import {
   BookmarkIcon,
-  ChevronDownIcon,
   CloseIcon,
   FilterIcon,
   HelpIcon,
@@ -36,7 +34,6 @@ import {
   SearchIcon,
   SettingsIcon,
 } from '../ui/Icons';
-import { Popover } from '../ui/Popover';
 import { CollectorPopover } from './CollectorPopover';
 import { FiltersPopover } from './FiltersPopover';
 import {
@@ -59,32 +56,13 @@ export interface HeaderProps {
   onSelectTable: (table: string) => void;
 }
 
-type MenuName = 'filters' | 'collector' | 'settings' | 'tables';
+type MenuName = 'filters' | 'collector' | 'settings';
 type MenuSource = 'desktop' | 'mobile' | 'settings';
 
 interface MenuState {
   name: MenuName;
   source: MenuSource;
 }
-
-const TABLE_GROUP_ORDER: ReadonlyArray<readonly [TableStatus['group'], string]> = [
-  ['primary', 'Primary'],
-  ['gameplay', 'Gameplay'],
-  ['world', 'World'],
-  ['progression', 'Progression'],
-  ['system', 'System'],
-];
-
-const SORT_OPTIONS: ReadonlyArray<readonly [SortMode, string]> = [
-  ['relevance', 'Relevance'],
-  ['name-asc', 'Name ↑'],
-  ['name-desc', 'Name ↓'],
-  ['hash-asc', 'Hash ↑'],
-  ['hash-desc', 'Hash ↓'],
-  ['index-desc', 'Index ↓'],
-];
-
-const NUMBER_FORMAT = new Intl.NumberFormat('en-US');
 
 function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter((part): part is string => typeof part === 'string' && part.length > 0).join(' ');
@@ -99,8 +77,15 @@ function countActiveFilters(
   query: string,
   includeUnnamed: boolean,
   deepSearch: boolean,
+  tableFilter: string,
+  isMobileViewport: boolean,
 ): number {
-  return countQueryFilterTokens(query) + (includeUnnamed ? 1 : 0) + (deepSearch ? 1 : 0);
+  return (
+    countQueryFilterTokens(query) +
+    (includeUnnamed ? 1 : 0) +
+    (deepSearch ? 1 : 0) +
+    (isMobileViewport && tableFilter !== 'all' ? 1 : 0)
+  );
 }
 
 function formatBadge(count: number): string {
@@ -113,67 +98,8 @@ function hasUnseenChangelog(): boolean {
   );
 }
 
-/**
- * Virtual rail tables that own their own identity and must never fold into a
- * short-name sibling. The ArtifactPerks view ("Artifact Perks") is derived
- * from artifact definitions but is its own top-level destination in the
- * Primary rail, so it always keeps its own row.
- */
-const UNFOLDABLE_TABLES: ReadonlySet<string> = new Set(['ArtifactPerks']);
-
-/**
- * Display labels for virtual rail tables that may not be present in the
- * loaded table list yet (they land with the manifest-engine change that
- * introduces them), so the mobile Tables button never shows a raw id.
- */
-const VIRTUAL_TABLE_LABELS: ReadonlyMap<string, string> = new Map([
-  ['ArtifactPerks', 'Artifact Perks'],
-]);
-
 /** Stable empty list so the closed autocomplete state never allocates. */
 const EMPTY_SUGGESTIONS: readonly SearchSuggestion[] = [];
-
-/** Folds the Lite inventory table into the full one so rows never repeat a short name. */
-function dedupeTables(tables: TableStatus[]): TableStatus[] {
-  const byShortName = new Map<string, TableStatus>();
-
-  for (const table of tables) {
-    const key = getShortTableName(table.name);
-
-    if (UNFOLDABLE_TABLES.has(table.name)) {
-      // Never merge virtual views into a similarly named sibling (e.g.
-      // ArtifactPerks into Artifact): they stay visible in their rail group.
-      byShortName.set(key, table);
-      continue;
-    }
-
-    const existing = byShortName.get(key);
-    if (!existing) {
-      byShortName.set(key, table);
-      continue;
-    }
-
-    const existingRank = existing.loaded ? 2 : existing.loading ? 1 : 0;
-    const tableRank = table.loaded ? 2 : table.loading ? 1 : 0;
-    if (tableRank > existingRank || (tableRank === existingRank && !table.name.endsWith('LiteDefinition'))) {
-      byShortName.set(key, table);
-    }
-  }
-
-  return [...byShortName.values()];
-}
-
-function matchesTableFilter(table: TableStatus, filter: string): boolean {
-  if (filter.length === 0) return true;
-  const compactFilter = filter.replace(/\s+/g, '');
-  const names = [table.name, table.shortName, getFriendlyTableName(table.name)];
-  return names.some((name) => {
-    const normalized = name.toLowerCase();
-    return (
-      normalized.includes(filter) || normalized.replace(/\s+/g, '').includes(compactFilter)
-    );
-  });
-}
 
 function resizeSearchTextarea(input: HTMLTextAreaElement, focused: boolean): void {
   input.style.height = '';
@@ -207,18 +133,14 @@ export const Header = memo(function Header({
       typeof window.matchMedia === 'function' &&
       window.matchMedia('(max-width: 700px)').matches,
   );
-  const [tableSearch, setTableSearch] = useState('');
   const [searchCaret, setSearchCaret] = useState(0);
   const [suggestionIndex, setSuggestionIndex] = useState(-1);
   const [suggestionsDismissed, setSuggestionsDismissed] = useState(false);
   const suggestionListId = useId();
 
   const filtersDesktopRef = useRef<HTMLButtonElement>(null);
-  const filtersMobileRef = useRef<HTMLButtonElement>(null);
   const collectorDesktopRef = useRef<HTMLButtonElement>(null);
-  const collectorMobileRef = useRef<HTMLButtonElement>(null);
   const settingsRef = useRef<HTMLButtonElement>(null);
-  const tablesRef = useRef<HTMLButtonElement>(null);
 
   const query = useExplorerStore((state) => state.query);
   const setQuery = useExplorerStore((state) => state.setQuery);
@@ -227,45 +149,21 @@ export const Header = memo(function Header({
   const includeUnnamed = useExplorerStore((state) => state.filters.includeUnnamed);
   const setTableFilter = useExplorerStore((state) => state.setTableFilter);
   const setMobileInspectorOpen = useExplorerStore((state) => state.setMobileInspectorOpen);
-  const sessions = useExplorerStore((state) => state.sessions);
   const tables = useExplorerStore((state) => state.tables);
   const filterCatalog = useExplorerStore((state) => state.filterCatalog);
-  const indexedEntryCount = useExplorerStore((state) => state.manifestStatus.indexedEntryCount);
 
   const locale = useSettingsStore((state) => state.locale);
-  const sortMode = useSettingsStore((state) => state.sortMode);
-  const setSortMode = useSettingsStore((state) => state.setSortMode);
 
   const collectedCount = useCollectorStore((state) => state.items.length);
   const collectMode = useCollectorStore((state) => state.collectMode);
 
-  const activeFilterCount = countActiveFilters(query, includeUnnamed, deepSearch);
-  // These only depend on the table list, not the query: keep them stable so
-  // search keystrokes (which re-render Header via `query`) never re-dedupe or
-  // re-group the 115+ table rows.
-  const uniqueTables = useMemo(() => dedupeTables(tables), [tables]);
-  const hasUnloadedTables = useMemo(
-    () => uniqueTables.some((table) => !table.loaded),
-    [uniqueTables],
+  const activeFilterCount = countActiveFilters(
+    query,
+    includeUnnamed,
+    deepSearch,
+    tableFilter,
+    isMobileViewport,
   );
-  const groupedTables = useMemo(
-    () =>
-      TABLE_GROUP_ORDER.map(([group, label]) => ({
-        group,
-        label,
-        tables: uniqueTables.filter((table) => table.group === group),
-      })).filter((entry) => entry.tables.length > 0),
-    [uniqueTables],
-  );
-  const filteredGroupedTables = useMemo(() => {
-    const normalized = tableSearch.trim().toLowerCase();
-    return groupedTables
-      .map((group) => ({
-        ...group,
-        tables: group.tables.filter((table) => matchesTableFilter(table, normalized)),
-      }))
-      .filter((group) => group.tables.length > 0);
-  }, [groupedTables, tableSearch]);
 
   useEffect(() => {
     if (typeof window.matchMedia !== 'function') return;
@@ -309,24 +207,10 @@ export const Header = memo(function Header({
       ? suggestionIndex
       : -1;
 
-  const selectedTable =
-    tableFilter === 'all' ? null : uniqueTables.find((table) => table.name === tableFilter);
-  const activeTableLabel =
-    tableFilter === 'all'
-      ? 'All tables'
-      : (selectedTable?.shortName ??
-        VIRTUAL_TABLE_LABELS.get(tableFilter) ??
-        getShortTableName(tableFilter));
-
-  const filtersAnchorRef =
-    menu?.name === 'filters' && menu.source === 'mobile' ? filtersMobileRef : filtersDesktopRef;
+  const filtersAnchorRef = filtersDesktopRef;
   const filtersAlign = menu?.name === 'filters' && menu.source === 'mobile' ? 'end' : 'start';
   const collectorAnchorRef =
-    menu?.name === 'collector' && menu.source === 'mobile'
-      ? collectorMobileRef
-      : menu?.name === 'collector' && menu.source === 'settings'
-        ? settingsRef
-        : collectorDesktopRef;
+    menu?.name === 'collector' && menu.source === 'settings' ? settingsRef : collectorDesktopRef;
 
   function toggleMenu(name: MenuName, source: MenuSource): void {
     setMenu((current) =>
@@ -476,21 +360,9 @@ export const Header = memo(function Header({
 
   }
 
-  function handleSelectTable(table: string): void {
-    onSelectTable(table);
-    setTableSearch('');
-    setMenu(null);
-  }
-
-  function handleLoadAllTables(): void {
-    onLoadAllTables();
-    setMenu(null);
-  }
-
   const filtersOpen = menu?.name === 'filters';
   const collectorOpen = menu?.name === 'collector';
   const settingsOpen = menu?.name === 'settings';
-  const tablesOpen = menu?.name === 'tables';
 
   return (
     <>
@@ -592,16 +464,16 @@ export const Header = memo(function Header({
               type="button"
               className={cx(
                 styles.iconBtn,
-                styles.desktopOnly,
+                styles.filtersBtn,
                 activeFilterCount > 0 && styles.iconBtnOn,
               )}
-              onClick={() => toggleMenu('filters', 'desktop')}
+              onClick={() => toggleMenu('filters', isMobileViewport ? 'mobile' : 'desktop')}
               aria-label={
                 activeFilterCount > 0 ? `Filters, ${activeFilterCount} active` : 'Filters'
               }
               aria-expanded={filtersOpen}
               aria-haspopup="dialog"
-              title="Filters — writes editable tokens like is:enhanced into the search bar"
+              title="Filters — table scope and search tokens like is:enhanced"
             >
               <FilterIcon size={15} />
               {activeFilterCount > 0 && (
@@ -674,170 +546,15 @@ export const Header = memo(function Header({
           </button>
         </div>
 
-        <div className={styles.toolbar}>
-          <button
-            ref={tablesRef}
-            type="button"
-            className={cx(styles.toolBtn, styles.tablesBtn)}
-            onClick={() => toggleMenu('tables', 'mobile')}
-            aria-label={`Tables, ${activeTableLabel}`}
-            aria-expanded={tablesOpen}
-            aria-haspopup="dialog"
-          >
-            <span className={styles.tablesLabel}>{activeTableLabel}</span>
-            <ChevronDownIcon size={13} className={styles.tablesChevron} />
-          </button>
-
-          <button
-            ref={filtersMobileRef}
-            type="button"
-            className={cx(styles.iconBtn, activeFilterCount > 0 && styles.iconBtnOn)}
-            onClick={() => toggleMenu('filters', 'mobile')}
-            aria-label={
-              activeFilterCount > 0 ? `Filters, ${activeFilterCount} active` : 'Filters'
-            }
-            aria-expanded={filtersOpen}
-            aria-haspopup="dialog"
-            title="Filters"
-          >
-            <FilterIcon size={15} />
-            {activeFilterCount > 0 && (
-              <span className={styles.badge} aria-hidden="true">
-                {formatBadge(activeFilterCount)}
-              </span>
-            )}
-          </button>
-
-          <select
-            className={styles.sortSelect}
-            value={sortMode}
-            onChange={(event) => setSortMode(event.target.value as SortMode)}
-            aria-label="Sort results"
-            title="Sort results"
-          >
-            {SORT_OPTIONS.map(([value, label]) => (
-              <option key={value} value={value}>
-                {label}
-              </option>
-            ))}
-          </select>
-
-          {sessions.length > 0 && (
-            <button
-              type="button"
-              className={styles.tabsBtn}
-              onClick={() => setMobileInspectorOpen(true)}
-              aria-label={`Return to open tabs, ${sessions.length}`}
-              title={`Open tabs (${sessions.length})`}
-            >
-              Tabs ({sessions.length})
-            </button>
-          )}
-
-          {(collectMode || collectedCount > 0) && (
-            <button
-              ref={collectorMobileRef}
-              type="button"
-              className={cx(styles.iconBtn, collectMode && styles.iconBtnOn)}
-              onClick={() => toggleMenu('collector', 'mobile')}
-              aria-label={
-                collectedCount > 0 ? `Collected items, ${collectedCount}` : 'Collected items'
-              }
-              aria-expanded={collectorOpen}
-              aria-haspopup="dialog"
-              title="Collected items"
-            >
-              <BookmarkIcon size={15} />
-              {collectedCount > 0 && (
-                <span className={styles.badge} aria-hidden="true">
-                  {formatBadge(collectedCount)}
-                </span>
-              )}
-            </button>
-          )}
-        </div>
       </header>
-
-      {tablesOpen ? (
-        <Popover
-          open
-          onClose={closeMenu}
-          anchorRef={tablesRef}
-          align="start"
-          label="Tables"
-          width="16rem"
-        >
-          <div className={styles.menuSearchWrap}>
-            <SearchIcon size={12} className={styles.menuSearchIcon} />
-            <input
-              type="search"
-              className={styles.menuSearch}
-              value={tableSearch}
-              onChange={(event) => setTableSearch(event.target.value)}
-              placeholder="Filter tables…"
-              aria-label="Filter tables"
-              autoComplete="off"
-              spellCheck={false}
-            />
-          </div>
-
-          <div className={styles.menuSection}>
-            <button
-              type="button"
-              className={cx(styles.menuRow, tableFilter === 'all' && styles.menuRowSelected)}
-              onClick={() => handleSelectTable('all')}
-              aria-current={tableFilter === 'all' ? 'true' : undefined}
-            >
-              <span className={styles.menuRowName}>All tables</span>
-              <span className={styles.menuRowMeta}>{NUMBER_FORMAT.format(indexedEntryCount)}</span>
-            </button>
-          </div>
-
-          {filteredGroupedTables.map((group) => (
-            <section key={group.group} className={styles.menuSection}>
-              <h2 className={styles.menuTitle}>{group.label}</h2>
-              {group.tables.map((table) => {
-                const selected =
-                  tableFilter !== 'all' &&
-                  getShortTableName(table.name) === getShortTableName(tableFilter);
-                return (
-                  <button
-                    key={table.name}
-                    type="button"
-                    className={cx(styles.menuRow, selected && styles.menuRowSelected)}
-                    onClick={() => handleSelectTable(table.name)}
-                    aria-current={selected ? 'true' : undefined}
-                    title={table.name}
-                  >
-                    <span className={styles.menuRowName}>{table.shortName}</span>
-                    <span className={styles.menuRowMeta}>
-                      {table.loaded ? NUMBER_FORMAT.format(table.count) : 'Load'}
-                    </span>
-                  </button>
-                );
-              })}
-            </section>
-          ))}
-
-          {tableSearch.trim().length > 0 && filteredGroupedTables.length === 0 && (
-            <p className={styles.menuEmpty}>No tables match “{tableSearch.trim()}”.</p>
-          )}
-
-          {hasUnloadedTables && (
-            <div className={styles.menuFooter}>
-              <button type="button" className={styles.menuFooterBtn} onClick={handleLoadAllTables}>
-                Load all tables
-              </button>
-            </div>
-          )}
-        </Popover>
-      ) : null}
 
       <FiltersPopover
         open={filtersOpen}
         onClose={closeMenu}
         anchorRef={filtersAnchorRef}
         align={filtersAlign}
+        onSelectTable={onSelectTable}
+        onLoadAllTables={onLoadAllTables}
       />
 
       <CollectorPopover

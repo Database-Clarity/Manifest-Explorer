@@ -522,6 +522,9 @@ export function extractTableEntrySummary(
       raw.title,
       raw.traitName,
       raw.displayName,
+      raw.tierName,
+      raw.categoryName,
+      raw.name,
     ) ?? (asNumber(raw.questlineItemHash) !== undefined ? 'Questline' : '');
 
   const friendlyName = getFriendlyTableName(canonicalTable);

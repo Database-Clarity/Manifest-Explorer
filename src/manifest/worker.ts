@@ -1021,7 +1021,7 @@ function setArtifactPerksTableStatus(count: number): void {
 function syncArtifactPerksTableStatus(): void {
   let count = 0;
   for (const entry of entries) {
-    if (entry.isArtifactPerk === true && entry.name) count += 1;
+    if (entry.isArtifactPerk === true) count += 1;
   }
   setArtifactPerksTableStatus(count);
 }
@@ -1030,7 +1030,7 @@ function syncArtifactPerksTableStatus(): void {
 function addArtifactPerksToStatus(newEntries: readonly SearchIndexEntry[]): void {
   let added = 0;
   for (const entry of newEntries) {
-    if (entry.isArtifactPerk === true && entry.name) added += 1;
+    if (entry.isArtifactPerk === true) added += 1;
   }
   if (added === 0) return;
   const status = tableStatuses.get(ARTIFACT_PERKS_TABLE);

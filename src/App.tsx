@@ -62,6 +62,13 @@ const TAB_KEYS: readonly InspectorTab[] = [
   'diff',
 ];
 
+const DEFAULT_SEARCH_LIMIT = 2500;
+const DEFAULT_DEEP_SEARCH_LIMIT = 400;
+
+function initialResultLimit(isDeepSearch: boolean): number {
+  return isDeepSearch ? DEFAULT_DEEP_SEARCH_LIMIT : DEFAULT_SEARCH_LIMIT;
+}
+
 interface HistoryTabState {
   manifestExplorer: true;
   sessionId: string;
@@ -143,6 +150,8 @@ export function App(): ReactNode {
   const lastHandledHashRef = useRef('');
   const lastSearchKeyRef = useRef('');
   const lastBaseKeyRef = useRef('');
+  const lastResultLimitRef = useRef<number | null>(null);
+  const lastLimitSearchKeyRef = useRef('');
   const maxPushedBySessionRef = useRef(new Map<string, number>());
 
   const [helpOpen, setHelpOpen] = useState(false);
@@ -189,6 +198,7 @@ export function App(): ReactNode {
   const filters = useExplorerStore((s) => s.filters);
   const manifestStatus = useExplorerStore((s) => s.manifestStatus);
   const results = useExplorerStore((s) => s.results);
+  const totalMatches = useExplorerStore((s) => s.totalMatches);
   const scopeEntryCount = useExplorerStore((s) => s.scopeEntryCount);
   const hiddenUnnamedCount = useExplorerStore((s) => s.hiddenUnnamedCount);
   const selectedResultIndex = useExplorerStore((s) => s.selectedResultIndex);
@@ -223,6 +233,14 @@ export function App(): ReactNode {
   const pushNotice = useExplorerStore((s) => s.pushNotice);
   const hydrateFromHashUrl = useExplorerStore((s) => s.hydrateFromHashUrl);
   const buildHashUrl = useExplorerStore((s) => s.buildHashUrl);
+
+  const [resultLimit, setResultLimit] = useState(() =>
+    initialResultLimit(
+      useExplorerStore.getState().deepSearch ||
+        /^deep:/i.test(useExplorerStore.getState().query.trim()),
+    ),
+  );
+  const [loadingMore, setLoadingMore] = useState(false);
 
   const activeEntry = historyIndex >= 0 ? (history[historyIndex] ?? null) : null;
   const currentRef: DefinitionRef | null = useMemo(
@@ -486,6 +504,12 @@ export function App(): ReactNode {
         state.query !== previousState.query ||
         state.deepSearch !== previousState.deepSearch
       ) {
+        setResultLimit(
+          initialResultLimit(
+            state.deepSearch || /^deep:/i.test(state.query.trim()),
+          ),
+        );
+        setLoadingMore(false);
         if (timer !== null) {
           window.clearTimeout(timer);
           timer = null;
@@ -620,6 +644,25 @@ export function App(): ReactNode {
     const searchKey = `${baseSearchKey}|${fuzziness}`;
     const baseChanged = baseSearchKey !== lastBaseKeyRef.current;
     lastBaseKeyRef.current = baseSearchKey;
+    const trimmed = debouncedQuery.trim();
+    const hasDeepPrefix = /^deep:/i.test(trimmed);
+    const useDeep = (deepSearch || hasDeepPrefix) && trimmed.length > 0;
+    const initialLimit = initialResultLimit(useDeep);
+    const limitSearchKeyChanged = searchKey !== lastLimitSearchKeyRef.current;
+    const seq = ++searchSeqRef.current;
+
+    if (limitSearchKeyChanged) {
+      lastLimitSearchKeyRef.current = searchKey;
+      if (resultLimit !== initialLimit) {
+        setResultLimit(initialLimit);
+        setLoadingMore(false);
+        return;
+      }
+      setLoadingMore(false);
+    }
+
+    const limitChanged = resultLimit !== lastResultLimitRef.current;
+    lastResultLimitRef.current = resultLimit;
 
     if (
       manifestStatus.locale !== locale ||
@@ -628,35 +671,44 @@ export function App(): ReactNode {
       return;
     }
 
-    const isBackgroundIndexRefresh = searchKey === lastSearchKeyRef.current;
+    // The raw query can be ahead of its debounced search value. Do not issue a
+    // second search for the previous query just because its result limit reset.
+    if (useExplorerStore.getState().query !== debouncedQuery) {
+      return;
+    }
 
-    const trimmed = debouncedQuery.trim();
-    const hasDeepPrefix = /^deep:/i.test(trimmed);
-    const useDeep = (deepSearch || hasDeepPrefix) && trimmed.length > 0;
+    const isLimitExpansion = resultLimit > initialLimit;
+    const isBackgroundIndexRefresh =
+      !limitChanged && searchKey === lastSearchKeyRef.current;
     const effectiveDeepQuery = hasDeepPrefix
       ? trimmed.replace(/^deep:\s*/i, '').trim()
       : trimmed;
 
-    const seq = ++searchSeqRef.current;
     // Debounce only fuzziness-slider drags (~120ms) so it feels smooth; toggle
     // and every other change (query/filters/sort) runs immediately.
-    const delay = isBackgroundIndexRefresh ? 500 : baseChanged ? 0 : 120;
+    const delay = isLimitExpansion
+      ? 0
+      : isBackgroundIndexRefresh
+        ? 500
+        : baseChanged || limitChanged
+          ? 0
+          : 120;
 
     const timer = window.setTimeout(() => {
       lastSearchKeyRef.current = searchKey;
-      const hasExistingResults = useExplorerStore.getState().results.length > 0;
-      if (!isBackgroundIndexRefresh && (useDeep || !hasExistingResults)) {
+      if (!isLimitExpansion && !isBackgroundIndexRefresh) {
         setSearching(true);
       }
 
+      const activeLimit = limitSearchKeyChanged ? initialLimit : resultLimit;
       const promise =
         useDeep && effectiveDeepQuery.length > 0
-          ? manifestClient.deepSearch(effectiveDeepQuery, filters, 400)
+          ? manifestClient.deepSearch(effectiveDeepQuery, filters, activeLimit)
           : manifestClient.search(
               debouncedQuery,
               filters,
               sortMode,
-              2500,
+              activeLimit,
               fuzzySearch ? { enabled: true, threshold: fuzziness } : undefined,
               queryPrecedence,
             );
@@ -670,14 +722,16 @@ export function App(): ReactNode {
             res.items,
             res.totalMatches,
             res.durationMs,
-            isBackgroundIndexRefresh,
+            isBackgroundIndexRefresh || isLimitExpansion,
             res.hiddenUnnamedCount,
             res.scopeEntryCount,
           );
+          setLoadingMore(false);
         })
         .catch(() => {
           if (seq === searchSeqRef.current) {
             setSearching(false);
+            setLoadingMore(false);
           }
         });
     }, delay);
@@ -691,12 +745,45 @@ export function App(): ReactNode {
     fuzzySearch,
     fuzziness,
     queryPrecedence,
+    resultLimit,
     locale,
     manifestStatus.indexedEntryCount,
     manifestStatus.phase,
     setSearchResults,
     setSearching,
   ]);
+
+  const isDeepSearchActive =
+    deepSearch || /^deep:/i.test(debouncedQuery.trim());
+  const loadMoreStep = isDeepSearchActive ? 1000 : 10_000;
+
+  const handleLoadMore = useCallback(() => {
+    if (
+      loadingMore ||
+      useExplorerStore.getState().searching ||
+      useExplorerStore.getState().query !== debouncedQuery ||
+      resultLimit >= totalMatches
+    ) {
+      return;
+    }
+    const nextLimit = Math.min(totalMatches, resultLimit + loadMoreStep);
+    if (nextLimit <= resultLimit) return;
+    setLoadingMore(true);
+    setResultLimit(nextLimit);
+  }, [debouncedQuery, loadMoreStep, loadingMore, resultLimit, totalMatches]);
+
+  const handleLoadAll = useCallback(() => {
+    if (
+      loadingMore ||
+      useExplorerStore.getState().searching ||
+      useExplorerStore.getState().query !== debouncedQuery ||
+      resultLimit >= totalMatches
+    ) {
+      return;
+    }
+    setLoadingMore(true);
+    setResultLimit(totalMatches);
+  }, [debouncedQuery, loadingMore, resultLimit, totalMatches]);
 
   // Load selected definition progressively (instant cached/Lite -> full upgrade).
   const loadFullForCurrent = useCallback(
@@ -1596,6 +1683,10 @@ export function App(): ReactNode {
           <ResultsPane
             onOpenItem={handleOpenResult}
             onRetryBoot={handleRetryBoot}
+            onLoadMore={handleLoadMore}
+            onLoadAll={handleLoadAll}
+            loadMoreStep={loadMoreStep}
+            loadingMore={loadingMore}
             hiddenUnnamedCount={hiddenUnnamedCount}
             scopeEntryCount={scopeEntryCount}
           />

@@ -19,6 +19,21 @@ export const CHANGELOG_STORAGE_KEY = 'clarity-manifest-explorer:last-seen-change
 
 export const CHANGELOG: readonly ChangelogEntry[] = [
   {
+    version: '2026.11.23-1',
+    date: 'Nov 23, 2026',
+    title: 'Uncapped result browsing',
+    summary: 'Scroll through every matching definition in the manifest without arbitrary result caps.',
+    sections: [
+      {
+        heading: 'Results & scrolling',
+        items: [
+          'Initial searches stay fast (2,500 results / 400 in Deep Search) and now show a Load more / Load all bar at the bottom of the list.',
+          'Load and smoothly scroll through all 277k+ manifest entries without losing your scroll position or hitting browser scroll-height limits.',
+        ],
+      },
+    ],
+  },
+  {
     version: '2026.11.22-3',
     date: 'Nov 22, 2026',
     title: 'Clearer table results and a more compact mobile layout',

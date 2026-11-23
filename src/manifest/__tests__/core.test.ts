@@ -47,6 +47,7 @@ import {
   createCoalescedWriter,
   deriveCachedTableStatuses,
   isEnrichmentDependencyTable,
+  normalizeDeepSearchLimit,
   shouldFlushSearchIndex,
 } from '../worker';
 import { createDefaultFilters, normalizeTableName, useExplorerStore } from '../../stores/explorer';
@@ -951,6 +952,24 @@ describe('top-K selection equivalence', () => {
     ]);
   });
 
+  it('returns every matching entry when the limit is omitted or exceeds 2,500', () => {
+    const entries = Array.from({ length: 3005 }, (_, index) =>
+      makeEntry({
+        hash: index + 1,
+        name: `Loadable weapon ${index}`,
+      }),
+    );
+
+    const uncapped = rank('loadable', entries);
+    const largerThanDataset = rank('loadable', entries, { maxResults: 10_000 });
+    const fullManifestLimit = rank('loadable', entries, { maxResults: 277_417 });
+
+    expect(uncapped.totalMatches).toBe(entries.length);
+    expect(uncapped.items).toHaveLength(entries.length);
+    expect(largerThanDataset.items.map(key)).toEqual(uncapped.items.map(key));
+    expect(fullManifestLimit.items.map(key)).toEqual(uncapped.items.map(key));
+  });
+
   it('matches a naive sort for randomized entries, hashes and limits', () => {
     let seed = 0x2f6e2b1;
     const random = (): number => {
@@ -984,6 +1003,21 @@ describe('top-K selection equivalence', () => {
         }
       }
     }
+  });
+});
+
+describe('deep search result limits', () => {
+  it('keeps the fast default but honors uncapped and large requested result counts', () => {
+    expect(normalizeDeepSearchLimit()).toBe(200);
+    expect(normalizeDeepSearchLimit(0)).toBe(200);
+    expect(normalizeDeepSearchLimit(1000)).toBe(1000);
+    expect(normalizeDeepSearchLimit(277_417)).toBe(277_417);
+    expect(normalizeDeepSearchLimit(Number.MAX_SAFE_INTEGER)).toBe(
+      Number.MAX_SAFE_INTEGER,
+    );
+    expect(normalizeDeepSearchLimit(Number.MAX_VALUE)).toBe(
+      Number.MAX_SAFE_INTEGER,
+    );
   });
 });
 

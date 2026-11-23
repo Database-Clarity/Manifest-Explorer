@@ -2125,7 +2125,8 @@ function collectSeasonComparisonNumbers(
 
 /**
  * Apply structured text filters plus the UI filter popover, rank the survivors
- * and return a capped response.
+ * and return up to `maxResults`. An omitted or sufficiently large limit keeps
+ * all matches, which also avoids allocating the bounded top-K heap.
  */
 export function scoreAndFilterEntries(
   entries: SearchIndexEntry[],
@@ -2169,6 +2170,8 @@ export function scoreAndFilterEntries(
     maxResults === undefined || !Number.isFinite(maxResults)
       ? undefined
       : Math.max(0, Math.trunc(maxResults));
+  // `entries.length` is a cheap safe upper bound for the number of survivors:
+  // if the requested limit covers it, no candidate can be discarded.
   const keepAll = limit === undefined || limit >= entries.length;
   const scored: ScoredEntry[] = [];
   const topK = keepAll ? null : new ScoredEntryTopK(limit ?? 0, compare);

@@ -246,6 +246,77 @@
   left: 0;
 }
 
+.virtualWindowContent {
+  width: 100%;
+  transform-origin: top left;
+}
+
+.loadMoreBar {
+  position: absolute;
+  right: 0;
+  left: 0;
+  z-index: 1;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  min-height: 3.5rem;
+  padding: 0.5rem;
+  overflow: hidden;
+  border-top: 1px solid var(--hair);
+  background: var(--strip);
+  color: var(--text2);
+}
+
+.loadMoreProgress {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text2);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.loadMoreActions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.375rem;
+  min-width: 0;
+}
+
+.loadMoreButton {
+  @include ctl.button;
+  min-height: 2.25rem;
+  padding: 0 0.625rem;
+  color: var(--text);
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+
+  &:disabled {
+    cursor: wait;
+    opacity: 0.65;
+  }
+
+  @include theme.mobile-or-coarse {
+    min-height: max(2.25rem, var(--tap));
+  }
+}
+
+.loadMoreStatus {
+  flex: 0 0 auto;
+  color: var(--text2);
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
 .listRow {
   @include ctl.contain-focus-rings;
   display: flex;
@@ -685,6 +756,35 @@
     width: auto;
     margin-left: auto;
     justify-content: flex-end;
+  }
+
+  .loadMoreBar {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 0.375rem;
+    min-height: 0;
+    padding: 0.5rem;
+  }
+
+  .loadMoreProgress {
+    flex: 0 0 auto;
+    width: 100%;
+    font-size: 0.6875rem;
+  }
+
+  .loadMoreActions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .loadMoreButton {
+    flex: 0 1 auto;
+    padding: 0 0.5rem;
+    font-size: 0.6875rem;
+  }
+
+  .loadMoreStatus {
+    align-self: flex-start;
   }
 }
 

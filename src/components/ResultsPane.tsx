@@ -32,6 +32,10 @@ import styles from './ResultsPane.module.scss';
 export interface ResultsPaneProps {
   onOpenItem: (item: SearchResultItem) => void;
   onRetryBoot: () => void;
+  onLoadMore: () => void;
+  onLoadAll: () => void;
+  loadMoreStep: number;
+  loadingMore: boolean;
   /** Unnamed definitions hidden by the current unnamed mode in this scope. */
   hiddenUnnamedCount?: number;
   /** Entries in the active table/query scope before unnamed filtering. */
@@ -49,6 +53,8 @@ const GRID_ROW_DEEP_REM = 6;
 const GRID_ROW_DEEP_REM_COARSE = 6.5;
 const GRID_MIN_CELL_PX = 220;
 const GRID_GUTTER_PX = 16;
+const MAX_VIRTUAL_HEIGHT = 10_000_000;
+const LOAD_MORE_FOOTER_FALLBACK_HEIGHT = 88;
 const MOBILE_QUERY = '(max-width: 700px)';
 const COARSE_QUERY = '(max-width: 700px), (pointer: coarse)';
 /** Below this scroller width the table column is replaced by an inline badge. */
@@ -134,8 +140,12 @@ function stopActivationKeys(event: KeyboardEvent<HTMLElement>): void {
   }
 }
 
-function scrollElementTo(element: HTMLElement, top: number): void {
-  const nextTop = Math.max(0, top);
+function scrollElementTo(
+  element: HTMLElement,
+  logicalTop: number,
+  mapLogicalToPhysical: (top: number) => number = (top) => top,
+): void {
+  const nextTop = Math.max(0, mapLogicalToPhysical(logicalTop));
   if (typeof element.scrollTo === 'function') {
     try {
       element.scrollTo({ top: nextTop, behavior: 'smooth' });
@@ -434,6 +444,10 @@ const GridCell = memo(function GridCell({
 export const ResultsPane = memo(function ResultsPane({
   onOpenItem,
   onRetryBoot,
+  onLoadMore,
+  onLoadAll,
+  loadMoreStep,
+  loadingMore,
   hiddenUnnamedCount = 0,
   scopeEntryCount = 0,
 }: ResultsPaneProps): ReactNode {
@@ -483,8 +497,10 @@ export const ResultsPane = memo(function ResultsPane({
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportWidth, setViewportWidth] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
+  const [footerHeight, setFooterHeight] = useState(LOAD_MORE_FOOTER_FALLBACK_HEIGHT);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const loadMoreFooterRef = useRef<HTMLDivElement | null>(null);
   const scrollFrameRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -621,6 +637,8 @@ export const ResultsPane = memo(function ResultsPane({
   const hasActiveFilters =
     trimmedQuery.length > 0 || deepSearch || hasTableFilter || advancedFilterCount > 0;
   const hasResults = results.length > 0;
+  const hasMoreResults = hasResults && results.length < totalMatches;
+  const remaining = Math.max(0, totalMatches - results.length);
   const showTableColumn =
     filters.table === 'all' && viewportWidth > NARROW_TABLE_BADGE_PX;
   const showInlineTable =
@@ -663,19 +681,81 @@ export const ResultsPane = memo(function ResultsPane({
       ? Math.min(Math.max(selectedResultIndex, 0), results.length - 1)
       : 0;
 
+  useEffect(() => {
+    const footer = loadMoreFooterRef.current;
+    if (!hasMoreResults || !footer) {
+      setFooterHeight(0);
+      return;
+    }
+
+    const measure = (): void => {
+      const nextHeight = footer.getBoundingClientRect().height;
+      if (nextHeight > 0) setFooterHeight(nextHeight);
+    };
+    measure();
+
+    if (typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver(measure);
+      observer.observe(footer);
+      return () => observer.disconnect();
+    }
+
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, [
+    hasMoreResults,
+    isCoarse,
+    isNarrowPhone,
+    loadMoreStep,
+    loadingMore,
+    results.length,
+    totalMatches,
+  ]);
+
   const totalRows = viewMode === 'grid' ? Math.ceil(results.length / columns) : results.length;
+  const rawRowsHeight = totalRows * rowHeight;
+  const virtualRowsHeight = Math.min(rawRowsHeight, MAX_VIRTUAL_HEIGHT);
+  const isVirtualHeightCompressed = rawRowsHeight > MAX_VIRTUAL_HEIGHT;
+  const effectiveFooterHeight = hasMoreResults
+    ? footerHeight || LOAD_MORE_FOOTER_FALLBACK_HEIGHT
+    : 0;
+  const virtualHeight = virtualRowsHeight + effectiveFooterHeight;
+  const maxPhysicalScroll = Math.max(0, virtualHeight - viewportHeight);
+  const maxLogicalScroll = Math.max(0, rawRowsHeight + effectiveFooterHeight - viewportHeight);
+  const logicalScrollTop = isVirtualHeightCompressed
+    ? maxPhysicalScroll > 0
+      ? Math.min(maxLogicalScroll, (scrollTop / maxPhysicalScroll) * maxLogicalScroll)
+      : 0
+    : scrollTop;
   const maxFirstRow = Math.max(0, totalRows - 1);
   const firstRow = Math.min(
     maxFirstRow,
-    Math.max(0, Math.floor(scrollTop / rowHeight) - OVERSCAN_ROWS),
+    Math.max(0, Math.floor(logicalScrollTop / rowHeight) - OVERSCAN_ROWS),
   );
   const lastRow = Math.min(
     totalRows,
-    Math.ceil((scrollTop + viewportHeight) / rowHeight) + OVERSCAN_ROWS,
+    Math.ceil((logicalScrollTop + viewportHeight) / rowHeight) + OVERSCAN_ROWS,
   );
   const windowEnd = Math.min(lastRow, totalRows);
-  const offsetY = firstRow * rowHeight;
-  const virtualHeight = totalRows * rowHeight;
+  const offsetY = isVirtualHeightCompressed
+    ? scrollTop - (logicalScrollTop - firstRow * rowHeight)
+    : firstRow * rowHeight;
+  const footerTopY = isVirtualHeightCompressed
+    ? scrollTop + (rawRowsHeight - logicalScrollTop)
+    : virtualRowsHeight;
+
+  const mapLogicalToPhysical = useCallback(
+    (logicalTop: number): number => {
+      if (!isVirtualHeightCompressed || maxLogicalScroll <= 0) {
+        return Math.max(0, logicalTop);
+      }
+      return (
+        (Math.min(maxLogicalScroll, Math.max(0, logicalTop)) / maxLogicalScroll) *
+        maxPhysicalScroll
+      );
+    },
+    [isVirtualHeightCompressed, maxLogicalScroll, maxPhysicalScroll],
+  );
 
   const selectedRow =
     viewMode === 'grid'
@@ -741,35 +821,70 @@ export const ResultsPane = memo(function ResultsPane({
     setFilters({ includeUnnamed: true, unnamedMode: 'always' });
   }, [setFilters]);
 
-  // Keep the keyboard-selected row in view when ↑/↓ (or j/k) changes it.
+  // Keep the keyboard-selected row in view ONLY when the selection index
+  // actually changes (never on ordinary user scrolling).
+  const prevSelectedIndexRef = useRef<number>(clampedSelectedIndex);
+  const scrollMappingRef = useRef({
+    isVirtualHeightCompressed,
+    maxPhysicalScroll,
+    maxLogicalScroll,
+    viewportHeight,
+    rowHeight,
+    columns,
+    viewMode,
+    mapLogicalToPhysical,
+  });
+  scrollMappingRef.current = {
+    isVirtualHeightCompressed,
+    maxPhysicalScroll,
+    maxLogicalScroll,
+    viewportHeight,
+    rowHeight,
+    columns,
+    viewMode,
+    mapLogicalToPhysical,
+  };
+
   useEffect(() => {
+    if (prevSelectedIndexRef.current === clampedSelectedIndex) {
+      return;
+    }
+    prevSelectedIndexRef.current = clampedSelectedIndex;
+
     const element = scrollRef.current;
-    if (!element || results.length === 0 || viewportHeight <= 0 || rowHeight <= 0) {
+    const {
+      isVirtualHeightCompressed: compressed,
+      maxPhysicalScroll: maxPhys,
+      maxLogicalScroll: maxLog,
+      viewportHeight: vpH,
+      rowHeight: rH,
+      columns: cols,
+      viewMode: mode,
+      mapLogicalToPhysical: toPhysical,
+    } = scrollMappingRef.current;
+
+    if (!element || results.length === 0 || vpH <= 0 || rH <= 0) {
       return;
     }
 
     const rowIndex =
-      viewMode === 'grid'
-        ? Math.floor(clampedSelectedIndex / columns)
-        : clampedSelectedIndex;
-    const rowTop = rowIndex * rowHeight;
-    const rowBottom = rowTop + rowHeight;
-    const currentTop = element.scrollTop;
-    const currentBottom = currentTop + element.clientHeight;
+      mode === 'grid' ? Math.floor(clampedSelectedIndex / cols) : clampedSelectedIndex;
+    const rowTop = rowIndex * rH;
+    const rowBottom = rowTop + rH;
+    const physTop = element.scrollTop;
+    const currentTop = compressed
+      ? maxPhys > 0
+        ? Math.min(maxLog, (physTop / maxPhys) * maxLog)
+        : 0
+      : physTop;
+    const currentBottom = currentTop + vpH;
 
     if (rowTop < currentTop) {
-      scrollElementTo(element, rowTop);
+      scrollElementTo(element, rowTop, toPhysical);
     } else if (rowBottom > currentBottom) {
-      scrollElementTo(element, rowBottom - element.clientHeight);
+      scrollElementTo(element, rowBottom - vpH, toPhysical);
     }
-  }, [
-    clampedSelectedIndex,
-    columns,
-    results.length,
-    rowHeight,
-    viewMode,
-    viewportHeight,
-  ]);
+  }, [clampedSelectedIndex, results.length]);
 
   const rows: ReactNode[] = [];
 
@@ -1039,7 +1154,7 @@ export const ResultsPane = memo(function ResultsPane({
           role={hasResults ? 'listbox' : undefined}
           aria-label="Search results"
           aria-activedescendant={activeDescendant}
-          aria-busy={searching || showBootSkeleton || undefined}
+          aria-busy={searching || loadingMore || showBootSkeleton || undefined}
         >
           {showBootSkeleton ? (
             <div className={styles.stateBody} role="status" aria-live="polite">
@@ -1164,6 +1279,55 @@ export const ResultsPane = memo(function ResultsPane({
               >
                 {rows}
               </div>
+              {hasMoreResults ? (
+                <div
+                  ref={loadMoreFooterRef}
+                  className={styles.loadMoreBar}
+                  style={{ top: footerTopY }}
+                  role="group"
+                  aria-label="Load more results"
+                >
+                  <span className={styles.loadMoreProgress}>
+                    Showing {formatCount(results.length)} of {formatCount(totalMatches)} results
+                  </span>
+                  <div className={styles.loadMoreActions}>
+                    {remaining <= loadMoreStep ? (
+                      <button
+                        type="button"
+                        className={styles.loadMoreButton}
+                        onClick={onLoadMore}
+                        disabled={loadingMore || searching}
+                      >
+                        {`Load remaining ${formatCount(remaining)}`}
+                      </button>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          className={styles.loadMoreButton}
+                          onClick={onLoadMore}
+                          disabled={loadingMore || searching}
+                        >
+                          {`Load ${formatCount(loadMoreStep)} more`}
+                        </button>
+                        <button
+                          type="button"
+                          className={styles.loadMoreButton}
+                          onClick={onLoadAll}
+                          disabled={loadingMore || searching}
+                        >
+                          {`Load all (${formatCount(totalMatches)})`}
+                        </button>
+                      </>
+                    )}
+                  </div>
+                  {loadingMore ? (
+                    <span className={styles.loadMoreStatus} role="status" aria-live="polite">
+                      Loading…
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           )}
         </div>

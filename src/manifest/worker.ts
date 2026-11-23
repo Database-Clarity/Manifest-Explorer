@@ -1808,6 +1808,17 @@ interface DeepScanState {
   cap: number;
 }
 
+/** Keep the interactive default while allowing explicitly requested full scans. */
+export function normalizeDeepSearchLimit(maxResults?: number): number {
+  if (maxResults === undefined || Number.isNaN(maxResults) || maxResults <= 0) {
+    return 200;
+  }
+  return Math.max(
+    0,
+    Math.min(Number.MAX_SAFE_INTEGER, Math.floor(maxResults)),
+  );
+}
+
 function scanTableForDeepSearch(
   table: string,
   data: Record<string, Record<string, unknown>>,
@@ -1888,8 +1899,7 @@ async function deepSearch(
 ): Promise<SearchResponse> {
   const startedAt = Date.now();
   const terms = parseDeepSearchTerms(query);
-  const cap =
-    maxResults !== undefined && maxResults > 0 ? Math.floor(maxResults) : 200;
+  const cap = normalizeDeepSearchLimit(maxResults);
   const scan: DeepScanState = { items: [], totalMatches: 0, cap };
 
   if (terms.length === 0) {

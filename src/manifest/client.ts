@@ -139,6 +139,9 @@ export function search(
   fuzzy?: FuzzySearchOptions,
   precedence?: QueryPrecedence,
 ): Promise<SearchResponse> {
+  // Preserve undefined and large explicit limits verbatim: regular search
+  // interprets an omitted limit as unbounded, and expansions may request the
+  // complete set of matching entries.
   const request: SearchRequest = {
     type: 'search',
     id: ++nextId,
@@ -157,6 +160,8 @@ export function deepSearch(
   filters: SearchFilters,
   maxResults?: number,
 ): Promise<SearchResponse> {
+  // Deep search keeps its worker-side default when omitted, but must not clamp
+  // large explicit limits used by Load more / Load all.
   const request: DeepSearchRequest = {
     type: 'deepSearch',
     id: ++nextId,

@@ -139,7 +139,9 @@ export interface SearchFilters {
 }
 
 export interface SearchResponse {
+  /** Returned matches, subject to the search mode's requested/default limit. */
   items: SearchResultItem[];
+  /** Total matches across the complete search scope, including unloaded results. */
   totalMatches: number;
   durationMs: number;
   /** Entries in the active table/query-table scope before unnamed filtering. */

@@ -19,6 +19,21 @@ export const CHANGELOG_STORAGE_KEY = 'clarity-manifest-explorer:last-seen-change
 
 export const CHANGELOG: readonly ChangelogEntry[] = [
   {
+    version: '2026.11.23-2',
+    date: 'Nov 23, 2026',
+    title: 'Item history',
+    summary: 'Explore how Destiny 2 items changed across past manifest versions.',
+    sections: [
+      {
+        heading: 'Manifest history',
+        items: [
+          'Browse updates across 321 manifests from 2017–2026, with field-level diffs and path filtering.',
+          'Compare any two past manifest versions side by side in the Compare view. On mobile, open History with the Hist tab.',
+        ],
+      },
+    ],
+  },
+  {
     version: '2026.11.23-1',
     date: 'Nov 23, 2026',
     title: 'Uncapped result browsing',

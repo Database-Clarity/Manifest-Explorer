@@ -1,0 +1,59 @@
+# Hourly manifest-history auto-updater.
+#
+# ACTIVATION: add a repository secret named CLOUDFLARE_API_TOKEN under
+# Settings -> Secrets and variables -> Actions. The token needs R2 Object
+# Read & Write permission for the `manifest-history` bucket. Once the secret
+# exists, the hourly schedule below automatically archives every new Bungie
+# manifest into R2. Until then, scheduled runs exit successfully without
+# touching R2 (they show a notice instead of failing every hour).
+#
+# The updater is idempotent and commits v1/versions.json only after every
+# table, bucket, and snapshot for a version has been written.
+name: Update manifest history
+
+on:
+  schedule:
+    # Minute 17 keeps the job out of GitHub's top-of-the-hour scheduler queue.
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: update-manifest-history
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Check Cloudflare credentials
+        id: credentials
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "::notice title=Manifest history update skipped::Add the CLOUDFLARE_API_TOKEN repository secret (R2 Object Read & Write) to enable automatic hourly updates."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update manifest history
+        if: steps.credentials.outputs.available == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: c5ec2772673dc72f5e58587ef4c80ff8
+          # Bungie's full item table is ~200 MB of JSON; give Node headroom.
+          NODE_OPTIONS: --max-old-space-size=8192
+        run: node scripts/history/update-live-manifest.mjs

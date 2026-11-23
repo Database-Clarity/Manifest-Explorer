@@ -1,11 +1,19 @@
 {
   "name": "manifest-explorer",
+  "main": "worker/index.ts",
   "compatibility_date": "2026-11-21",
   "account_id": "c5ec2772673dc72f5e58587ef4c80ff8",
   "workers_dev": true,
   "assets": {
-    "directory": "./dist"
+    "directory": "./dist",
+    "binding": "ASSETS"
   },
+  "r2_buckets": [
+    {
+      "binding": "MANIFEST_HISTORY",
+      "bucket_name": "manifest-history"
+    }
+  ],
   "routes": [
     {
       "pattern": "manifest.d2clarity.com",

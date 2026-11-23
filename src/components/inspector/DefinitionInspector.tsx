@@ -38,6 +38,7 @@ import { Popover } from '../../ui/Popover';
 import { Skeleton } from '../../ui/Skeleton';
 import { BungieIcon } from '../BungieIcon';
 import { DiffTab } from './DiffTab';
+import { HistoryTab } from './HistoryTab';
 import { JsonTree } from './JsonTree';
 import { OverviewTab } from './OverviewTab';
 import { ReferencesTab } from './ReferencesTab';
@@ -101,13 +102,16 @@ export interface DefinitionInspectorProps {
   onRetry: () => void;
 }
 
-const TABS: ReadonlyArray<{ id: InspectorTab; label: string; shortLabel: string }> = [
+type InspectorViewTab = InspectorTab | 'history';
+
+const TABS: ReadonlyArray<{ id: InspectorViewTab; label: string; shortLabel: string }> = [
   { id: 'pretty', label: 'Pretty', shortLabel: 'Pretty' },
   { id: 'overview', label: 'Overview', shortLabel: 'Info' },
   { id: 'variants', label: 'Variants', shortLabel: 'Vars' },
   { id: 'references', label: 'References', shortLabel: 'Refs' },
   { id: 'raw', label: 'Raw', shortLabel: 'Raw' },
   { id: 'diff', label: 'Diff', shortLabel: 'Diff' },
+  { id: 'history', label: 'History', shortLabel: 'Hist' },
 ];
 
 function DefinitionInspectorImpl({
@@ -141,6 +145,7 @@ function DefinitionInspectorImpl({
   const history = useExplorerStore((s) => s.history);
   const historyIndex = useExplorerStore((s) => s.historyIndex);
   const activeTab = useExplorerStore((s) => s.activeTab);
+  const activeViewTab = activeTab as InspectorViewTab;
   const pinnedDiffRef = useExplorerStore((s) => s.pinnedDiffRef);
   const inspectorMaximized = useExplorerStore((s) => s.inspectorMaximized);
   const closeSession = useExplorerStore((s) => s.closeSession);
@@ -175,16 +180,16 @@ function DefinitionInspectorImpl({
   const definitionKey = detail ? `${detail.table}:${detail.hash}` : '';
   const [visitedTabState, setVisitedTabState] = useState<{
     definitionKey: string;
-    tabs: Set<InspectorTab>;
-  }>(() => ({ definitionKey, tabs: new Set([activeTab]) }));
+    tabs: Set<InspectorViewTab>;
+  }>(() => ({ definitionKey, tabs: new Set([activeViewTab]) }));
   const visitedTabs = useMemo(() => {
     const tabs =
       visitedTabState.definitionKey === definitionKey
         ? new Set(visitedTabState.tabs)
-        : new Set<InspectorTab>();
-    tabs.add(activeTab);
+        : new Set<InspectorViewTab>();
+    tabs.add(activeViewTab);
     return tabs;
-  }, [activeTab, definitionKey, visitedTabState]);
+  }, [activeViewTab, definitionKey, visitedTabState]);
   const scrollTimerRef = useRef<number | null>(null);
   const liveScrollRef = useRef<{ tab: InspectorTab; top: number }>({
     tab: activeTab,
@@ -194,16 +199,16 @@ function DefinitionInspectorImpl({
   useEffect(() => {
     setVisitedTabState((state) => {
       if (state.definitionKey !== definitionKey) {
-        return { definitionKey, tabs: new Set([activeTab]) };
+        return { definitionKey, tabs: new Set([activeViewTab]) };
       }
-      if (state.tabs.has(activeTab)) {
+      if (state.tabs.has(activeViewTab)) {
         return state;
       }
       const tabs = new Set(state.tabs);
-      tabs.add(activeTab);
+      tabs.add(activeViewTab);
       return { definitionKey, tabs };
     });
-  }, [activeTab, definitionKey]);
+  }, [activeViewTab, definitionKey]);
 
   useEffect(() => {
     const element = sessionTabsScrollRef.current;
@@ -336,9 +341,9 @@ function DefinitionInspectorImpl({
   );
 
   const handleSubTabChange = useCallback(
-    (tab: InspectorTab) => {
+    (tab: InspectorViewTab) => {
       flushScroll();
-      setActiveTab(tab);
+      setActiveTab(tab as InspectorTab);
     },
     [flushScroll, setActiveTab],
   );
@@ -1076,7 +1081,7 @@ function DefinitionInspectorImpl({
       {/* Equal-width centered tabs on phones, compact left-aligned on desktop */}
       <div className={styles.tabBar} role="tablist" aria-label="Inspector views">
         {TABS.map((tab) => {
-          const selected = activeTab === tab.id;
+          const selected = activeViewTab === tab.id;
           let countBadge = '';
           if (tab.id === 'variants' && variants.length > 1) {
             countBadge = ` (${variants.length})`;
@@ -1257,6 +1262,20 @@ function DefinitionInspectorImpl({
                   }
                   onClearPin={clearPinnedDiff}
                   onNavigateRef={(ref) => navigateWithFlush(ref, false)}
+                />
+              </div>
+            )}
+            {visitedTabs.has('history') && (
+              <div
+                hidden={activeViewTab !== 'history'}
+                className={styles.tabPanelSlot}
+                data-inspector-panel-active={activeViewTab === 'history' ? 'true' : 'false'}
+              >
+                <HistoryTab
+                  key={`${detail.table}:${detail.hash}`}
+                  table={currentRef.table}
+                  hash={currentRef.hash}
+                  currentData={detail.data}
                 />
               </div>
             )}

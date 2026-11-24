@@ -365,7 +365,7 @@ try {
     waitUntil: 'domcontentloaded',
     timeout: 120_000,
   });
-  await page.getByRole('heading', { name: 'May 29, 2026' }).waitFor({
+  await page.getByRole('heading', { name: 'Jun 9, 2026' }).waitFor({
     timeout: 120_000,
   });
   console.log('History release loaded.');

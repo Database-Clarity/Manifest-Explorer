@@ -245,9 +245,14 @@
 .removedLine,
 .contextLine {
   display: grid;
-  grid-template-columns: 3.25rem 3.25rem 1.25rem minmax(0, 1fr);
   min-height: 1.55em;
   color: var(--editor-text);
+}
+
+.codeRows .addedLine,
+.codeRows .removedLine,
+.codeRows .contextLine {
+  grid-template-columns: 3.25rem 3.25rem 1.25rem minmax(0, 1fr);
 }
 
 .addedLine {
@@ -307,6 +312,10 @@
   word-break: break-word;
 }
 
+.splitCell > .codeLine {
+  padding-left: 0.5rem;
+}
+
 .syntaxRow {
   display: grid;
   grid-template-columns: 3rem minmax(0, 1fr);
@@ -324,9 +333,9 @@
     min-width: max(100%, 48rem);
   }
 
-  .addedLine,
-  .removedLine,
-  .contextLine {
+  .codeRows .addedLine,
+  .codeRows .removedLine,
+  .codeRows .contextLine {
     grid-template-columns: 3.25rem 3.25rem 1.25rem max-content;
   }
 
@@ -486,15 +495,15 @@
     display: none;
   }
 
-  .addedLine,
-  .removedLine,
-  .contextLine {
+  .codeRows .addedLine,
+  .codeRows .removedLine,
+  .codeRows .contextLine {
     grid-template-columns: 2.25rem 0.875rem minmax(0, 1fr);
   }
 
-  .unwrapped .addedLine,
-  .unwrapped .removedLine,
-  .unwrapped .contextLine {
+  .unwrapped .codeRows .addedLine,
+  .unwrapped .codeRows .removedLine,
+  .unwrapped .codeRows .contextLine {
     grid-template-columns: 2.25rem 0.875rem max-content;
   }
 

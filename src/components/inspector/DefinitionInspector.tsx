@@ -4,6 +4,7 @@ import {
   memo,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -41,6 +42,7 @@ import { Popover } from '../../ui/Popover';
 import { Skeleton } from '../../ui/Skeleton';
 import { BungieIcon } from '../BungieIcon';
 import { activateOnMiddleClick, preventMiddleClickAutoScroll } from '../middleClick';
+import { scrollTabIntoView } from '../../utils/scrollTabIntoView';
 import { JsonTree } from './JsonTree';
 import styles from './DefinitionInspector.module.scss';
 
@@ -168,6 +170,7 @@ function DefinitionInspectorImpl({
   const activeSessionIndex = useExplorerStore((s) => s.activeSessionIndex);
   const history = useExplorerStore((s) => s.history);
   const historyIndex = useExplorerStore((s) => s.historyIndex);
+  const mobileInspectorOpen = useExplorerStore((s) => s.mobileInspectorOpen);
   const activeTab = useExplorerStore((s) => s.activeTab);
   const activeViewTab = activeTab as InspectorViewTab;
   const pinnedDiffRef = useExplorerStore((s) => s.pinnedDiffRef);
@@ -258,15 +261,22 @@ function DefinitionInspectorImpl({
     return () => observer.disconnect();
   }, [sessions.length, width]);
 
-  useEffect(() => {
-    const frame = window.requestAnimationFrame(() => {
-      activeSessionTabRef.current?.scrollIntoView({
-        inline: 'nearest',
-        block: 'nearest',
-      });
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [activeSessionIndex, sessions.length, tabsOverflowing, width]);
+  useLayoutEffect(() => {
+    const scrollActiveTab = (): void => {
+      const container = sessionTabsScrollRef.current;
+      const tab = activeSessionTabRef.current;
+      if (container && tab) scrollTabIntoView(container, tab);
+    };
+    scrollActiveTab();
+
+    if (typeof window.requestAnimationFrame === 'function') {
+      const frame = window.requestAnimationFrame(scrollActiveTab);
+      return () => window.cancelAnimationFrame(frame);
+    }
+
+    const timer = window.setTimeout(scrollActiveTab, 0);
+    return () => window.clearTimeout(timer);
+  }, [activeSessionIndex, sessions.length, mobileInspectorOpen, tabsOverflowing, width]);
 
   // Synchronously persist the current scroll container's scrollTop before leaving
   const flushScroll = useCallback(() => {

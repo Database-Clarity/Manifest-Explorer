@@ -45,6 +45,7 @@ import { ClearSearchInput } from '../../ui/ClearSearchInput';
 import { Select } from '../../ui/Select';
 import { getTierColorVar } from '../../ui/rarity';
 import { activateOnMiddleClick, preventMiddleClickAutoScroll } from '../middleClick';
+import { scrollTabIntoView } from '../../utils/scrollTabIntoView';
 import {
   formatBucketDiffLabel,
   formatBucketEntryCount,
@@ -845,16 +846,46 @@ function HistoryEntryTabs({
   activeKey,
   onSelectEntry,
   onCloseEntry,
+  isMobile,
+  mobileInspectorOpen,
 }: {
   tabs: ChangedEntry[];
   activeKey: string | null;
   onSelectEntry: (key: string) => void;
   onCloseEntry: (key: string) => void;
+  isMobile: boolean;
+  mobileInspectorOpen: boolean;
 }): ReactNode {
+  const tabsRef = useRef<HTMLDivElement | null>(null);
+  const activeTabRef = useRef<HTMLDivElement | null>(null);
+
+  useLayoutEffect(() => {
+    const scrollActiveTab = (): void => {
+      const container = tabsRef.current;
+      const tab = activeTabRef.current;
+      if (container && tab) scrollTabIntoView(container, tab);
+    };
+    scrollActiveTab();
+
+    if (typeof window.requestAnimationFrame === 'function') {
+      const frame = window.requestAnimationFrame(scrollActiveTab);
+      return () => window.cancelAnimationFrame(frame);
+    }
+
+    const timer = window.setTimeout(scrollActiveTab, 0);
+    return () => window.clearTimeout(timer);
+  }, [activeKey, tabs.length, isMobile, mobileInspectorOpen]);
+
   return (
-    <div className={styles.entryTabs} role="tablist" aria-label="History entry diffs">
+    <div
+      className={styles.entryTabs}
+      ref={tabsRef}
+      role="tablist"
+      aria-label="History entry diffs"
+    >
       {tabs.map((entry) => (
         <div
+          ref={activeKey === entry.key ? activeTabRef : undefined}
           className={
             activeKey === entry.key
               ? `${styles.entryTab} ${styles.entryTabActive}`
@@ -919,6 +950,7 @@ export const ManifestHistoryPage = memo(function ManifestHistoryPage({
   const workspaceRef = useRef<HTMLDivElement | null>(null);
   const overviewPaneRef = useRef<HTMLElement | null>(null);
   const resizeStartRef = useRef<{ x: number; width: number } | null>(null);
+  const previousMobileInspectorOpenRef = useRef(false);
 
   const versions = useMemo(
     () => [...(index?.versions ?? [])].sort((a, b) => b.i - a.i),
@@ -950,6 +982,51 @@ export const ManifestHistoryPage = memo(function ManifestHistoryPage({
     media.addEventListener('change', update);
     return () => media.removeEventListener('change', update);
   }, []);
+
+  useEffect(() => {
+    const wasOpen = previousMobileInspectorOpenRef.current;
+    previousMobileInspectorOpenRef.current = mobileInspectorOpen;
+    if (
+      !isMobile ||
+      !mobileInspectorOpen ||
+      wasOpen ||
+      !(window.location.pathname === '/history' ||
+        window.location.pathname.startsWith('/history/'))
+    ) {
+      return;
+    }
+
+    const currentState =
+      window.history.state && typeof window.history.state === 'object'
+        ? (window.history.state as Record<string, unknown>)
+        : {};
+    if (currentState.historyDiffSheet === true) return;
+    window.history.pushState(
+      { ...currentState, historyDiffSheet: true },
+      '',
+      window.location.href,
+    );
+  }, [isMobile, mobileInspectorOpen]);
+
+  useEffect(() => {
+    const onPopState = (event: PopStateEvent): void => {
+      if (
+        !isMobile ||
+        !(window.location.pathname === '/history' ||
+          window.location.pathname.startsWith('/history/'))
+      ) {
+        return;
+      }
+      const poppedState = isRecord(event.state) ? event.state : {};
+      if (poppedState.historyDiffSheet === true) {
+        if (tabState.tabs.length > 0) setMobileInspectorOpen(true);
+      } else if (mobileInspectorOpen) {
+        setMobileInspectorOpen(false);
+      }
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, [isMobile, mobileInspectorOpen, tabState.tabs.length]);
 
   useEffect(() => {
     const workspace = workspaceRef.current;
@@ -1038,15 +1115,27 @@ export const ManifestHistoryPage = memo(function ManifestHistoryPage({
       return { activeKey, tabs };
     });
     if (tabState.tabs.length <= 1) {
+      const currentState = window.history.state;
+      if (isMobile && isRecord(currentState) && currentState.historyDiffSheet === true) {
+        window.history.back();
+      }
       setMobileInspectorOpen(false);
       setInspectorMaximized(false);
     }
-  }, [tabState.tabs.length]);
+  }, [isMobile, tabState.tabs.length]);
 
   const selectEntryTab = useCallback((key: string) => {
     setTabState((current) => ({ ...current, activeKey: key }));
     if (isMobile) setMobileInspectorOpen(true);
   }, [isMobile]);
+
+  const closeMobileInspector = useCallback(() => {
+    const currentState = window.history.state;
+    if (isRecord(currentState) && currentState.historyDiffSheet === true) {
+      window.history.back();
+    }
+    setMobileInspectorOpen(false);
+  }, []);
 
   const toggleInspectorMaximized = useCallback(() => {
     setInspectorMaximized((maximized) => !maximized);
@@ -1229,7 +1318,7 @@ export const ManifestHistoryPage = memo(function ManifestHistoryPage({
                 <button
                   type="button"
                   className={styles.mobileBackButton}
-                  onClick={() => setMobileInspectorOpen(false)}
+                  onClick={closeMobileInspector}
                   aria-label="Back to release changes"
                   title="Back to release changes"
                 >
@@ -1242,6 +1331,8 @@ export const ManifestHistoryPage = memo(function ManifestHistoryPage({
                 activeKey={tabState.activeKey}
                 onSelectEntry={selectEntryTab}
                 onCloseEntry={closeEntry}
+                isMobile={isMobile}
+                mobileInspectorOpen={mobileInspectorOpen}
               />
               {!isMobile && (
                 <button

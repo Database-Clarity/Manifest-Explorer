@@ -189,6 +189,36 @@
   color: var(--accent-ink);
 }
 
+.groupCollapseToggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  height: 1.5rem;
+  min-height: 1.5rem;
+  padding: 0 0.375rem;
+  border: 1px solid var(--line);
+  border-radius: 0.25rem;
+  background: transparent;
+  color: var(--text3);
+  font: inherit;
+  font-size: 0.6875rem;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+
+  &:focus-visible {
+    @include ctl.focus-ring;
+  }
+
+  @media (hover: hover) {
+    &:hover {
+      background: var(--hover);
+      color: var(--text);
+    }
+  }
+}
+
 // Compact mobile-only shortcut back to the open inspector tabs. It shares the
 // Results header row so mobile never needs a second toolbar just for tabs.
 .tabsBtn {
@@ -622,6 +652,19 @@
 .groupHeader {
   right: 0;
   left: 0;
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1;
+  text-align: left;
+  cursor: pointer;
+
+  &:focus-visible {
+    @include ctl.focus-ring;
+  }
 }
 
 .stickyGroupIndicator {
@@ -631,14 +674,39 @@
   pointer-events: none;
   background: transparent;
   border-bottom-color: transparent;
+  border: 0;
+  width: 100%;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1;
+  text-align: left;
+  cursor: default;
 }
 
 .stickyGroupActive {
   background: var(--strip);
-  border-bottom-color: var(--line);
+  border-bottom: 1px solid var(--line);
+  pointer-events: auto;
+  cursor: pointer;
+
+  &:focus-visible {
+    @include ctl.focus-ring;
+  }
+}
+
+.groupChevron {
+  flex: 0 0 auto;
+  color: var(--text3);
+  transition: transform 120ms ease;
+}
+
+.groupChevronExpanded {
+  transform: rotate(90deg);
 }
 
 .groupLabel {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

@@ -26,7 +26,14 @@ import {
 import { useCollectorStore } from '../stores/collector';
 import { useExplorerStore } from '../stores/explorer';
 import { useSettingsStore } from '../stores/settings';
-import { CheckIcon, CloseIcon, GridIcon, LayersIcon, ListIcon } from '../ui/Icons';
+import {
+  CheckIcon,
+  ChevronRightIcon,
+  CloseIcon,
+  GridIcon,
+  LayersIcon,
+  ListIcon,
+} from '../ui/Icons';
 import { getTierColorVar } from '../ui/rarity';
 import { Skeleton } from '../ui/Skeleton';
 import { Select, type SelectSection } from '../ui/Select';
@@ -104,8 +111,10 @@ interface ResultSection {
   startIndex: number;
   loaded: number;
   itemRows: number;
+  visibleCount: number;
   top: number;
   itemTop: number;
+  height: number;
   end: number;
 }
 
@@ -637,6 +646,14 @@ export const ResultsPane = memo(function ResultsPane({
   const selectedResultIndex = useExplorerStore((state) => state.selectedResultIndex);
   const setSelectedResultIndex = useExplorerStore((state) => state.setSelectedResultIndex);
   const resultGroups = useExplorerStore((state) => state.resultGroups);
+  const collapsedResultGroups = useExplorerStore((state) => state.collapsedResultGroups);
+  const toggleResultGroup = useExplorerStore((state) => state.toggleResultGroup);
+  const setCollapsedResultGroups = useExplorerStore(
+    (state) => state.setCollapsedResultGroups,
+  );
+  const clearCollapsedResultGroups = useExplorerStore(
+    (state) => state.clearCollapsedResultGroups,
+  );
   const versionDates = useExplorerStore((state) => state.versionDates);
   const entryDatesStatus = useExplorerStore((state) => state.entryDatesStatus);
   const setQuery = useExplorerStore((state) => state.setQuery);
@@ -876,6 +893,12 @@ export const ResultsPane = memo(function ResultsPane({
     viewportWidth <= NARROW_TABLE_BADGE_PX &&
     (filters.table === 'all' || filters.table === ARTIFACT_PERKS_TABLE);
 
+  useEffect(() => {
+    if (groupBy !== 'table' && Object.keys(collapsedResultGroups).length > 0) {
+      clearCollapsedResultGroups();
+    }
+  }, [clearCollapsedResultGroups, collapsedResultGroups, groupBy]);
+
   const showError = phase === 'error' && !hasResults;
   const isBooting = phase === 'idle' || phase === 'fetching-index' || phase === 'loading-core';
   const showBootSkeleton = !showError && !hasResults && (isBooting || searching);
@@ -982,14 +1005,18 @@ export const ResultsPane = memo(function ResultsPane({
       );
       const itemRows = viewMode === 'grid' ? Math.ceil(loaded / columns) : loaded;
       const itemTop = top + groupHeaderHeight;
-      const end = itemTop + itemRows * rowHeight;
+      const visibleCount = collapsedResultGroups[group.key] ? 0 : itemRows;
+      const height = groupHeaderHeight + visibleCount * rowHeight;
+      const end = top + height;
       const section: ResultSection = {
         group,
         startIndex,
         loaded,
         itemRows,
+        visibleCount,
         top,
         itemTop,
+        height,
         end,
       };
       startIndex += loaded;
@@ -998,6 +1025,7 @@ export const ResultsPane = memo(function ResultsPane({
     });
   }, [
     columns,
+    collapsedResultGroups,
     gridTopPad,
     groupHeaderHeight,
     resultGroups,
@@ -1120,12 +1148,15 @@ export const ResultsPane = memo(function ResultsPane({
     ? sectionForResult(groupSections, clampedSelectedIndex)
     : undefined;
   const selectedGroupedTop = selectedSection
-    ? selectedSection.itemTop +
-      Math.floor((clampedSelectedIndex - selectedSection.startIndex) / columns) * rowHeight
+    ? selectedSection.visibleCount === 0
+      ? selectedSection.top
+      : selectedSection.itemTop +
+        Math.floor((clampedSelectedIndex - selectedSection.startIndex) / columns) * rowHeight
     : 0;
   const selectedRendered = hasResults
     ? groupingActive
       ? selectedSection !== undefined &&
+        selectedSection.visibleCount > 0 &&
         selectedGroupedTop >= groupWindowStart &&
         selectedGroupedTop < groupWindowEnd
       : selectedRow >= firstRow && selectedRow < windowEnd
@@ -1142,6 +1173,25 @@ export const ResultsPane = memo(function ResultsPane({
       ? activeGroupSection
       : undefined;
 
+  const handleStickyGroupToggle = useCallback(
+    (section: ResultSection) => {
+      toggleResultGroup(section.group.key);
+      const element = scrollRef.current;
+      if (!element) return;
+
+      // Keep the just-collapsed heading pinned at the viewport top rather than
+      // leaving the user in the next section after its rows disappear.
+      element.scrollTop = mapLogicalToPhysical(section.top);
+      pendingScrollRestoreRef.current = false;
+      savedResultsScroll = {
+        scopeKey: scopeKeyRef.current,
+        top: element.scrollTop,
+      };
+      setScrollTop(element.scrollTop);
+    },
+    [mapLogicalToPhysical, toggleResultGroup],
+  );
+
   const handleViewModeChange = useCallback(
     (mode: ViewMode) => {
       if (isNarrowPhone) {
@@ -1153,8 +1203,26 @@ export const ResultsPane = memo(function ResultsPane({
   );
 
   const toggleGroupByTable = useCallback(() => {
+    if (groupBy === 'table') {
+      clearCollapsedResultGroups();
+    }
     setGroupBy(groupBy === 'table' ? 'none' : 'table');
-  }, [groupBy, setGroupBy]);
+  }, [clearCollapsedResultGroups, groupBy, setGroupBy]);
+
+  const allGroupsCollapsed =
+    resultGroups.length > 0 &&
+    resultGroups.every((group) => collapsedResultGroups[group.key] === true);
+  const toggleAllGroups = useCallback(() => {
+    if (allGroupsCollapsed) {
+      setCollapsedResultGroups({});
+      return;
+    }
+    const next: Record<string, true> = {};
+    for (const group of resultGroups) {
+      next[group.key] = true;
+    }
+    setCollapsedResultGroups(next);
+  }, [allGroupsCollapsed, resultGroups, setCollapsedResultGroups]);
 
   const handleActivate = useCallback(
     (item: SearchResultItem, index: number) => {
@@ -1259,11 +1327,15 @@ export const ResultsPane = memo(function ResultsPane({
     if (grouped && !selectedSection) return;
     const rowIndex =
       mode === 'grid' ? Math.floor(clampedSelectedIndex / cols) : clampedSelectedIndex;
+    const selectedGroupCollapsed =
+      selectedSection !== undefined && selectedSection.visibleCount === 0;
     const rowTop = selectedSection
-      ? selectedSection.itemTop +
-        Math.floor((clampedSelectedIndex - selectedSection.startIndex) / cols) * rH
+      ? selectedGroupCollapsed
+        ? selectedSection.top
+        : selectedSection.itemTop +
+          Math.floor((clampedSelectedIndex - selectedSection.startIndex) / cols) * rH
       : (mode === 'grid' ? topPad : 0) + rowIndex * rH;
-    const rowBottom = rowTop + rH;
+    const rowBottom = rowTop + (selectedGroupCollapsed ? groupHeaderHeight : rH);
     const physTop = element.scrollTop;
     const currentTop = compressed
       ? maxPhys > 0
@@ -1277,7 +1349,13 @@ export const ResultsPane = memo(function ResultsPane({
     } else if (rowBottom > currentBottom) {
       scrollElementTo(element, rowBottom - vpH, toPhysical);
     }
-  }, [clampedSelectedIndex, groupSections, groupingActive, results.length]);
+  }, [
+    clampedSelectedIndex,
+    groupHeaderHeight,
+    groupSections,
+    groupingActive,
+    results.length,
+  ]);
 
   const artifactPerksCategory = filters.table === ARTIFACT_PERKS_TABLE;
 
@@ -1306,22 +1384,34 @@ export const ResultsPane = memo(function ResultsPane({
           section.top + groupHeaderHeight > groupWindowStart &&
           section.top < groupWindowEnd
         ) {
+          const collapsed = collapsedResultGroups[section.group.key] === true;
           nextRows.push(
-            <div
+            <button
               key={`group-header-${section.group.key}`}
+              type="button"
               className={styles.groupHeader}
               data-group-header=""
               data-group-key={section.group.key}
-              role="presentation"
+              aria-expanded={!collapsed}
+              title={`${collapsed ? 'Expand' : 'Collapse'} ${section.group.label}`}
+              onClick={() => toggleResultGroup(section.group.key)}
+              onKeyDown={stopActivationKeys}
               style={{
                 position: 'absolute',
                 top: section.top - groupWindowStart,
                 height: groupHeaderHeight,
               }}
             >
+              <ChevronRightIcon
+                className={joinClasses(
+                  styles.groupChevron,
+                  !collapsed ? styles.groupChevronExpanded : '',
+                )}
+                size={14}
+              />
               <span className={styles.groupLabel}>{section.group.label}</span>
               <span className={styles.groupCount}>{sectionCountLabel(section)}</span>
-            </div>,
+            </button>,
           );
         }
 
@@ -1332,7 +1422,7 @@ export const ResultsPane = memo(function ResultsPane({
         const lastItemRow = Math.max(
           0,
           Math.min(
-            section.itemRows,
+            section.visibleCount,
             Math.ceil((groupWindowEnd - section.itemTop) / rowHeight),
           ),
         );
@@ -1410,7 +1500,7 @@ export const ResultsPane = memo(function ResultsPane({
               key={`grid-group-row-${section.group.key}-${rowIndex}`}
               className={joinClasses(
                 styles.gridRow,
-                rowIndex === section.itemRows - 1 ? styles.gridRowEnd : '',
+                rowIndex === section.visibleCount - 1 ? styles.gridRowEnd : '',
               )}
               data-group-row={section.group.key}
               style={{
@@ -1517,6 +1607,7 @@ export const ResultsPane = memo(function ResultsPane({
     collectMode,
     collectedKeys,
     columns,
+    collapsedResultGroups,
     firstGroupSectionIndex,
     firstRow,
     groupHeaderHeight,
@@ -1533,6 +1624,7 @@ export const ResultsPane = memo(function ResultsPane({
     sortMode,
     showInlineTable,
     showTableColumn,
+    toggleResultGroup,
     totalRows,
     versionDates,
     viewMode,
@@ -1692,6 +1784,21 @@ export const ResultsPane = memo(function ResultsPane({
             >
               <LayersIcon size={13} />
               <span>Group</span>
+            </button>
+          ) : null}
+
+          {groupingActive && !isNarrowPhone && viewportWidth >= 640 ? (
+            <button
+              type="button"
+              className={styles.groupCollapseToggle}
+              aria-label={
+                allGroupsCollapsed ? 'Expand all result groups' : 'Collapse all result groups'
+              }
+              title={allGroupsCollapsed ? 'Expand all groups' : 'Collapse all groups'}
+              onClick={toggleAllGroups}
+              onKeyDown={stopActivationKeys}
+            >
+              {allGroupsCollapsed ? 'Expand all' : 'Collapse all'}
             </button>
           ) : null}
 
@@ -1868,27 +1975,55 @@ export const ResultsPane = memo(function ResultsPane({
           ) : (
             <>
               {groupingActive ? (
-                <div
+                <button
+                  type="button"
                   className={joinClasses(
                     styles.stickyGroupIndicator,
                     stickyGroupSection ? styles.stickyGroupActive : '',
                   )}
-                  aria-hidden="true"
                   data-sticky-group-indicator=""
+                  aria-hidden={!stickyGroupSection}
+                  aria-label={
+                    stickyGroupSection
+                      ? `${stickyGroupSection.group.label}, ${sectionCountLabel(stickyGroupSection)}`
+                      : undefined
+                  }
+                  aria-expanded={
+                    stickyGroupSection
+                      ? collapsedResultGroups[stickyGroupSection.group.key] !== true
+                      : undefined
+                  }
+                  disabled={!stickyGroupSection}
+                  onClick={
+                    stickyGroupSection
+                      ? () => handleStickyGroupToggle(stickyGroupSection)
+                      : undefined
+                  }
+                  onKeyDown={stopActivationKeys}
                   style={{ height: groupHeaderHeight, marginBottom: -groupHeaderHeight }}
                 >
                   {stickyGroupSection ? (
                     <>
+                      <ChevronRightIcon
+                        className={joinClasses(
+                          styles.groupChevron,
+                          collapsedResultGroups[stickyGroupSection.group.key] !== true
+                            ? styles.groupChevronExpanded
+                            : '',
+                        )}
+                        size={14}
+                      />
                       <span className={styles.groupLabel}>{stickyGroupSection.group.label}</span>
                       <span className={styles.groupCount}>
                         {sectionCountLabel(stickyGroupSection)}
                       </span>
                     </>
                   ) : null}
-                </div>
+                </button>
               ) : null}
               <div
                 className={styles.virtualSpace}
+                data-virtual-space=""
                 style={{ height: virtualHeight }}
                 role="presentation"
               >

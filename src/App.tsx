@@ -22,7 +22,7 @@ import type {
 } from './types/manifest';
 import type { ChangelogDialogProps } from './components/ChangelogDialog';
 import * as manifestClient from './manifest/client';
-import { getShortTableName } from './manifest/tables';
+import { canonicalTableName, getShortTableName } from './manifest/tables';
 import { useCollectorStore } from './stores/collector';
 import { useExplorerStore, type InspectorSession } from './stores/explorer';
 import { useSettingsStore } from './stores/settings';
@@ -168,6 +168,42 @@ function isEditableTarget(target: EventTarget | null): boolean {
     return true;
   }
   return target instanceof HTMLElement && target.tagName === 'SELECT';
+}
+
+function nextVisibleResultIndex(
+  index: number,
+  direction: -1 | 1,
+  results: readonly SearchResultItem[],
+  groupBy: 'none' | 'table',
+  groups: readonly { key: string }[],
+  collapsedGroups: Record<string, true>,
+): number {
+  if (results.length === 0) return 0;
+  const collapsedTables =
+    groupBy === 'table'
+      ? new Set(
+          groups
+            .filter((group) => collapsedGroups[group.key])
+            .map((group) => canonicalTableName(group.key)),
+        )
+      : new Set<string>();
+  const isCollapsed = (resultIndex: number): boolean => {
+    const item = results[resultIndex];
+    return item !== undefined && collapsedTables.has(canonicalTableName(item.table));
+  };
+
+  const scan = (start: number, step: -1 | 1): number | null => {
+    for (let candidate = start; candidate >= 0 && candidate < results.length; candidate += step) {
+      if (!isCollapsed(candidate)) return candidate;
+    }
+    return null;
+  };
+  const next = scan(index + direction, direction);
+  if (next !== null) return next;
+  if (!isCollapsed(index)) return index;
+
+  const fallback = scan(index - direction, direction === 1 ? -1 : 1);
+  return fallback ?? index;
 }
 
 function getHistoryVersionFromPath(pathname: string): number | null {
@@ -320,6 +356,8 @@ export function App(): ReactNode {
   const scopeEntryCount = useExplorerStore((s) => s.scopeEntryCount);
   const hiddenUnnamedCount = useExplorerStore((s) => s.hiddenUnnamedCount);
   const selectedResultIndex = useExplorerStore((s) => s.selectedResultIndex);
+  const resultGroups = useExplorerStore((s) => s.resultGroups);
+  const collapsedResultGroups = useExplorerStore((s) => s.collapsedResultGroups);
   const sessionsCount = useExplorerStore((s) => s.sessions.length);
   const sessionRefSignature = useExplorerStore((s) => getSessionRefSignature(s.sessions));
   const activeEntry = useExplorerStore((s) =>
@@ -377,10 +415,16 @@ export function App(): ReactNode {
   const selectHistoryVersion = useCallback((index: number, replace = false) => {
     const path = `/history/${index}`;
     if (window.location.pathname === path) return;
+    const currentState =
+      window.history.state && typeof window.history.state === 'object'
+        ? (window.history.state as Record<string, unknown>)
+        : {};
+    const { historyDiffSheet: _historyDiffSheet, ...nextState } = currentState;
+    const historyState = Object.keys(nextState).length > 0 ? nextState : null;
     if (replace) {
-      window.history.replaceState(window.history.state, '', path);
+      window.history.replaceState(historyState, '', path);
     } else {
-      window.history.pushState(window.history.state, '', path);
+      window.history.pushState(historyState, '', path);
     }
     setPathname(window.location.pathname);
   }, []);
@@ -1644,6 +1688,13 @@ export function App(): ReactNode {
       ) {
         return;
       }
+      if (
+        event.key === 'Enter' &&
+        event.target instanceof HTMLElement &&
+        event.target.closest('[data-group-header], [data-sticky-group-indicator]')
+      ) {
+        return;
+      }
 
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault();
@@ -1724,7 +1775,16 @@ export function App(): ReactNode {
       if (event.key === 'ArrowDown' || event.key === 'j') {
         if (results.length > 0) {
           event.preventDefault();
-          setSelectedResultIndex(selectedResultIndex + 1);
+          setSelectedResultIndex(
+            nextVisibleResultIndex(
+              selectedResultIndex,
+              1,
+              results,
+              groupBy,
+              resultGroups,
+              collapsedResultGroups,
+            ),
+          );
         }
         return;
       }
@@ -1732,7 +1792,16 @@ export function App(): ReactNode {
       if (event.key === 'ArrowUp' || event.key === 'k') {
         if (results.length > 0) {
           event.preventDefault();
-          setSelectedResultIndex(selectedResultIndex - 1);
+          setSelectedResultIndex(
+            nextVisibleResultIndex(
+              selectedResultIndex,
+              -1,
+              results,
+              groupBy,
+              resultGroups,
+              collapsedResultGroups,
+            ),
+          );
         }
         return;
       }
@@ -1807,9 +1876,12 @@ export function App(): ReactNode {
     handleNavigateBack,
     handleNavigateForward,
     handleOpenResult,
+    groupBy,
     helpOpen,
     pushNotice,
     results,
+    resultGroups,
+    collapsedResultGroups,
     selectedResultIndex,
     sessionsCount,
     setActiveTab,

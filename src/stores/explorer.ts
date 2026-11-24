@@ -64,6 +64,7 @@ export interface ExplorerState {
   scopeEntryCount: number;
   hiddenUnnamedCount: number;
   resultGroups: SearchResultGroup[];
+  collapsedResultGroups: Record<string, true>;
   versionDates: number[];
   entryDatesStatus: 'idle' | 'loading' | 'ready' | 'unavailable';
   searching: boolean;
@@ -103,6 +104,9 @@ export interface ExplorerState {
   setTables: (tables: TableStatus[]) => void;
   setFilterCatalog: (catalog: FilterCatalog) => void;
   setSelectedResultIndex: (index: number) => void;
+  toggleResultGroup: (key: string) => void;
+  setCollapsedResultGroups: (keys: Record<string, true>) => void;
+  clearCollapsedResultGroups: () => void;
 
   /**
    * Navigate in-place within the active tab: pushes a fresh entry onto this
@@ -379,6 +383,7 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
   scopeEntryCount: 0,
   hiddenUnnamedCount: 0,
   resultGroups: [],
+  collapsedResultGroups: {},
   versionDates: [],
   entryDatesStatus: 'idle',
   searching: false,
@@ -395,12 +400,26 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
 
   notices: [],
 
-  setQuery: (query) => set({ query, selectedResultIndex: 0 }),
+  setQuery: (query) =>
+    set((state) => ({
+      query,
+      selectedResultIndex: 0,
+      ...(query !== state.query ? { collapsedResultGroups: {} } : {}),
+    })),
 
-  setDeepSearch: (deepSearch) => set({ deepSearch, selectedResultIndex: 0 }),
+  setDeepSearch: (deepSearch) =>
+    set((state) => ({
+      deepSearch,
+      selectedResultIndex: 0,
+      ...(deepSearch !== state.deepSearch ? { collapsedResultGroups: {} } : {}),
+    })),
 
   toggleDeepSearch: () =>
-    set((state) => ({ deepSearch: !state.deepSearch, selectedResultIndex: 0 })),
+    set((state) => ({
+      deepSearch: !state.deepSearch,
+      selectedResultIndex: 0,
+      collapsedResultGroups: {},
+    })),
 
   setFilters: (filters) =>
     set((state) => {
@@ -416,13 +435,18 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
             ? 'never'
             : 'auto';
       }
-      return { filters: nextFilters, selectedResultIndex: 0 };
+      return {
+        filters: nextFilters,
+        selectedResultIndex: 0,
+        collapsedResultGroups: {},
+      };
     }),
 
   resetFilters: () =>
     set({
       filters: createDefaultFilters(),
       selectedResultIndex: 0,
+      collapsedResultGroups: {},
     }),
 
   setTableFilter: (table) =>
@@ -435,6 +459,7 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
           ...(resetUnnamedOverride ? { unnamedMode: 'auto' as const, includeUnnamed: false } : {}),
         },
         selectedResultIndex: 0,
+        collapsedResultGroups: {},
       };
     }),
 
@@ -464,7 +489,13 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
         : 0,
     })),
 
-  setSearching: (searching) => set({ searching }),
+  setSearching: (searching) =>
+    set((state) => ({
+      searching,
+      ...(searching && Object.keys(state.collapsedResultGroups).length > 0
+        ? { collapsedResultGroups: {} }
+        : {}),
+    })),
 
   setManifestStatus: (status) =>
     set((state) => ({
@@ -483,6 +514,27 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
       const clamped = Math.max(0, Math.min(index, state.results.length - 1));
       return { selectedResultIndex: clamped };
     }),
+
+  toggleResultGroup: (key) =>
+    set((state) => {
+      const next = { ...state.collapsedResultGroups };
+      if (next[key]) {
+        delete next[key];
+      } else {
+        next[key] = true;
+      }
+      return { collapsedResultGroups: next };
+    }),
+
+  setCollapsedResultGroups: (collapsedResultGroups) =>
+    set({ collapsedResultGroups }),
+
+  clearCollapsedResultGroups: () =>
+    set((state) =>
+      Object.keys(state.collapsedResultGroups).length > 0
+        ? { collapsedResultGroups: {} }
+        : {},
+    ),
 
   navigateInTab: (ref, jsonFilter) => {
     const state = get();
@@ -989,6 +1041,7 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
       pinnedDiffRef: null,
       mobileInspectorOpen: sessions.length > 0,
       selectedResultIndex: 0,
+      collapsedResultGroups: {},
     }));
   },
 

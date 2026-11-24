@@ -29,7 +29,10 @@ vi.mock('../../../manifest/history', () => ({
     totals: { a: 1, m: 0, r: 0, u: 0, c: 0 },
     tables: {
       DestinyInventoryItemDefinition: {
-        a: [[1234, 'Test Item', 'Weapon', '', 3]],
+        a: [
+          [1234, 'Test Item', 'Weapon', '', 3],
+          [5678, 'Second Item', 'Weapon', '', 4],
+        ],
       },
     },
   })),
@@ -112,10 +115,19 @@ function openTestEntry(host: HTMLElement): void {
   act(() => card.click());
 }
 
+function openSecondEntry(host: HTMLElement): void {
+  const card = host.querySelector<HTMLButtonElement>(
+    'button[title="Open Second Item history diff"]',
+  );
+  if (!card) throw new Error('Second Item release card is missing');
+  act(() => card.click());
+}
+
 beforeEach(() => {
   roots = [];
   isMobileViewport = false;
   mockMatchMedia();
+  window.history.replaceState(null, '', '/history');
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean })
     .IS_REACT_ACT_ENVIRONMENT = true;
 });
@@ -125,6 +137,7 @@ afterEach(() => {
     act(() => root.unmount());
   }
   roots = [];
+  window.history.replaceState(null, '', '/');
 });
 
 describe('ManifestHistoryPage workspace', () => {
@@ -215,6 +228,147 @@ describe('ManifestHistoryPage workspace', () => {
       host.querySelector<HTMLButtonElement>('[aria-label="Return to open tabs, 1"]')?.click(),
     );
     expect(host.querySelector('[aria-label="Back to release changes"]')).not.toBeNull();
+
+    host.remove();
+  });
+
+  it('pushes a mobile diff-sheet history state and closes it on browser Back without losing tabs', async () => {
+    isMobileViewport = true;
+    mockMatchMedia();
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = mountPage(host);
+    await renderHistory(root);
+    expandRelease(host);
+    openTestEntry(host);
+    await flushHistoryLoads();
+
+    expect(window.history.state).toMatchObject({ historyDiffSheet: true });
+    expect(window.location.pathname).toBe('/history');
+    expect(host.querySelector('[aria-label="Back to release changes"]')).not.toBeNull();
+
+    window.history.replaceState({ releaseChanges: true }, '', window.location.href);
+    act(() => {
+      window.dispatchEvent(
+        new PopStateEvent('popstate', { state: window.history.state }),
+      );
+    });
+
+    expect(window.location.pathname).toBe('/history');
+    expect(host.querySelector('[aria-label="Back to release changes"]')).toBeNull();
+    expect(host.querySelector('[aria-label="Return to open tabs, 1"]')?.textContent).toContain(
+      'Tabs (1)',
+    );
+    expect(host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain(
+      'Test Item',
+    );
+
+    host.remove();
+  });
+
+  it('uses browser history for the in-app mobile Back button instead of leaving a sheet entry behind', async () => {
+    isMobileViewport = true;
+    mockMatchMedia();
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = mountPage(host);
+    await renderHistory(root);
+    expandRelease(host);
+    openTestEntry(host);
+    await flushHistoryLoads();
+
+    expect(window.history.state).toMatchObject({ historyDiffSheet: true });
+    act(() =>
+      host.querySelector<HTMLButtonElement>('[aria-label="Back to release changes"]')?.click(),
+    );
+    await flushHistoryLoads();
+
+    expect(window.location.pathname).toBe('/history');
+    expect(window.history.state?.historyDiffSheet).toBeFalsy();
+    expect(host.querySelector('[aria-label="Back to release changes"]')).toBeNull();
+    expect(host.querySelector('[aria-label="Return to open tabs, 1"]')).not.toBeNull();
+
+    host.remove();
+  });
+
+  it('scrolls newly opened and reactivated history tabs fully into the visible tab strip', async () => {
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = mountPage(host);
+    await renderHistory(root);
+    expandRelease(host);
+    openTestEntry(host);
+    await flushHistoryLoads();
+
+    const tabs = host.querySelector<HTMLElement>(
+      '[role="tablist"][aria-label="History entry diffs"]',
+    );
+    if (!tabs) throw new Error('History tab strip is missing');
+    Object.defineProperty(tabs, 'clientWidth', { configurable: true, value: 200 });
+    Object.defineProperty(tabs, 'scrollWidth', { configurable: true, value: 500 });
+
+    const originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect;
+    HTMLElement.prototype.getBoundingClientRect = function getBoundingClientRect() {
+      if (this === tabs) {
+        return {
+          x: 100,
+          y: 0,
+          left: 100,
+          right: 300,
+          top: 0,
+          bottom: 40,
+          width: 200,
+          height: 40,
+          toJSON: () => ({}),
+        };
+      }
+      if (this.className.toString().includes('entryTab')) {
+        const label = this.querySelector('[role="tab"]')?.textContent ?? '';
+        const baseLeft = label.includes('Second Item') ? 280 : 110;
+        const left = baseLeft - tabs.scrollLeft;
+        return {
+          x: left,
+          y: 0,
+          left,
+          right: left + 100,
+          top: 0,
+          bottom: 40,
+          width: 100,
+          height: 40,
+          toJSON: () => ({}),
+        };
+      }
+      return originalGetBoundingClientRect.call(this);
+    };
+
+    try {
+      openSecondEntry(host);
+      await flushHistoryLoads();
+      const activeTab = host.querySelector<HTMLButtonElement>(
+        '[role="tab"][aria-selected="true"]',
+      )?.parentElement;
+      if (!activeTab) throw new Error('Active history tab is missing');
+      let activeRect = activeTab.getBoundingClientRect();
+      expect(tabs.scrollLeft).toBeGreaterThan(0);
+      expect(activeRect.left).toBeGreaterThanOrEqual(100);
+      expect(activeRect.right).toBeLessThanOrEqual(300);
+
+      act(() =>
+        host.querySelector<HTMLButtonElement>(
+          '[role="tab"][aria-selected="false"]',
+        )?.click(),
+      );
+      const reactivatedTab = host.querySelector<HTMLButtonElement>(
+        '[role="tab"][aria-selected="true"]',
+      )?.parentElement;
+      if (!reactivatedTab) throw new Error('Reactivated history tab is missing');
+      activeRect = reactivatedTab.getBoundingClientRect();
+      expect(tabs.scrollLeft).toBeLessThan(10);
+      expect(activeRect.left).toBeGreaterThanOrEqual(100);
+      expect(activeRect.right).toBeLessThanOrEqual(300);
+    } finally {
+      HTMLElement.prototype.getBoundingClientRect = originalGetBoundingClientRect;
+    }
 
     host.remove();
   });

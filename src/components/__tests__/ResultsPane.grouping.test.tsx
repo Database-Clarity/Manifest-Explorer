@@ -109,6 +109,7 @@ beforeEach(() => {
     searching: false,
     selectedResultIndex: 0,
     resultGroups: groups,
+    collapsedResultGroups: {},
     versionDates: [],
     entryDatesStatus: 'idle',
   });
@@ -168,14 +169,44 @@ describe('ResultsPane table grouping', () => {
     const root = createPaneRoot(host);
     renderPane(root);
 
-    const headers = [...host.querySelectorAll<HTMLElement>('[data-group-header]')];
+    const headers = [...host.querySelectorAll<HTMLButtonElement>('[data-group-header]')];
     expect(headers).toHaveLength(2);
     expect(headers[0]?.textContent).toContain('Inventory Item');
     expect(headers[0]?.textContent).toContain('3 of 5');
+    expect(headers[0]?.getAttribute('aria-expanded')).toBe('true');
     expect(headers[1]?.textContent).toContain('Activity');
     expect(headers[1]?.textContent).toContain('3');
     expect(host.querySelectorAll('[role="option"]')).toHaveLength(items.length);
     expect(host.querySelectorAll('[data-sticky-group-indicator]')).toHaveLength(1);
+    host.remove();
+  });
+
+  it('collapses and expands list sections while updating virtual height', () => {
+    useSettingsStore.setState({ groupBy: 'table', viewMode: 'list' });
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createPaneRoot(host);
+    renderPane(root);
+    setViewport(getScroller(host), 600, 500);
+
+    const virtualSpace = host.querySelector<HTMLElement>('[data-virtual-space]');
+    const inventoryHeader = host.querySelector<HTMLButtonElement>(
+      '[data-group-header=""][data-group-key="DestinyInventoryItemDefinition"]',
+    );
+    if (!virtualSpace || !inventoryHeader) throw new Error('Grouped results did not render');
+    const expandedHeight = Number.parseFloat(virtualSpace.style.height);
+    expect(host.querySelectorAll('[role="option"]')).toHaveLength(items.length);
+
+    act(() => inventoryHeader.click());
+    expect(inventoryHeader.getAttribute('aria-expanded')).toBe('false');
+    expect(host.querySelectorAll('[role="option"]')).toHaveLength(3);
+    const collapsedHeight = Number.parseFloat(virtualSpace.style.height);
+    expect(collapsedHeight).toBeLessThan(expandedHeight);
+
+    act(() => inventoryHeader.click());
+    expect(inventoryHeader.getAttribute('aria-expanded')).toBe('true');
+    expect(host.querySelectorAll('[role="option"]')).toHaveLength(items.length);
+    expect(Number.parseFloat(virtualSpace.style.height)).toBe(expandedHeight);
     host.remove();
   });
 
@@ -197,6 +228,90 @@ describe('ResultsPane table grouping', () => {
     expect(inventoryRows[1]?.querySelectorAll('[role="option"]')).toHaveLength(1);
     expect(activityRows[0]?.querySelectorAll('[role="option"]')).toHaveLength(2);
     expect(activityRows[1]?.querySelectorAll('[role="option"]')).toHaveLength(1);
+
+    const activityHeader = host.querySelector<HTMLElement>(
+      '[data-group-key="DestinyActivityDefinition"]',
+    );
+    const inventoryHeader = host.querySelector<HTMLButtonElement>(
+      '[data-group-header=""][data-group-key="DestinyInventoryItemDefinition"]',
+    );
+    if (!activityHeader || !inventoryHeader) throw new Error('Grid group headers did not render');
+    const activityTopBefore = Number.parseFloat(activityHeader.style.top);
+    act(() => inventoryHeader.click());
+    expect(inventoryHeader.getAttribute('aria-expanded')).toBe('false');
+    expect(
+      host.querySelectorAll('[data-group-row="DestinyInventoryItemDefinition"]'),
+    ).toHaveLength(0);
+    expect(
+      host.querySelectorAll('[data-group-row="DestinyActivityDefinition"]'),
+    ).toHaveLength(2);
+    const activityHeaderAfter = host.querySelector<HTMLElement>(
+      '[data-group-key="DestinyActivityDefinition"]',
+    );
+    expect(Number.parseFloat(activityHeaderAfter?.style.top ?? '')).toBeLessThan(
+      activityTopBefore,
+    );
+    host.remove();
+  });
+
+  it('collapses from the sticky section header and snaps to that section top', () => {
+    useSettingsStore.setState({ groupBy: 'table', viewMode: 'list' });
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createPaneRoot(host);
+    renderPane(root);
+    const scroller = getScroller(host);
+    setViewport(scroller, 600, 100);
+    dispatchScroll(scroller, 220);
+
+    const stickyHeader = host.querySelector<HTMLButtonElement>(
+      '[data-sticky-group-indicator]',
+    );
+    const activityHeader = host.querySelector<HTMLButtonElement>(
+      '[data-group-header=""][data-group-key="DestinyActivityDefinition"]',
+    );
+    if (!stickyHeader || !activityHeader) throw new Error('Sticky group header did not render');
+    const activityTop = Number.parseFloat(activityHeader.style.top);
+    expect(stickyHeader.disabled).toBe(false);
+    expect(stickyHeader.getAttribute('aria-expanded')).toBe('true');
+
+    act(() => stickyHeader.click());
+    expect(activityHeader.getAttribute('aria-expanded')).toBe('false');
+    expect(scroller.scrollTop).toBe(activityTop);
+    expect(host.querySelectorAll('[role="option"]')).toHaveLength(3);
+    host.remove();
+  });
+
+  it('resets collapsed sections for a new query but preserves them while loading more', () => {
+    const store = useExplorerStore.getState();
+    store.toggleResultGroup(groups[0]!.key);
+    expect(useExplorerStore.getState().collapsedResultGroups[groups[0]!.key]).toBe(true);
+
+    useExplorerStore.getState().setSearchResults(items, items.length + 10, 0, true, 0, 0, groups);
+    expect(useExplorerStore.getState().collapsedResultGroups[groups[0]!.key]).toBe(true);
+
+    useExplorerStore.getState().setSearching(true);
+    expect(useExplorerStore.getState().collapsedResultGroups).toEqual({});
+    useExplorerStore.getState().toggleResultGroup(groups[0]!.key);
+    useExplorerStore.getState().setQuery('armor');
+    expect(useExplorerStore.getState().collapsedResultGroups).toEqual({});
+  });
+
+  it('scrolls a keyboard-selected item in a collapsed section to its header', () => {
+    useSettingsStore.setState({ groupBy: 'table', viewMode: 'list' });
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createPaneRoot(host);
+    renderPane(root);
+    const scroller = getScroller(host);
+    setViewport(scroller, 600, 100);
+
+    act(() => useExplorerStore.getState().setSelectedResultIndex(4));
+    expect(scroller.scrollTop).toBe(204);
+
+    act(() => useExplorerStore.getState().toggleResultGroup(groups[1]!.key));
+    act(() => useExplorerStore.getState().setSelectedResultIndex(3));
+    expect(scroller.scrollTop).toBe(176);
     host.remove();
   });
 

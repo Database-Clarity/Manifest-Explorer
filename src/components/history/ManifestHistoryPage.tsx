@@ -12,6 +12,7 @@ import {
 import * as manifestClient from '../../manifest/client';
 import {
   fetchHistoryVersionsIndex,
+  getHistoryRevision,
   fetchItemHistory,
   fetchManifestRelease,
   reconstructRemovedSnapshot,
@@ -170,6 +171,7 @@ function entryFromReleaseTuple(
   table: string,
   kind: ChangeKind,
   tuple: ReleaseItemTuple,
+  date = release.date,
 ): ChangedEntry {
   let entriesByTuple = releaseEntryCache.get(release);
   if (!entriesByTuple) {
@@ -181,7 +183,7 @@ function entryFromReleaseTuple(
     entriesByKind = new Map();
     entriesByTuple.set(tuple, entriesByKind);
   }
-  const cacheKey = `${table}:${kind}`;
+  const cacheKey = `${table}:${kind}:${date}`;
   const cached = entriesByKind.get(cacheKey);
   if (cached) {
     return cached;
@@ -199,7 +201,7 @@ function entryFromReleaseTuple(
     ...(tuple[5] === undefined ? {} : { changedFields: tuple[5] }),
     kind,
     versionIndex: release.v,
-    date: release.date,
+    date,
     ...(release.version === undefined ? {} : { version: release.version }),
   };
   entriesByKind.set(cacheKey, entry);
@@ -379,13 +381,17 @@ const EntryCard = memo(function EntryCard({
 
 const ReleaseOverview = memo(function ReleaseOverview({
   release,
+  activeVersion,
   onOpenEntry,
   isActive,
 }: {
   release: ManifestReleaseSummary;
+  activeVersion: HistoryVersionMeta | null;
   onOpenEntry: (entry: ChangedEntry, focus?: boolean) => void;
   isActive: boolean;
 }): ReactNode {
+  const releaseDate =
+    activeVersion?.i === release.v ? activeVersion.date : release.date;
   const overviewScrollRef = useRef<HTMLDivElement | null>(null);
   const overviewScrollTopRef = useRef(0);
   const [kindFilter, setKindFilter] = useState<ChangeKind | 'all'>('all');
@@ -556,7 +562,7 @@ const ReleaseOverview = memo(function ReleaseOverview({
       <header className={styles.releaseHeader}>
         <div>
           <span className={styles.eyebrow}>Manifest release</span>
-          <h2>{formatDate(release.date)}</h2>
+          <h2>{formatDate(releaseDate)}</h2>
           <p>{release.version ? `Bungie version ${release.version}` : `Version index ${release.v}`}</p>
         </div>
         <div className={styles.totalCounts} aria-label="Release change totals">
@@ -622,7 +628,7 @@ const ReleaseOverview = memo(function ReleaseOverview({
               for (const kind of RELEASE_KINDS) {
                 for (const tuple of group.tuplesByKind[kind]) {
                   if (shown.length >= showLimit) break;
-                  shown.push(entryFromReleaseTuple(release, table, kind, tuple));
+                  shown.push(entryFromReleaseTuple(release, table, kind, tuple, releaseDate));
                 }
                 if (shown.length >= showLimit) break;
               }
@@ -1011,6 +1017,7 @@ export const ManifestHistoryPage = memo(function ManifestHistoryPage({
     versions.find((version) => version.i === versionIndex)?.i ?? versions[0]?.i ?? null;
   const activeVersion = versions.find((version) => version.i === activeVersionIndex) ?? null;
   const latestIndex = versions.reduce((maximum, version) => Math.max(maximum, version.i), 0);
+  const historyRevision = getHistoryRevision(index);
 
   useEffect(() => {
     let active = true;
@@ -1043,7 +1050,7 @@ export const ManifestHistoryPage = memo(function ManifestHistoryPage({
     setRelease(null);
     setReleaseError(null);
     setReleaseLoading(true);
-    void fetchManifestRelease(activeVersionIndex, latestIndex)
+    void fetchManifestRelease(activeVersionIndex, latestIndex, historyRevision)
       .then((nextRelease) => {
         if (active) setRelease(nextRelease);
       })
@@ -1058,7 +1065,7 @@ export const ManifestHistoryPage = memo(function ManifestHistoryPage({
     return () => {
       active = false;
     };
-  }, [activeVersionIndex, latestIndex]);
+  }, [activeVersionIndex, historyRevision, latestIndex]);
 
   const openEntry = useCallback((entry: ChangedEntry, focus = true) => {
     setTabState((current) => {
@@ -1158,6 +1165,7 @@ export const ManifestHistoryPage = memo(function ManifestHistoryPage({
             ) : release ? (
               <ReleaseOverview
                 release={release}
+                activeVersion={activeVersion}
                 onOpenEntry={openEntry}
                 isActive={tabState.activeKey === null}
               />

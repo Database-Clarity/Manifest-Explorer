@@ -675,6 +675,7 @@ export async function generateReleases({ sourceDir, log = console.log, verify = 
       legacyMismatches.push(version.i);
     }
   }
+  index.generatedAt = new Date().toISOString();
   writeFileSync(indexFile, JSON.stringify(index, null, 2));
 
   log(

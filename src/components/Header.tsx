@@ -236,7 +236,7 @@ export const Header = memo(function Header({
       : -1;
 
   const filtersAnchorRef = filtersDesktopRef;
-  const filtersAlign = menu?.name === 'filters' && menu.source === 'mobile' ? 'end' : 'start';
+  const filtersAlign = 'end';
   const collectorAnchorRef =
     menu?.name === 'collector' && menu.source === 'settings' ? settingsRef : collectorDesktopRef;
 
@@ -471,8 +471,10 @@ export const Header = memo(function Header({
           </nav>
 
           <div className={styles.searchCluster}>
-            <div className={styles.searchField}>
-              <SearchIcon size={14} className={styles.searchIcon} />
+            <div className={cx(styles.searchField, searchFocused && styles.searchFieldFocused)}>
+              <span className={styles.searchIconWrap} aria-hidden="true">
+                <SearchIcon size={14} className={styles.searchIcon} />
+              </span>
               <textarea
                 ref={searchInputRef as RefObject<HTMLTextAreaElement | null>}
                 rows={1}
@@ -509,21 +511,49 @@ export const Header = memo(function Header({
                 enterKeyHint="search"
                 wrap="soft"
               />
-              {query.length > 0 ? (
+              <div className={styles.searchActions}>
+                {query.length > 0 ? (
+                  <button
+                    type="button"
+                    className={styles.clearSearch}
+                    onClick={handleClearSearch}
+                    aria-label="Clear search"
+                    title="Clear search"
+                  >
+                    <CloseIcon size={12} />
+                  </button>
+                ) : (
+                  <kbd
+                    className={styles.kbd}
+                    aria-hidden="true"
+                    title="Shortcut: press / when not typing to jump here"
+                  >
+                    /
+                  </kbd>
+                )}
                 <button
+                  ref={filtersDesktopRef}
                   type="button"
-                  className={styles.clearSearch}
-                  onClick={handleClearSearch}
-                  aria-label="Clear search"
-                  title="Clear search"
+                  className={cx(
+                    styles.filtersBtn,
+                    activeFilterCount > 0 && styles.filtersBtnOn,
+                  )}
+                  onClick={() => toggleMenu('filters', isMobileViewport ? 'mobile' : 'desktop')}
+                  aria-label={
+                    activeFilterCount > 0 ? `Filters, ${activeFilterCount} active` : 'Filters'
+                  }
+                  aria-expanded={filtersOpen}
+                  aria-haspopup="dialog"
+                  title="Filters — table scope and search tokens like is:enhanced"
                 >
-                  <CloseIcon size={12} />
+                  <FilterIcon size={15} />
+                  {activeFilterCount > 0 && (
+                    <span className={styles.filterCount} aria-hidden="true">
+                      {formatBadge(activeFilterCount)}
+                    </span>
+                  )}
                 </button>
-              ) : (
-                <kbd className={styles.kbd} aria-hidden="true" title="Shortcut: press / when not typing to jump here">
-                  /
-                </kbd>
-              )}
+              </div>
               <SearchAutocomplete
                 id={suggestionListId}
                 suggestions={suggestions}
@@ -532,31 +562,6 @@ export const Header = memo(function Header({
                 onAccept={acceptSuggestion}
               />
             </div>
-
-            <button
-              ref={filtersDesktopRef}
-              type="button"
-              className={cx(
-                styles.iconBtn,
-                styles.filtersBtn,
-                activeFilterCount > 0 && styles.iconBtnOn,
-              )}
-              onClick={() => toggleMenu('filters', isMobileViewport ? 'mobile' : 'desktop')}
-              aria-label={
-                activeFilterCount > 0 ? `Filters, ${activeFilterCount} active` : 'Filters'
-              }
-              aria-expanded={filtersOpen}
-              aria-haspopup="dialog"
-              title="Filters — table scope and search tokens like is:enhanced"
-            >
-              <FilterIcon size={15} />
-              {activeFilterCount > 0 && (
-                <span className={styles.badge} aria-hidden="true">
-                  {formatBadge(activeFilterCount)}
-                </span>
-              )}
-            </button>
-
           </div>
 
           <select

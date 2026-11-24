@@ -62,12 +62,14 @@ const LITE_ITEM_TABLE = 'DestinyInventoryItemLiteDefinition';
 const FULL_ITEM_TABLE = 'DestinyInventoryItemDefinition';
 
 const HISTORY_CACHE_CONTROL = 'public, max-age=300, stale-while-revalidate=3600';
+const VERSIONS_CACHE_CONTROL = 'public, max-age=60, must-revalidate';
 const IMMUTABLE_CACHE_CONTROL = 'public, max-age=86400, immutable';
 
 const TABLE_RE = /^[A-Za-z0-9_]{1,96}$/;
 const BUCKET_RE = /^[0-9a-f]{2,3}$/;
 const RELEASE_RE = /^\d{1,6}$/;
 const CACHE_BUSTER_RE = /^\d{1,12}$/;
+const REVISION_RE = /^[0-9A-Za-z._-]{1,40}$/;
 
 const CORS_HEADERS: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
@@ -327,6 +329,12 @@ function headOnlyResponse(response: Response): Response {
   return new Response(null, { status: response.status, headers: response.headers });
 }
 
+function withCacheControl(response: Response, cacheControl: string): Response {
+  const headers = new Headers(response.headers);
+  headers.set('Cache-Control', cacheControl);
+  return new Response(response.body, { status: response.status, headers });
+}
+
 function fallbackEtag(text: string): string {
   let hash = 0x811c9dc5;
   for (let index = 0; index < text.length; index += 1) {
@@ -352,9 +360,10 @@ async function serveVersions(
     // serving a cache hit that cannot participate in conditional requests.
     if (cachedEtag) {
       if (ifNoneMatchMatches(ifNoneMatch, cachedEtag)) {
-        return notModifiedResponse(cached.headers.get('Cache-Control'), cachedEtag);
+        return notModifiedResponse(VERSIONS_CACHE_CONTROL, cachedEtag);
       }
-      return isHead ? headOnlyResponse(cached) : cached;
+      const refreshed = withCacheControl(cached, VERSIONS_CACHE_CONTROL);
+      return isHead ? headOnlyResponse(refreshed) : refreshed;
     }
   }
 
@@ -371,7 +380,7 @@ async function serveVersions(
       headers: {
         ...CORS_HEADERS,
         'Content-Type': 'application/json; charset=utf-8',
-        'Cache-Control': HISTORY_CACHE_CONTROL,
+        'Cache-Control': VERSIONS_CACHE_CONTROL,
         ETag: etag,
       },
     });
@@ -381,7 +390,7 @@ async function serveVersions(
     storeInEdgeCache(cacheKey, response, ctx);
 
     if (ifNoneMatchMatches(ifNoneMatch, etag)) {
-      return notModifiedResponse(HISTORY_CACHE_CONTROL, etag);
+      return notModifiedResponse(VERSIONS_CACHE_CONTROL, etag);
     }
     return isHead ? headOnlyResponse(response) : response;
   } catch (error) {
@@ -414,17 +423,23 @@ async function serveBucket(
   // The UI requests the Lite item table; history is stored for the full table.
   const canonicalTable = table === LITE_ITEM_TABLE ? FULL_ITEM_TABLE : table;
 
-  // `?v=<version>` makes the bucket URL content-addressed. The decoded-cache
-  // format suffix also separates this lossless payload from older cached
-  // responses populated before the bucket refresh.
+  // A valid `v` plus `rev` makes the bucket URL content-addressed. The
+  // decoded-cache format suffix separates this payload from older cache data.
   const requestedVersion = url.searchParams.get('v');
   const version =
     requestedVersion && CACHE_BUSTER_RE.test(requestedVersion) ? requestedVersion : null;
-  const cacheControl = version ? IMMUTABLE_CACHE_CONTROL : HISTORY_CACHE_CONTROL;
-  const cacheSearch = version ? `?v=${version}&format=json-v3` : '?format=json-v3';
+  const requestedRevision = url.searchParams.get('rev');
+  const revision =
+    requestedRevision && REVISION_RE.test(requestedRevision) ? requestedRevision : null;
+  const cacheControl =
+    version && revision ? IMMUTABLE_CACHE_CONTROL : HISTORY_CACHE_CONTROL;
+  const cacheSearch = `?${version ? `v=${version}&` : ''}format=json-v3${
+    revision ? `&rev=${revision}` : ''
+  }`;
   const isHead = request.method === 'HEAD';
   const ifNoneMatch = request.headers.get('If-None-Match');
-  const deterministicEtag = `"${canonicalTable}:${bucket}:${version ?? 'latest'}"`;
+  const deterministicEtag =
+    `"${canonicalTable}:${bucket}:${version ?? 'latest'}:${revision ?? 'latest'}"`;
 
   const cacheKey = buildCacheKey(
     url,
@@ -438,9 +453,10 @@ async function serveBucket(
     // decoded R2 representation can be refreshed with an ETag.
     if (cachedEtag) {
       if (ifNoneMatchMatches(ifNoneMatch, cachedEtag)) {
-        return notModifiedResponse(cached.headers.get('Cache-Control'), cachedEtag);
+        return notModifiedResponse(cacheControl, cachedEtag);
       }
-      return isHead ? headOnlyResponse(cached) : cached;
+      const refreshed = withCacheControl(cached, cacheControl);
+      return isHead ? headOnlyResponse(refreshed) : refreshed;
     }
   }
 
@@ -525,16 +541,23 @@ async function serveRelease(
     return jsonError(400, 'Invalid history release path');
   }
 
-  // `?v=<version>` makes the release URL content-addressed. The decoded-cache
-  // format suffix also separates refreshed release data from older responses.
+  // A valid `v` plus `rev` makes the release URL content-addressed. The
+  // decoded-cache format suffix separates refreshed data from older responses.
   const requestedVersion = url.searchParams.get('v');
   const version =
     requestedVersion && CACHE_BUSTER_RE.test(requestedVersion) ? requestedVersion : null;
-  const cacheControl = version ? IMMUTABLE_CACHE_CONTROL : HISTORY_CACHE_CONTROL;
-  const cacheSearch = version ? `?v=${version}&format=json-v3` : '?format=json-v3';
+  const requestedRevision = url.searchParams.get('rev');
+  const revision =
+    requestedRevision && REVISION_RE.test(requestedRevision) ? requestedRevision : null;
+  const cacheControl =
+    version && revision ? IMMUTABLE_CACHE_CONTROL : HISTORY_CACHE_CONTROL;
+  const cacheSearch = `?${version ? `v=${version}&` : ''}format=json-v3${
+    revision ? `&rev=${revision}` : ''
+  }`;
   const isHead = request.method === 'HEAD';
   const ifNoneMatch = request.headers.get('If-None-Match');
-  const deterministicEtag = `"release:${versionIndex}:${version ?? 'latest'}"`;
+  const deterministicEtag =
+    `"release:${versionIndex}:${version ?? 'latest'}:${revision ?? 'latest'}"`;
 
   const cacheKey = buildCacheKey(
     url,
@@ -548,9 +571,10 @@ async function serveRelease(
     // replace them with a validated response.
     if (cachedEtag) {
       if (ifNoneMatchMatches(ifNoneMatch, cachedEtag)) {
-        return notModifiedResponse(cached.headers.get('Cache-Control'), cachedEtag);
+        return notModifiedResponse(cacheControl, cachedEtag);
       }
-      return isHead ? headOnlyResponse(cached) : cached;
+      const refreshed = withCacheControl(cached, cacheControl);
+      return isHead ? headOnlyResponse(refreshed) : refreshed;
     }
   }
 

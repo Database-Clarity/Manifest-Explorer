@@ -144,7 +144,7 @@
   }
 }
 
-/** The search cluster pairs the search field with the Filters action. */
+/** The search field owns its Filters action so it reads as one control. */
 .searchCluster {
   display: flex;
   align-items: center;
@@ -158,43 +158,69 @@
 }
 
 .searchField {
+  @include ctl.field;
+  --search-row-height: calc(1.75rem - 2px);
   position: relative;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
+  box-sizing: border-box;
   flex: 1 1 auto;
   min-width: 0;
   max-width: 46rem;
+  padding: 0;
 }
 
-.searchIcon {
-  position: absolute;
-  top: 50%;
-  left: 0.4375rem;
-  transform: translateY(-50%);
-  color: var(--text3);
+.searchFieldFocused {
+  @include ctl.focus-ring;
+  border-color: var(--accent-ink);
+}
+
+.searchIconWrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 1.625rem;
+  height: var(--search-row-height);
   pointer-events: none;
 }
 
+.searchIcon {
+  flex: 0 0 auto;
+  color: var(--text3);
+}
+
 .searchInput {
-  @include ctl.field;
   display: block;
   box-sizing: border-box;
-  width: 100%;
-  height: 1.75rem;
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  height: var(--search-row-height);
   max-height: 7.5rem;
-  min-height: 1.75rem;
+  min-height: var(--search-row-height);
+  margin: 0;
   padding-top: 0.25rem;
   padding-bottom: 0.25rem;
-  padding-left: 1.625rem;
-  padding-right: 2.5rem;
+  padding-left: 0;
+  padding-right: 0;
   overflow-x: hidden;
   overflow-y: hidden;
   resize: none;
+  border: 0;
+  border-radius: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
   line-height: 1.25;
   white-space: nowrap;
   text-overflow: ellipsis;
   overflow-wrap: normal;
   transition: height 120ms ease;
+
+  &::placeholder {
+    color: var(--text3);
+  }
 
   &:focus {
     height: auto;
@@ -204,33 +230,31 @@
     text-overflow: clip;
   }
 
-  @include theme.mobile {
-    height: var(--tap);
-    min-height: var(--tap);
+  @include theme.mobile-or-coarse {
+    height: var(--search-row-height);
+    min-height: var(--search-row-height);
     padding-top: 0.625rem;
     padding-bottom: 0.625rem;
-    padding-left: 1.75rem;
-    padding-right: 2.5rem;
+    font-size: var(--ctl-text);
+    @include ctl.ios-field-text;
   }
 }
 
-.searchField:focus-within .searchIcon {
-  top: 0.625rem;
-  transform: none;
-}
-
-.searchField:focus-within .clearSearch {
-  top: 0.125rem;
-  transform: none;
+.searchActions {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  height: var(--search-row-height);
 }
 
 .kbd {
-  position: absolute;
-  right: 0.4375rem;
-  top: 50%;
-  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
   min-width: 1.125rem;
   height: 1.125rem;
+  margin: 0 0.3125rem;
   padding: 0 0.25rem;
   border: 1px solid var(--line);
   border-radius: 0.1875rem;
@@ -246,21 +270,17 @@
   .searchField:focus-within & {
     display: none;
   }
-
-  @include theme.mobile {
-    display: none;
-  }
 }
 
 .clearSearch {
   @include ctl.contain-focus-rings;
-  position: absolute;
-  right: 0.25rem;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex: 0 0 auto;
   width: 1.25rem;
   height: 1.25rem;
+  margin: 0 0.25rem;
   padding: 0;
   color: var(--text2);
   background: transparent;
@@ -278,13 +298,77 @@
   &:focus-visible {
     @include ctl.focus-ring;
   }
+}
+
+.filtersBtn {
+  @include ctl.contain-focus-rings;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  flex: 0 0 auto;
+  height: var(--search-row-height);
+  min-width: 2.5rem;
+  padding: 0 0.4375rem;
+  color: var(--text2);
+  background: transparent;
+  border: 0;
+  border-left: 1px solid var(--line);
+  border-radius: 0 0.1875rem 0.1875rem 0;
+  font: inherit;
+  font-size: 0.75rem;
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+
+  @media (hover: hover) {
+    &:hover:not(:disabled) {
+      color: var(--text);
+      background: var(--hover);
+    }
+  }
+
+  &:focus-visible {
+    @include ctl.focus-ring;
+  }
 
   @include theme.mobile-or-coarse {
-    right: 0.125rem;
-    top: 0;
-    width: var(--tap);
-    height: var(--tap);
-    transform: none;
+    height: var(--search-row-height);
+    min-width: var(--tap);
+  }
+}
+
+.filtersBtnOn,
+.filtersBtnOn:hover:not(:disabled) {
+  color: var(--accent-ink);
+  background: var(--pri-hover);
+}
+
+.filterCount {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0.875rem;
+  height: 0.875rem;
+  padding: 0 0.1875rem;
+  border-radius: 0.5rem;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 0.625rem;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+@include theme.mobile-or-coarse {
+  .kbd {
+    display: none;
+  }
+
+  .clearSearch {
+    width: var(--search-row-height);
+    height: var(--search-row-height);
+    margin: 0;
   }
 }
 
@@ -347,6 +431,12 @@
   }
 }
 
+@include theme.mobile-or-coarse {
+  .searchField {
+    --search-row-height: calc(var(--tap) - 2px);
+  }
+}
+
 @include theme.mobile {
   .brandHistory .brandText {
     display: inline;
@@ -358,6 +448,15 @@
 
   .barHistoryMobile .historyBack {
     display: inline-flex;
+  }
+
+  /*
+   * History hides the search cluster and the locale select — the only element
+   * carrying `margin-left: auto` — so the Settings gear needs its own push to
+   * stay pinned to the right edge instead of hugging the Back link.
+   */
+  .barHistoryMobile .settingsBtn {
+    margin-left: auto;
   }
 
   .barSearchFocused {

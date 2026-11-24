@@ -95,6 +95,21 @@ export function canonicalHistoryTable(table: string): string {
 }
 
 /**
+ * Return a compact, URL-safe revision for the current history index.
+ * Valid timestamps become epoch milliseconds; other generatedAt values are
+ * sanitized so malformed legacy values can still safely distinguish a build.
+ */
+export function getHistoryRevision(
+  index: Pick<HistoryManifestIndex, 'generatedAt'> | null | undefined,
+): string | undefined {
+  if (!index || typeof index.generatedAt !== 'string') return undefined;
+  const timestamp = Date.parse(index.generatedAt);
+  if (Number.isFinite(timestamp)) return String(timestamp);
+  const revision = index.generatedAt.replace(/[^0-9A-Za-z._-]/g, '').slice(0, 32);
+  return revision || undefined;
+}
+
+/**
  * Calculate the relative bucket name used by the history API.
  * Returns null when the table has no configured buckets.
  */
@@ -200,20 +215,29 @@ export function fetchHistoryVersionsIndex(): Promise<HistoryManifestIndex> {
 }
 
 /**
- * Fetch one precomputed release summary. `latestVersionIndex` is included in
- * the URL so edge caches invalidate as soon as a newer manifest is archived.
+ * Fetch one precomputed release summary. Both the newest version index and
+ * generated history revision distinguish in-place and new-manifest rebuilds.
  */
 export async function fetchManifestRelease(
   versionIndex: number,
   latestVersionIndex?: number,
+  revision?: string,
 ): Promise<ManifestReleaseSummary> {
+  let index: HistoryManifestIndex | undefined;
+  if (latestVersionIndex === undefined || (revision === undefined && indexRequest)) {
+    index = await getHistoryIndex();
+  }
   const latest =
     latestVersionIndex ??
-    (await getHistoryIndex()).versions.reduce(
+    index!.versions.reduce(
       (maximum, version) => Math.max(maximum, version.i),
       0,
     );
-  const key = `${versionIndex}?v=${latest}`;
+  const historyRevision = revision ?? getHistoryRevision(index);
+  const revisionQuery = historyRevision
+    ? `&rev=${encodeURIComponent(historyRevision)}`
+    : '';
+  const key = `${versionIndex}?v=${latest}${revisionQuery}`;
   const cached = releaseRequests.get(key);
   if (cached) {
     releaseRequests.delete(key);
@@ -222,7 +246,7 @@ export async function fetchManifestRelease(
   }
 
   const request = fetchJson(
-    `/api/history/release/${encodeURIComponent(String(versionIndex))}?v=${latest}`,
+    `/api/history/release/${encodeURIComponent(String(versionIndex))}?v=${latest}${revisionQuery}`,
     isManifestRelease,
   ).catch((error: unknown) => {
     if (releaseRequests.get(key) === request) releaseRequests.delete(key);
@@ -236,15 +260,29 @@ export async function fetchManifestRelease(
   return request;
 }
 
-function getHistoryBucket(
+export async function fetchHistoryBucket(
   table: string,
   bucketHex: string,
-  latestVersionIndex: number,
+  latestVersionIndex?: number,
+  revision?: string,
 ): Promise<HistoryBucket> {
-  // Bucket objects are immutable for a given version. Keying the URL by the
-  // newest version lets Cloudflare's edge cache keep them for a full day while
-  // still invalidating every bucket as soon as a new manifest is recorded.
-  const key = `${table}/${bucketHex}?v=${latestVersionIndex}&format=json`;
+  let index: HistoryManifestIndex | undefined;
+  if (latestVersionIndex === undefined || (revision === undefined && indexRequest)) {
+    index = await getHistoryIndex();
+  }
+  const latest =
+    latestVersionIndex ??
+    index!.versions.reduce(
+      (maximum, version) => Math.max(maximum, version.i),
+      0,
+    );
+  const historyRevision = revision ?? getHistoryRevision(index);
+  // Keep the browser request distinct across in-place R2 rebuilds. The Worker
+  // uses the same revision to isolate its decoded edge-cache entry.
+  const revisionQuery = historyRevision
+    ? `&rev=${encodeURIComponent(historyRevision)}`
+    : '';
+  const key = `${table}/${bucketHex}?v=${latest}&format=json${revisionQuery}`;
   const cached = bucketRequests.get(key);
   if (cached) {
     bucketRequests.delete(key);
@@ -253,7 +291,7 @@ function getHistoryBucket(
   }
 
   const request = fetchJson(
-    `/api/history/bucket/${encodeURIComponent(table)}/${encodeURIComponent(bucketHex)}?v=${latestVersionIndex}&format=json`,
+    `/api/history/bucket/${encodeURIComponent(table)}/${encodeURIComponent(bucketHex)}?v=${latest}&format=json${revisionQuery}`,
     isHistoryBucket,
   ).catch((error: unknown) => {
     if (bucketRequests.get(key) === request) {
@@ -283,11 +321,17 @@ export async function fetchItemHistory(table: string, hash: number): Promise<Ite
     const bucketHex = getHistoryBucketHex(hash, bucketCount);
     const versions = [...index.versions].sort((a, b) => a.i - b.i);
     const latestVersionIndex = index.versions[index.versions.length - 1]?.i ?? 0;
+    const revision = getHistoryRevision(index);
     if (!bucketHex) {
       return { available: true, versions, revisions: [] };
     }
 
-    const bucket = await getHistoryBucket(canonicalTable, bucketHex, latestVersionIndex);
+    const bucket = await fetchHistoryBucket(
+      canonicalTable,
+      bucketHex,
+      latestVersionIndex,
+      revision,
+    );
     const unsignedHash = toUnsignedHash(hash);
     const itemRevisions =
       bucket[String(unsignedHash)] ??

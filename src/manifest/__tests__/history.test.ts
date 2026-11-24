@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   clearHistoryCache,
+  fetchHistoryBucket,
   fetchHistoryVersionsIndex,
   fetchItemHistory,
   fetchManifestRelease,
+  getHistoryRevision,
   getHistoryBucketHex,
   reconstructRemovedSnapshot,
   reconstructRevisionPair,
@@ -52,6 +54,20 @@ describe('history bucket calculation', () => {
     expect(getHistoryBucketHex(0x80000000, 64)).toBe('00');
     expect(getHistoryBucketHex(-1, 512)).toBe('1ff');
     expect(getHistoryBucketHex(0xffffffff, 512)).toBe('1ff');
+  });
+});
+
+describe('history revision', () => {
+  it('uses epoch milliseconds for valid generatedAt timestamps', () => {
+    expect(getHistoryRevision(index)).toBe(String(Date.parse(index.generatedAt)));
+  });
+
+  it('sanitizes non-date values and returns undefined when nothing remains', () => {
+    expect(getHistoryRevision({ generatedAt: 'build_revision:alpha' })).toBe(
+      'build_revisionalpha',
+    );
+    expect(getHistoryRevision({ generatedAt: '!? /' })).toBeUndefined();
+    expect(getHistoryRevision(null)).toBeUndefined();
   });
 });
 
@@ -349,7 +365,7 @@ describe('fetchItemHistory', () => {
     expect(second.revisions).toEqual(first.revisions);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(String(fetchMock.mock.calls[1]?.[0])).toBe(
-      '/api/history/bucket/DestinyInventoryItemDefinition/3b?v=4&format=json',
+      `/api/history/bucket/DestinyInventoryItemDefinition/3b?v=4&format=json&rev=${Date.parse(index.generatedAt)}`,
     );
   });
 
@@ -373,7 +389,7 @@ describe('fetchItemHistory', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(String(fetchMock.mock.calls[1]?.[0])).toBe(
-      '/api/history/bucket/DestinyInventoryItemDefinition/3b?v=9&format=json',
+      `/api/history/bucket/DestinyInventoryItemDefinition/3b?v=9&format=json&rev=${Date.parse(index.generatedAt)}`,
     );
   });
 
@@ -427,7 +443,7 @@ describe('history release API', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('fetches a release summary with the latest-version cache key', async () => {
+  it('includes the generated revision in the release URL and request cache key', async () => {
     const release = {
       v: 4,
       date: version.date,
@@ -442,14 +458,36 @@ describe('history release API', () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL) => jsonResponse(release));
     vi.stubGlobal('fetch', fetchMock);
 
-    const first = await fetchManifestRelease(4, 9);
-    const second = await fetchManifestRelease(4, 9);
+    const first = await fetchManifestRelease(4, 9, '1704153600000');
+    const second = await fetchManifestRelease(4, 9, '1704153600000');
+    const rebuilt = await fetchManifestRelease(4, 9, '1704153600001');
 
     expect(first).toEqual(release);
     expect(second).toBe(first);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(rebuilt).toEqual(release);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
-      '/api/history/release/4?v=9',
+      '/api/history/release/4?v=9&rev=1704153600000',
+    );
+    expect(String(fetchMock.mock.calls[1]?.[0])).toBe(
+      '/api/history/release/4?v=9&rev=1704153600001',
+    );
+  });
+
+  it('includes the revision in bucket URLs and isolates cache entries across rebuilds', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL) => jsonResponse({}));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchHistoryBucket('DestinyInventoryItemDefinition', '00', 9, 'rev-a');
+    await fetchHistoryBucket('DestinyInventoryItemDefinition', '00', 9, 'rev-a');
+    await fetchHistoryBucket('DestinyInventoryItemDefinition', '00', 9, 'rev-b');
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      '/api/history/bucket/DestinyInventoryItemDefinition/00?v=9&format=json&rev=rev-a',
+    );
+    expect(String(fetchMock.mock.calls[1]?.[0])).toBe(
+      '/api/history/bucket/DestinyInventoryItemDefinition/00?v=9&format=json&rev=rev-b',
     );
   });
 });

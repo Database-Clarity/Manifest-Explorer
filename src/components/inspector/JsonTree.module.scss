@@ -41,6 +41,23 @@
   @include ctl.segmented-track;
 }
 
+.diffModes {
+  @include ctl.segmented-track;
+  flex: 0 0 auto;
+}
+
+.diffModeButton {
+  @include ctl.segmented-item;
+  min-height: 1.625rem;
+  padding: 0 0.5rem;
+  font-size: 0.75rem;
+
+  &[aria-pressed='true'],
+  &[aria-pressed='true']:hover:not(:disabled) {
+    @include ctl.segmented-active;
+  }
+}
+
 .searchModeBtn {
   @include ctl.segmented-item;
   min-height: 1.625rem;
@@ -235,6 +252,68 @@
   background: color-mix(in srgb, var(--accent) 13%, transparent);
   outline: 1px solid color-mix(in srgb, var(--accent) 48%, transparent);
   outline-offset: -1px;
+}
+
+.diffAddedRow {
+  background: var(--ins-bg);
+}
+
+.diffRemovedRow {
+  background: var(--del-bg);
+  color: var(--del-text);
+}
+
+.diffChangedRow {
+  background: color-mix(in srgb, var(--sel) 56%, var(--editor));
+}
+
+.diffStatus {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.125rem;
+  height: 1.125rem;
+  padding: 0 0.1875rem;
+  border: 1px solid currentColor;
+  border-radius: 0.1875rem;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.diffStatusAdded {
+  color: var(--ins);
+}
+
+.diffStatusRemoved {
+  color: var(--del-text);
+}
+
+.diffStatusChanged {
+  color: var(--text2);
+}
+
+.diffOldValue {
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  color: var(--del-text);
+}
+
+.diffOldValue del {
+  color: var(--del-text);
+}
+
+.diffNewValue {
+  text-decoration-color: var(--ins);
+  text-decoration-thickness: 0.1em;
+}
+
+.diffArrow {
+  color: var(--text3);
+  padding-inline: 0.125rem;
 }
 
 .valString {
@@ -447,6 +526,10 @@
   flex-shrink: 0;
 }
 
+.rowActionBar {
+  display: none;
+}
+
 .row:focus-within .rowActions {
   opacity: 1;
   pointer-events: auto;
@@ -598,43 +681,51 @@
     padding: 0 0.5rem;
   }
 
-  // Per-row Path/Copy actions must be reachable without hover on touch.
+  // Mobile uses one selected row's action bar instead of repeating controls
+  // across every line and stealing the available reading width.
   .rowActions {
-    opacity: 0.65;
-    pointer-events: auto;
-    background: transparent;
-    border-color: transparent;
-    color: var(--text3);
+    display: none;
+  }
 
-    &:focus-within,
-    &:has(.microAction:active) {
-      opacity: 1;
-    }
+  .rowMobileSelected {
+    outline: 1px solid var(--ctl-hover-edge);
+    outline-offset: -1px;
+  }
+
+  .rowActionBar {
+    display: flex;
+    align-items: center;
+    flex-wrap: nowrap;
+    gap: 0.25rem;
+    align-self: flex-start;
+    margin: 0.125rem 0 0.25rem 0.875rem;
+    max-width: calc(100% - 0.875rem);
+    padding: 0.25rem;
+    border: 1px solid var(--line);
+    border-radius: 0.3125rem;
+    background: var(--raised);
+    box-shadow: 0 1px 3px color-mix(in srgb, var(--text) 12%, transparent);
+  }
+
+  .rowActionButton,
+  .rowActionDismiss {
+    @include ctl.button;
+    min-height: var(--tap);
+    padding: 0 0.5rem;
+    font-size: 0.75rem;
+  }
+
+  .rowActionDismiss {
+    color: var(--text2);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: var(--tap);
+    padding: 0;
   }
 
   .microAction {
-    position: relative;
-    min-width: 1.75rem;
-    min-height: 1.75rem;
-    padding: 0.375rem 0.5rem;
-    background: transparent;
-    border-color: transparent;
-    color: var(--text3);
-    font-size: 0.75rem;
-    opacity: 1;
-
-    &:active,
-    &:focus-visible {
-      color: var(--text);
-      opacity: 1;
-    }
-
-    &::before {
-      content: '';
-      position: absolute;
-      inset-block: -0.25rem;
-      inset-inline: 0;
-    }
+    display: none;
   }
 }
 

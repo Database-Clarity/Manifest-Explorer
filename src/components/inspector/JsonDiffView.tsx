@@ -406,9 +406,16 @@ export const JsonDiffView = memo(function JsonDiffView({
   const [layout, setLayout] = useState<'inline' | 'split'>(() =>
     defaultLayout === 'split' &&
     typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
     window.matchMedia('(min-width: 900px)').matches
       ? 'split'
       : 'inline',
+  );
+  const [isMobile, setIsMobile] = useState(
+    () =>
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(max-width: 700px)').matches,
   );
   const [wrap, setWrap] = useState(true);
   const [expandedLines, setExpandedLines] = useState<ReadonlySet<number>>(() => new Set());
@@ -445,6 +452,7 @@ export const JsonDiffView = memo(function JsonDiffView({
   }, [segments, visibleLineLimit]);
   const remainingVisibleLines = Math.max(0, totalExpandedLines - visibleLineLimit);
   const query = filter.trim();
+  const visibleLayout = isMobile ? 'inline' : layout;
 
   const showMoreLines = (): void => {
     setLineLimitState({
@@ -473,6 +481,15 @@ export const JsonDiffView = memo(function JsonDiffView({
     return () => media.removeEventListener('change', updateLayout);
   }, [defaultLayout]);
 
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const media = window.matchMedia('(max-width: 700px)');
+    const updateMobile = (): void => setIsMobile(media.matches);
+    updateMobile();
+    media.addEventListener('change', updateMobile);
+    return () => media.removeEventListener('change', updateMobile);
+  }, []);
+
   const changedIndexes = useMemo(
     () =>
       diff.lines.flatMap((line, index) => (line.kind === 'context' ? [] : [index])),
@@ -498,10 +515,21 @@ export const JsonDiffView = memo(function JsonDiffView({
     onCopy(text, 'Copied JSON diff');
   };
 
+  const downloadJson = (): void => {
+    const text = JSON.stringify(after ?? null, null, 2);
+    const blob = new Blob([text], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'snapshot.json';
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <section
       className={`${styles.viewer} ${wrap ? '' : styles.unwrapped} ${
-        layout === 'split' ? styles.splitLayout : ''
+        visibleLayout === 'split' ? styles.splitLayout : ''
       }`}
       aria-label="JSON diff"
     >
@@ -517,7 +545,9 @@ export const JsonDiffView = memo(function JsonDiffView({
               <button
                 key={mode}
                 type="button"
-                className={layout === mode ? styles.layoutButtonActive : styles.layoutButton}
+                className={`${styles.layoutButton} ${
+                  layout === mode ? styles.layoutButtonActive : ''
+                }`}
                 aria-pressed={layout === mode}
                 onClick={() => {
                   userSelectedLayoutRef.current = true;
@@ -528,16 +558,21 @@ export const JsonDiffView = memo(function JsonDiffView({
               </button>
             ))}
           </div>
-          <button
-            type="button"
-            aria-pressed={wrap}
-            onClick={() => setWrap((current) => !current)}
+          <label
+            className={`${styles.wrapToggle} ${wrap ? styles.wrapToggleActive : ''}`}
             title={wrap ? 'Turn off soft line wrapping' : 'Turn on soft line wrapping'}
           >
-            Wrap
-          </button>
+            <input
+              type="checkbox"
+              className={styles.wrapCheckbox}
+              checked={wrap}
+              onChange={(event) => setWrap(event.target.checked)}
+            />
+            <span>Wrap</span>
+          </label>
           <button
             type="button"
+            className={styles.toolbarBtn}
             onClick={() => {
               setExpandedLines(new Set());
               setExpandAll((expanded) => !expanded);
@@ -547,13 +582,16 @@ export const JsonDiffView = memo(function JsonDiffView({
             {expandAll ? 'Collapse unchanged' : 'Expand all'}
           </button>
           {onCopy && (
-            <button type="button" onClick={copyDiff}>
+            <button type="button" className={styles.toolbarBtn} onClick={copyDiff}>
               Copy
             </button>
           )}
+          <button type="button" className={styles.toolbarBtn} onClick={downloadJson}>
+            Download .json
+          </button>
         </div>
       </div>
-      {layout === 'inline' ? (
+      {visibleLayout === 'inline' ? (
         <div className={styles.diffViewport} role="region" aria-label="Inline JSON diff">
           <div className={styles.codeRows}>
             {renderSegments.map((segment) => {

@@ -980,6 +980,22 @@ describe('ranking and filtering', () => {
 });
 
 describe('explorer filter and URL state', () => {
+  it('prefers the full inventory table for short names but preserves explicit Lite names', () => {
+    expect(normalizeTableName('InventoryItem')).toBe(ITEM_TABLE);
+    expect(normalizeTableName('inventoryitem')).toBe(ITEM_TABLE);
+    expect(normalizeTableName(LITE_TABLE)).toBe(LITE_TABLE);
+  });
+
+  it('hydrates short inventory-item URLs into the full definition table', () => {
+    useExplorerStore.getState().hydrateFromHashUrl('#/i/InventoryItem:973854028');
+
+    expect(useExplorerStore.getState().history).toHaveLength(1);
+    expect(useExplorerStore.getState().history[0]?.table).toBe(ITEM_TABLE);
+    expect(useExplorerStore.getState().history[0]?.table).not.toBe(LITE_TABLE);
+
+    useExplorerStore.getState().closeInspector();
+  });
+
   it('defaults unnamed handling to automatic and keeps the compatibility flag false', () => {
     expect(createDefaultFilters()).toMatchObject({
       table: 'all',

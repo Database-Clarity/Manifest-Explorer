@@ -45,27 +45,6 @@
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 0.25rem;
-
-  button {
-    @include ctl.contain-focus-rings;
-    min-height: 1.75rem;
-    padding: 0.125rem 0.375rem;
-    border: 1px solid var(--line);
-    border-radius: 0.1875rem;
-    background: var(--col);
-    color: var(--text2);
-    font: inherit;
-    cursor: pointer;
-
-    &:hover {
-      background: var(--hover);
-      color: var(--text);
-    }
-
-    &:focus-visible {
-      @include ctl.focus-ring;
-    }
-  }
 }
 
 .layoutToggle {
@@ -81,8 +60,62 @@
 }
 
 .layoutButtonActive,
-.layoutButtonActive:hover:not(:disabled) {
+.layoutButton[aria-pressed='true'],
+.layoutButtonActive:hover:not(:disabled),
+.layoutButton[aria-pressed='true']:hover:not(:disabled) {
   @include ctl.segmented-active;
+}
+
+.toolbarBtn {
+  @include ctl.button;
+  min-height: 1.75rem;
+  padding: 0.125rem 0.375rem;
+  font-size: 0.75rem;
+}
+
+.wrapToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3125rem;
+  min-height: 1.75rem;
+  padding: 0 0.4375rem;
+  border: 1px solid var(--line);
+  border-radius: 0.25rem;
+  background: var(--seg-track);
+  color: var(--seg-inactive-ink);
+  font-size: 0.75rem;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.wrapToggleActive {
+  color: var(--text);
+  background: var(--seg-active);
+  border-color: var(--seg-active-edge);
+  font-weight: 600;
+}
+
+.wrapCheckbox {
+  width: 0.875rem;
+  height: 0.875rem;
+  margin: 0;
+  accent-color: var(--accent-ink);
+
+  &:focus-visible {
+    @include ctl.focus-ring;
+  }
+}
+
+@media (hover: hover) {
+  .wrapToggle:hover {
+    border-color: var(--ctl-hover-edge);
+    color: var(--text);
+  }
+}
+
+.toolbarBtn {
+  font-family: inherit;
 }
 
 .diffViewport,
@@ -113,8 +146,8 @@
 }
 
 .splitRows {
-  min-width: 56rem;
-  width: max-content;
+  min-width: max(100%, 48rem);
+  width: 100%;
   padding: 0.25rem 0;
   font-family: var(--code-font-family);
   font-size: var(--code-font-size);
@@ -126,7 +159,7 @@
 .splitHeader,
 .splitRow {
   display: grid;
-  grid-template-columns: minmax(28rem, 1fr) minmax(28rem, 1fr);
+  grid-template-columns: minmax(24rem, 1fr) minmax(24rem, 1fr);
 }
 
 .splitHeader {
@@ -286,6 +319,11 @@
     min-width: max-content;
   }
 
+  .splitRows {
+    width: max-content;
+    min-width: max(100%, 48rem);
+  }
+
   .addedLine,
   .removedLine,
   .contextLine {
@@ -430,6 +468,11 @@
     padding: 0.25rem 0.375rem;
   }
 
+  .wrapToggle,
+  .toolbarBtn {
+    min-height: var(--tap);
+  }
+
   .splitCell {
     grid-template-columns: 2.5rem minmax(0, 1fr);
   }
@@ -471,5 +514,11 @@
   .splitLineNumber {
     padding-right: 0.375rem;
     padding-left: 0.375rem;
+  }
+}
+
+@include theme.mobile {
+  .layoutToggle {
+    display: none;
   }
 }

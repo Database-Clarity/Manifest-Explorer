@@ -234,11 +234,21 @@ export function normalizeTableName(name: string): string {
   if (lookup === 'artifactperks') {
     return ARTIFACT_PERKS_TABLE;
   }
-  const knownTable = Object.keys(TABLE_METADATA).find(
+  const tables = Object.keys(TABLE_METADATA);
+  const exactTable = tables.find(
+    (table) => table.toLowerCase().replace(/[^a-z0-9]/g, '') === lookup,
+  );
+  if (exactTable) {
+    return exactTable;
+  }
+
+  const shortNameMatches = tables.filter(
     (table) =>
-      table.toLowerCase().replace(/[^a-z0-9]/g, '') === lookup ||
       getShortTableName(table).toLowerCase().replace(/[^a-z0-9]/g, '') === lookup,
   );
+  const knownTable =
+    shortNameMatches.find((table) => table !== 'DestinyInventoryItemLiteDefinition') ??
+    shortNameMatches[0];
   if (knownTable) {
     return knownTable;
   }

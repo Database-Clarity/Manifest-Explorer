@@ -25,9 +25,9 @@ import { getFriendlyTableName } from '../../manifest/tables';
 import type { DefinitionRef, DefinitionDetailPayload } from '../../types/manifest';
 import { useSettingsStore } from '../../stores/settings';
 import { BungieIcon } from '../BungieIcon';
-import { JsonDiffView, JsonSyntaxView } from '../inspector/JsonDiffView';
+import { JsonDiffView } from '../inspector/JsonDiffView';
 import { JsonTree } from '../inspector/JsonTree';
-import { DownloadIcon, ExternalLinkIcon } from '../../ui/Icons';
+import { ExternalLinkIcon } from '../../ui/Icons';
 import { ClearSearchInput } from '../../ui/ClearSearchInput';
 import { getTierColorVar } from '../../ui/rarity';
 import { activateOnMiddleClick, preventMiddleClickAutoScroll } from '../middleClick';
@@ -40,7 +40,7 @@ export interface ManifestHistoryPageProps {
 }
 
 type ChangeKind = keyof ReleaseTableChanges;
-type EntryMode = 'diff' | 'pretty' | 'json';
+type EntryMode = 'diff' | 'pretty';
 
 interface ChangedEntry {
   key: string;
@@ -223,17 +223,6 @@ function copyText(text: string): void {
   if (typeof navigator !== 'undefined' && navigator.clipboard) {
     void navigator.clipboard.writeText(text).catch(() => {});
   }
-}
-
-function downloadJson(value: unknown, entry: ChangedEntry): void {
-  const content = JSON.stringify(value ?? null, null, 2);
-  const blob = new Blob([content], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = `${entry.name.replace(/[^\w.-]+/g, '-')}-${entry.hash}.json`;
-  link.click();
-  URL.revokeObjectURL(url);
 }
 
 function KindBadge({ kind }: { kind: ChangeKind }): ReactNode {
@@ -666,8 +655,7 @@ const EntryDiffPanel = memo(function EntryDiffPanel({
     };
   }, [definition, entry.hash, entry.table, entry.versionIndex, readSnapshot, revisions]);
 
-  const displaySnapshot = snapshots.after ?? snapshots.before;
-  const treeData = isRecord(displaySnapshot) ? displaySnapshot : {};
+  const treeData = isRecord(snapshots.after) ? snapshots.after : {};
   const resolvedRefs = definition?.resolvedRefs ?? {};
   const displayProperties = definition?.data.displayProperties;
   const displayIcon =
@@ -706,7 +694,7 @@ const EntryDiffPanel = memo(function EntryDiffPanel({
           Open in Explorer
         </button>
         <div className={styles.entryModes} role="group" aria-label="Entry view">
-          {(['diff', 'pretty', 'json'] as const).map((view) => (
+          {(['diff', 'pretty'] as const).map((view) => (
             <button
               type="button"
               key={view}
@@ -714,7 +702,7 @@ const EntryDiffPanel = memo(function EntryDiffPanel({
               className={mode === view ? styles.entryModeActive : styles.entryMode}
               onClick={() => setMode(view)}
             >
-              {view === 'diff' ? 'Diff' : view === 'pretty' ? 'Pretty' : 'JSON'}
+              {view === 'diff' ? 'Diff' : 'Pretty'}
             </button>
           ))}
         </div>
@@ -745,24 +733,10 @@ const EntryDiffPanel = memo(function EntryDiffPanel({
             onCopy={(text) => copyText(text)}
             imageScaling={imageScaling}
             embedded
+            diffBefore={snapshots.before}
           />
         </div>
-      ) : (
-        <div className={styles.entryContent}>
-          <div className={styles.jsonPanel}>
-            <div className={styles.jsonToolbar}>
-              <button type="button" onClick={() => copyText(JSON.stringify(displaySnapshot ?? null, null, 2))}>
-                Copy JSON
-              </button>
-              <button type="button" onClick={() => downloadJson(displaySnapshot, entry)}>
-                <DownloadIcon size={13} />
-                Download .json
-              </button>
-            </div>
-            <JsonSyntaxView value={displaySnapshot} />
-          </div>
-        </div>
-      )}
+      ) : null}
     </div>
   );
 });

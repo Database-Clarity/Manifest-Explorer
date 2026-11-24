@@ -13,28 +13,26 @@ import {
   type ResolvedItemRevision,
   type RevisionSnapshotPair,
 } from '../../manifest/history';
-import { JsonDiffView, JsonSyntaxView } from './JsonDiffView';
+import { JsonDiffView } from './JsonDiffView';
 import { JsonTree } from './JsonTree';
 import { Skeleton } from '../../ui/Skeleton';
 import { ClearSearchInput } from '../../ui/ClearSearchInput';
 import styles from './InspectorTabs.module.scss';
 
 type HistoryView = 'updates' | 'compare';
-type RevisionMode = 'diff' | 'pretty' | 'json';
-type CompareMode = 'diff' | 'from-json' | 'to-json';
+type RevisionMode = 'diff' | 'pretty';
+type CompareMode = 'diff' | 'pretty';
 type SnapshotPairLookup = (version: number) => RevisionSnapshotPair;
 const CURRENT_VERSION = 'current';
 
 const REVISION_MODES: ReadonlyArray<{ value: RevisionMode; label: string }> = [
   { value: 'diff', label: 'Diff' },
   { value: 'pretty', label: 'Pretty' },
-  { value: 'json', label: 'JSON' },
 ];
 
 const COMPARE_MODES: ReadonlyArray<{ value: CompareMode; label: string }> = [
   { value: 'diff', label: 'Diff' },
-  { value: 'from-json', label: 'From JSON' },
-  { value: 'to-json', label: 'To JSON' },
+  { value: 'pretty', label: 'Pretty' },
 ];
 
 const DATE_FORMATTER = new Intl.DateTimeFormat('en-US', {
@@ -110,22 +108,6 @@ function versionOptionLabel(version: HistoryVersionMeta): string {
   return `${date} · ${version.version ?? version.id}`;
 }
 
-function snapshotText(snapshot: unknown): string {
-  if (snapshot === undefined) return '';
-  const json = JSON.stringify(snapshot, null, 2);
-  return json === undefined ? '' : json;
-}
-
-function downloadJson(snapshot: unknown, filename: string): void {
-  const blob = new Blob([snapshotText(snapshot)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  link.click();
-  URL.revokeObjectURL(url);
-}
-
 function ModeButtons<T extends string>({
   value,
   options,
@@ -156,72 +138,32 @@ function ModeButtons<T extends string>({
   );
 }
 
-function JsonSnapshot({
-  snapshot,
-  filter,
-  table,
-  hash,
-  version,
-  onCopy,
-}: {
-  snapshot: unknown;
-  filter: string;
-  table: string;
-  hash: number;
-  version: string;
-  onCopy: (text: string, label: string) => void;
-}): ReactNode {
-  // Cache the pretty-printed JSON: switching Diff → Pretty → JSON or re-expanding
-  // a revision reuses the same snapshot object, and stringifying a multi-MB
-  // definition is the expensive part of this panel.
-  const json = useMemo(() => snapshotText(snapshot), [snapshot]);
-  const filename = `${table}-${hash}-v${version}.json`;
-  return (
-    <div className={styles.historySnapshot}>
-      <div className={styles.historySnapshotActions}>
-        <button
-          type="button"
-          className={styles.smallBtn}
-          onClick={() => onCopy(json, 'Copied snapshot JSON')}
-        >
-          Copy JSON
-        </button>
-        <button
-          type="button"
-          className={styles.smallBtn}
-          onClick={() => downloadJson(snapshot, filename)}
-        >
-          Download .json
-        </button>
-      </div>
-      {snapshot === null ? (
-        <p className={styles.historyNoFields}>This item did not exist in this version.</p>
-      ) : (
-        <JsonSyntaxView value={snapshot} filter={filter} />
-      )}
-    </div>
-  );
-}
-
 function SnapshotPretty({
   snapshot,
+  diffBefore,
   resolvedRefs,
   imageScaling,
   onNavigateRef,
   onCopy,
 }: {
   snapshot: unknown;
+  diffBefore?: unknown;
   resolvedRefs: Record<string, ResolvedHashSummary>;
   imageScaling: ImageScalingMode;
   onNavigateRef: (ref: DefinitionRef, inNewTab?: boolean) => void;
   onCopy: (text: string, label: string) => void;
 }): ReactNode {
-  if (snapshot === null || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+  const snapshotIsRecord =
+    typeof snapshot === 'object' && snapshot !== null && !Array.isArray(snapshot);
+  const beforeIsRecord =
+    typeof diffBefore === 'object' && diffBefore !== null && !Array.isArray(diffBefore);
+  if (!snapshotIsRecord && !beforeIsRecord) {
     return <p className={styles.historyNoFields}>This item did not exist in this version.</p>;
   }
   return (
     <JsonTree
-      data={snapshot as Record<string, unknown>}
+      data={snapshotIsRecord ? (snapshot as Record<string, unknown>) : {}}
+      diffBefore={diffBefore}
       resolvedRefs={resolvedRefs}
       imageScaling={imageScaling}
       onNavigateRef={onNavigateRef}
@@ -236,8 +178,6 @@ const RevisionCard = memo(function RevisionCard({
   expanded,
   onToggle,
   filter,
-  table,
-  hash,
   resolvedRefs,
   imageScaling,
   onNavigateRef,
@@ -248,8 +188,6 @@ const RevisionCard = memo(function RevisionCard({
   expanded: boolean;
   onToggle: (version: number) => void;
   filter: string;
-  table: string;
-  hash: number;
   resolvedRefs: Record<string, ResolvedHashSummary>;
   imageScaling: ImageScalingMode;
   onNavigateRef: (ref: DefinitionRef, inNewTab?: boolean) => void;
@@ -324,21 +262,13 @@ const RevisionCard = memo(function RevisionCard({
           ) : mode === 'pretty' ? (
             <SnapshotPretty
               snapshot={after}
+              diffBefore={before}
               resolvedRefs={resolvedRefs}
               imageScaling={imageScaling}
               onNavigateRef={onNavigateRef}
               onCopy={onCopy}
             />
-          ) : (
-            <JsonSnapshot
-              snapshot={after}
-              filter={filter}
-              table={table}
-              hash={hash}
-              version={String(revision.v)}
-              onCopy={onCopy}
-            />
-          )}
+          ) : null}
         </div>
       )}
     </article>
@@ -396,7 +326,7 @@ export const HistoryTab = memo(function HistoryTab({
 
   // One cache per `(table, hash, currentData, revisions)` scope. Snapshots are
   // detached clones from the history module, so they are safe to share between
-  // the Diff/Pretty/JSON views. Reconstructing a revision pair populates both
+  // the Diff/Pretty views. Reconstructing a revision pair populates both
   // `v` and `v - 1` at once, which halves patch work per expanded card.
   const { getSnapshot, getSnapshotPair } = useMemo(() => {
     const prefix = `${table}:${hash}:`;
@@ -558,8 +488,6 @@ export const HistoryTab = memo(function HistoryTab({
                     expanded={expandedVersion === revision.v}
                     onToggle={toggleRevision}
                     filter={filter}
-                    table={table}
-                    hash={hash}
                     resolvedRefs={resolvedRefs}
                     imageScaling={imageScaling}
                     onNavigateRef={onNavigateRef}
@@ -613,28 +541,6 @@ export const HistoryTab = memo(function HistoryTab({
               label="Compare display mode"
               onChange={setCompareMode}
             />
-            {compareMode === 'from-json' && (
-              <button
-                type="button"
-                className={styles.smallBtn}
-                onClick={() =>
-                  onCopy(snapshotText(compareSnapshots.from), 'Copied From snapshot JSON')
-                }
-              >
-                Copy JSON
-              </button>
-            )}
-            {compareMode === 'to-json' && (
-              <button
-                type="button"
-                className={styles.smallBtn}
-                onClick={() =>
-                  onCopy(snapshotText(compareSnapshots.to), 'Copied To snapshot JSON')
-                }
-              >
-                Copy JSON
-              </button>
-            )}
           </div>
           {compareMode === 'diff' ? (
             <JsonDiffView
@@ -644,23 +550,14 @@ export const HistoryTab = memo(function HistoryTab({
               onCopy={onCopy}
             />
           ) : (
-            <div className={styles.historySnapshot}>
-              {compareMode === 'from-json' ? (
-                compareSnapshots.from === null ? (
-                  <p className={styles.historyNoFields}>
-                    This item did not exist in the selected version.
-                  </p>
-                ) : (
-                  <JsonSyntaxView value={compareSnapshots.from} filter={filter} />
-                )
-              ) : compareSnapshots.to === null ? (
-                <p className={styles.historyNoFields}>
-                  This item did not exist in the selected version.
-                </p>
-              ) : (
-                <JsonSyntaxView value={compareSnapshots.to} filter={filter} />
-              )}
-            </div>
+            <SnapshotPretty
+              snapshot={compareSnapshots.to}
+              diffBefore={compareSnapshots.from}
+              resolvedRefs={resolvedRefs}
+              imageScaling={imageScaling}
+              onNavigateRef={onNavigateRef}
+              onCopy={onCopy}
+            />
           )}
         </div>
       )}

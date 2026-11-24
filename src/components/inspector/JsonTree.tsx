@@ -30,6 +30,7 @@ import { getShortTableName } from '../../manifest/tables';
 import {
   ChevronDownIcon,
   ChevronRightIcon,
+  CloseIcon,
   CopyIcon,
   ExternalLinkIcon,
 } from '../../ui/Icons';
@@ -51,6 +52,8 @@ const LazyImageLightbox = lazy(() =>
 
 export interface JsonTreeProps {
   data: Record<string, unknown>;
+  /** Previous snapshot. When supplied, Pretty opens in a change-focused diff view. */
+  diffBefore?: unknown;
   resolvedRefs: Record<string, ResolvedHashSummary>;
   onNavigateRef: (ref: DefinitionRef, inNewTab?: boolean) => void;
   onCopy: (text: string, label: string) => void;
@@ -448,6 +451,157 @@ function collectFindMatches(
   };
 }
 
+type JsonNodeDiffKind = 'added' | 'removed' | 'changed' | 'same';
+
+interface JsonNodeDiff {
+  kind: JsonNodeDiffKind;
+  hasChanges: boolean;
+  oldValue?: unknown;
+}
+
+interface JsonTreeDiff {
+  data: Record<string, unknown>;
+  nodes: ReadonlyMap<string, JsonNodeDiff>;
+}
+
+function isTreeContainer(value: unknown): value is Record<string, unknown> | unknown[] {
+  return typeof value === 'object' && value !== null;
+}
+
+function treeChildPath(parentPath: string, key: string, isArray: boolean): string {
+  if (isArray) return `${parentPath}[${key}]`;
+  return parentPath ? `${parentPath}.${key}` : key;
+}
+
+function createJsonTreeDiff(
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+): JsonTreeDiff {
+  const nodes = new Map<string, JsonNodeDiff>();
+
+  const markSubtree = (
+    path: string,
+    value: unknown,
+    kind: 'added' | 'removed',
+  ): void => {
+    nodes.set(path, { kind, hasChanges: true });
+    if (Array.isArray(value)) {
+      value.forEach((child, index) =>
+        markSubtree(treeChildPath(path, String(index), true), child, kind),
+      );
+    } else if (typeof value === 'object' && value !== null) {
+      Object.entries(value as Record<string, unknown>).forEach(([key, child]) =>
+        markSubtree(treeChildPath(path, key, false), child, kind),
+      );
+    }
+  };
+
+  const markDescendants = (
+    path: string,
+    value: unknown,
+    kind: 'added' | 'removed',
+  ): void => {
+    if (Array.isArray(value)) {
+      value.forEach((child, index) =>
+        markSubtree(treeChildPath(path, String(index), true), child, kind),
+      );
+    } else if (typeof value === 'object' && value !== null) {
+      Object.entries(value as Record<string, unknown>).forEach(([key, child]) =>
+        markSubtree(treeChildPath(path, key, false), child, kind),
+      );
+    }
+  };
+
+  const mergeNode = (
+    path: string,
+    oldValue: unknown,
+    newValue: unknown,
+    hasOld: boolean,
+    hasNew: boolean,
+  ): unknown => {
+    if (!hasOld) {
+      markSubtree(path, newValue, 'added');
+      return newValue;
+    }
+    if (!hasNew) {
+      markSubtree(path, oldValue, 'removed');
+      return oldValue;
+    }
+
+    if (
+      isTreeContainer(oldValue) &&
+      isTreeContainer(newValue) &&
+      Array.isArray(oldValue) === Array.isArray(newValue)
+    ) {
+      const oldArray = Array.isArray(oldValue);
+      const newArray = Array.isArray(newValue);
+      const keys =
+        oldArray && newArray
+          ? Array.from(
+              { length: Math.max(oldValue.length, newValue.length) },
+              (_, index) => String(index),
+            )
+          : [
+              ...Object.keys(newValue as Record<string, unknown>),
+              ...Object.keys(oldValue as Record<string, unknown>).filter(
+                (key) => !Object.prototype.hasOwnProperty.call(newValue, key),
+              ),
+            ];
+      const mergedEntries: Array<readonly [string, unknown]> = [];
+      let hasChanges = false;
+
+      keys.forEach((key) => {
+        const childHasOld = oldArray
+          ? Number(key) < (oldValue as unknown[]).length
+          : Object.prototype.hasOwnProperty.call(oldValue, key);
+        const childHasNew = newArray
+          ? Number(key) < (newValue as unknown[]).length
+          : Object.prototype.hasOwnProperty.call(newValue, key);
+        const childPath = treeChildPath(path, key, oldArray);
+        const child = mergeNode(
+          childPath,
+          oldArray
+            ? (oldValue as unknown[])[Number(key)]
+            : (oldValue as Record<string, unknown>)[key],
+          newArray
+            ? (newValue as unknown[])[Number(key)]
+            : (newValue as Record<string, unknown>)[key],
+          childHasOld,
+          childHasNew,
+        );
+        mergedEntries.push([key, child]);
+        hasChanges ||= nodes.get(childPath)?.hasChanges ?? false;
+      });
+
+      const mergedValue = oldArray
+        ? mergedEntries.map(([, child]) => child)
+        : Object.fromEntries(mergedEntries);
+      nodes.set(path, {
+        kind: hasChanges ? 'changed' : 'same',
+        hasChanges,
+      });
+      return mergedValue;
+    }
+
+    if (Object.is(oldValue, newValue)) {
+      nodes.set(path, { kind: 'same', hasChanges: false });
+      return newValue;
+    }
+
+    nodes.set(path, { kind: 'changed', hasChanges: true, oldValue });
+    if (isTreeContainer(newValue)) {
+      markDescendants(path, newValue, 'added');
+    }
+    return newValue;
+  };
+
+  const merged = mergeNode('', before, after, true, true);
+  return {
+    data: (merged ?? {}) as Record<string, unknown>,
+    nodes,
+  };
+}
+
 interface InlineImagePreviewProps {
   path: string;
   imageScaling: ImageScalingMode;
@@ -580,14 +734,94 @@ interface NodeProps {
   expandedByFind: ReadonlySet<string>;
   expandGeneration: { mode: 'default' | 'expand' | 'collapse'; seq: number };
   filterCache: FilterCache;
+  diffMode: boolean;
+  diffNodes: ReadonlyMap<string, JsonNodeDiff> | null;
   expansionStore: ExpansionStore;
   onTogglePath: (path: string, nextOpen: boolean) => void;
+  selectedActionPath: string | null;
+  onRowClick: (path: string, event: MouseEvent<HTMLDivElement>) => void;
+  onDismissRowActions: () => void;
   resolvedRefs: Record<string, ResolvedHashSummary>;
   onNavigateRef: (ref: DefinitionRef, inNewTab?: boolean) => void;
   onCopy: (text: string, label: string) => void;
   onOpenLightbox: (url: string, path: string) => void;
   imageScaling: ImageScalingMode;
   isArrayItem?: boolean;
+}
+
+function PreviousScalarValue({
+  nodeKey,
+  parentKey,
+  value,
+  resolvedRefs,
+  onNavigateRef,
+}: {
+  nodeKey: string;
+  parentKey?: string;
+  value: unknown;
+  resolvedRefs: Record<string, ResolvedHashSummary>;
+  onNavigateRef: (ref: DefinitionRef, inNewTab?: boolean) => void;
+}): ReactNode {
+  const valueClass =
+    typeof value === 'string' || isTreeContainer(value)
+      ? styles.valString
+      : typeof value === 'number'
+        ? styles.valNumber
+        : typeof value === 'boolean'
+          ? styles.valBoolean
+          : styles.valNull;
+  const valueText =
+    typeof value === 'string'
+      ? `"${JSON.stringify(value).slice(1, -1)}"`
+      : isTreeContainer(value)
+        ? JSON.stringify(value, null, 2)
+        : String(value ?? 'null');
+  const resolvedRef =
+    typeof value === 'number'
+      ? resolveHashForNode(nodeKey, parentKey, value, resolvedRefs)
+      : null;
+  const enumInfo =
+    typeof value === 'number' ? annotateEnumField(nodeKey, value, parentKey) : null;
+  const ref: DefinitionRef | null = resolvedRef
+    ? {
+        table: resolvedRef.table,
+        hash: resolvedRef.hash,
+        label: resolvedRef.name || undefined,
+        icon: resolvedRef.icon,
+      }
+    : null;
+
+  return (
+    <>
+      <span className={styles.diffOldValue}>
+        <del className={valueClass}>{valueText}</del>
+        {resolvedRef && ref ? (
+          <button
+            type="button"
+            className={`${styles.annotation} ${styles.annotationRef} ${styles.refBadge}`}
+            onClick={(event) => onNavigateRef(ref, event.ctrlKey || event.metaKey)}
+            onMouseDown={preventMiddleClickAutoScroll}
+            onAuxClick={(event) =>
+              activateOnMiddleClick(event, () => onNavigateRef(ref, true))
+            }
+            title={`${resolvedRef.table}:${resolvedRef.hash}${resolvedRef.subtitle ? ` — ${resolvedRef.subtitle}` : ''}`}
+          >
+            <span className={styles.refTable}>{getShortTableName(resolvedRef.table)}</span>
+            <span className={styles.refName}>
+              &quot;{resolvedRef.name || 'Unnamed'}&quot;
+            </span>
+          </button>
+        ) : enumInfo ? (
+          <span className={`${styles.annotation} ${styles.annotationEnum}`}>
+            <span className={styles.enumType}>{enumInfo.enumName}</span>
+            <span className={styles.enumDot}>{enumInfo.isBitmask ? ': ' : '.'}</span>
+            <span className={styles.enumLabel}>{enumInfo.label}</span>
+          </span>
+        ) : null}
+      </span>
+      <span className={styles.diffArrow} aria-hidden="true">→</span>
+    </>
+  );
 }
 
 const JsonNode = memo(function JsonNode({
@@ -603,8 +837,13 @@ const JsonNode = memo(function JsonNode({
   expandedByFind,
   expandGeneration,
   filterCache,
+  diffMode,
+  diffNodes,
   expansionStore,
   onTogglePath,
+  selectedActionPath,
+  onRowClick,
+  onDismissRowActions,
   resolvedRefs,
   onNavigateRef,
   onCopy,
@@ -626,6 +865,9 @@ const JsonNode = memo(function JsonNode({
   const preserveSubtree =
     searchMode === 'filter' && filterLower.length > 0 && (ancestorMatched || selfMatches);
   const isActiveMatch = searchMode === 'find' && path === activeMatchPath;
+  const diffNode = diffMode ? diffNodes?.get(path) : undefined;
+  const diffKind = diffNode?.kind;
+  const diffHasChanges = diffNode?.hasChanges ?? false;
   const defaultExpanded =
     depth === 0 &&
     (nodeKey === 'displayProperties' || nodeKey === 'inventory' || nodeKey === 'equippingBlock');
@@ -656,11 +898,13 @@ const JsonNode = memo(function JsonNode({
       ? manualOpen
       : isAutoExpandedForSearch
         ? true
-        : expandGeneration.mode === 'expand'
-          ? depth < 6
-          : expandGeneration.mode === 'collapse'
-            ? false
-            : defaultExpanded;
+        : diffMode && diffHasChanges
+          ? true
+          : expandGeneration.mode === 'expand'
+            ? depth < 6
+            : expandGeneration.mode === 'collapse'
+              ? false
+              : defaultExpanded;
 
   if (isObject) {
     const arrayValue = isArray ? (value as unknown[]) : null;
@@ -677,8 +921,7 @@ const JsonNode = memo(function JsonNode({
       ];
     };
     const filterActive = searchMode === 'filter' && filterLower.length > 0;
-    const chunkChildren =
-      isExpanded && count > CHILDREN_CHUNK_SIZE && !filterActive;
+    const chunkChildren = isExpanded && count > CHILDREN_CHUNK_SIZE && !filterActive;
     let visibleEntries: Array<readonly [string, unknown]> | null = null;
     let remainingChildren = 0;
     if (isExpanded) {
@@ -686,7 +929,9 @@ const JsonNode = memo(function JsonNode({
       if (filterActive && !preserveSubtree) {
         for (let index = 0; index < count; index += 1) {
           const entry = readChild(index);
+          const childPath = treeChildPath(path, entry[0], isArray);
           if (
+            (!diffMode || (diffNodes?.get(childPath)?.hasChanges ?? false)) &&
             matchesFilter(
               entry[0],
               entry[1],
@@ -700,6 +945,17 @@ const JsonNode = memo(function JsonNode({
             visibleEntries.push(entry);
           }
         }
+      } else if (diffMode) {
+        let changedCount = 0;
+        for (let index = 0; index < count; index += 1) {
+          const entry = readChild(index);
+          const childPath = treeChildPath(path, entry[0], isArray);
+          if (diffNodes?.get(childPath)?.hasChanges) {
+            if (changedCount < childLimit) visibleEntries.push(entry);
+            changedCount += 1;
+          }
+        }
+        remainingChildren = Math.max(0, changedCount - visibleEntries.length);
       } else if (chunkChildren) {
         const revealFindMatches = searchMode === 'find' && filterLower.length > 0;
         if (!revealFindMatches) {
@@ -745,6 +1001,16 @@ const JsonNode = memo(function JsonNode({
         ? getCollapsedPeek(value as Record<string, unknown>, isArray)
         : null;
     const summary = isArray ? `[${count}]` : `{${count}}`;
+    const rowClassNames = [
+      styles.row,
+      isActiveMatch ? styles.rowActiveMatch : '',
+      diffKind === 'added' ? styles.diffAddedRow : '',
+      diffKind === 'removed' ? styles.diffRemovedRow : '',
+      diffKind === 'changed' ? styles.diffChangedRow : '',
+      selectedActionPath === path ? styles.rowMobileSelected : '',
+    ]
+      .filter(Boolean)
+      .join(' ');
 
     const handleObjectRefClick = (event: MouseEvent<HTMLButtonElement>): void => {
       if (!objectRefTarget) return;
@@ -762,8 +1028,10 @@ const JsonNode = memo(function JsonNode({
     return (
       <div className={styles.node}>
         <div
-          className={isActiveMatch ? `${styles.row} ${styles.rowActiveMatch}` : styles.row}
+          className={rowClassNames}
           data-json-path={isActiveMatch ? path : undefined}
+          data-json-row-path={path}
+          onClick={(event) => onRowClick(path, event)}
         >
           <button
             type="button"
@@ -787,6 +1055,26 @@ const JsonNode = memo(function JsonNode({
             <span className={styles.colon}>:</span>
           </button>
           <span className={styles.containerMeta}>{summary}</span>
+          {diffKind && diffKind !== 'same' && (
+            <span
+              className={`${styles.diffStatus} ${
+                diffKind === 'added'
+                  ? styles.diffStatusAdded
+                  : diffKind === 'removed'
+                    ? styles.diffStatusRemoved
+                    : styles.diffStatusChanged
+              }`}
+              aria-label={
+                diffKind === 'added'
+                  ? 'Added'
+                  : diffKind === 'removed'
+                    ? 'Removed'
+                    : 'Changed'
+              }
+            >
+              {diffKind === 'added' ? '+' : diffKind === 'removed' ? '−' : '~'}
+            </span>
+          )}
           {objectKeyRef && (
             <span className={styles.refLinkGroup}>
               <button
@@ -863,10 +1151,38 @@ const JsonNode = memo(function JsonNode({
           </div>
         </div>
 
+        {selectedActionPath === path && (
+          <div className={styles.rowActionBar} data-row-actions-for={path}>
+            <button
+              type="button"
+              className={styles.rowActionButton}
+              onClick={() => onCopy(path, 'Copied JSON path')}
+            >
+              Copy path
+            </button>
+            <button
+              type="button"
+              className={styles.rowActionButton}
+              onClick={() => onCopy(JSON.stringify(value, null, 2), `Copied ${nodeKey}`)}
+            >
+              Copy value
+            </button>
+            <button
+              type="button"
+              className={styles.rowActionDismiss}
+              onClick={onDismissRowActions}
+              aria-label="Dismiss row actions"
+              title="Dismiss"
+            >
+              <CloseIcon size={14} />
+            </button>
+          </div>
+        )}
+
         {isExpanded && visibleEntries !== null && visibleEntries.length > 0 && (
           <div className={styles.children}>
             {visibleEntries.map(([childKey, childValue]) => {
-              const childPath = isArray ? `${path}[${childKey}]` : `${path}.${childKey}`;
+              const childPath = treeChildPath(path, childKey, isArray);
               return (
                 <JsonNode
                   key={childKey}
@@ -882,8 +1198,13 @@ const JsonNode = memo(function JsonNode({
                   expandedByFind={expandedByFind}
                   expandGeneration={expandGeneration}
                   filterCache={filterCache}
+                  diffMode={diffMode}
+                  diffNodes={diffNodes}
                   expansionStore={expansionStore}
                   onTogglePath={onTogglePath}
+                  selectedActionPath={selectedActionPath}
+                  onRowClick={onRowClick}
+                  onDismissRowActions={onDismissRowActions}
                   resolvedRefs={resolvedRefs}
                   onNavigateRef={onNavigateRef}
                   onCopy={onCopy}
@@ -988,8 +1309,19 @@ const JsonNode = memo(function JsonNode({
   return (
     <div className={styles.node}>
       <div
-        className={isActiveMatch ? `${styles.row} ${styles.rowActiveMatch}` : styles.row}
+        className={[
+          styles.row,
+          isActiveMatch ? styles.rowActiveMatch : '',
+          diffKind === 'added' ? styles.diffAddedRow : '',
+          diffKind === 'removed' ? styles.diffRemovedRow : '',
+          diffKind === 'changed' ? styles.diffChangedRow : '',
+          selectedActionPath === path ? styles.rowMobileSelected : '',
+        ]
+          .filter(Boolean)
+          .join(' ')}
         data-json-path={isActiveMatch ? path : undefined}
+        data-json-row-path={path}
+        onClick={(event) => onRowClick(path, event)}
       >
         <span className={styles.leafSpacer} />
         <span className={styles.keyPair}>
@@ -999,23 +1331,61 @@ const JsonNode = memo(function JsonNode({
           <span className={styles.colon}>:</span>
         </span>
 
+        {diffKind === 'changed' && !isTreeContainer(diffNode?.oldValue) && (
+          <PreviousScalarValue
+            nodeKey={nodeKey}
+            parentKey={parentKey}
+            value={diffNode?.oldValue}
+            resolvedRefs={resolvedRefs}
+            onNavigateRef={onNavigateRef}
+          />
+        )}
+
         {typeof value === 'string' && (
           <span className={styles.valString}>
-            &quot;{highlightText(escapedString ?? value, filterLower, isActiveMatch)}&quot;
+            {diffKind === 'changed' ? (
+              <ins className={styles.diffNewValue}>
+                &quot;{highlightText(escapedString ?? value, filterLower, isActiveMatch)}&quot;
+              </ins>
+            ) : (
+              <>
+                &quot;{highlightText(escapedString ?? value, filterLower, isActiveMatch)}&quot;
+              </>
+            )}
           </span>
         )}
         {typeof value === 'number' && (
           <span className={styles.valNumber}>
-            {highlightText(String(value), filterLower, isActiveMatch)}
+            {diffKind === 'changed' ? (
+              <ins className={styles.diffNewValue}>
+                {highlightText(String(value), filterLower, isActiveMatch)}
+              </ins>
+            ) : (
+              highlightText(String(value), filterLower, isActiveMatch)
+            )}
           </span>
         )}
         {typeof value === 'boolean' && (
           <span className={styles.valBoolean}>
-            {highlightText(String(value), filterLower, isActiveMatch)}
+            {diffKind === 'changed' ? (
+              <ins className={styles.diffNewValue}>
+                {highlightText(String(value), filterLower, isActiveMatch)}
+              </ins>
+            ) : (
+              highlightText(String(value), filterLower, isActiveMatch)
+            )}
           </span>
         )}
         {(value === null || value === undefined) && (
-          <span className={styles.valNull}>{highlightText('null', filterLower, isActiveMatch)}</span>
+          <span className={styles.valNull}>
+            {diffKind === 'changed' ? (
+              <ins className={styles.diffNewValue}>
+                {highlightText('null', filterLower, isActiveMatch)}
+              </ins>
+            ) : (
+              highlightText('null', filterLower, isActiveMatch)
+            )}
+          </span>
         )}
 
         {resolvedRef && (
@@ -1141,6 +1511,34 @@ const JsonNode = memo(function JsonNode({
         </div>
       </div>
 
+      {selectedActionPath === path && (
+        <div className={styles.rowActionBar} data-row-actions-for={path}>
+          <button
+            type="button"
+            className={styles.rowActionButton}
+            onClick={() => onCopy(path, 'Copied JSON path')}
+          >
+            Copy path
+          </button>
+          <button
+            type="button"
+            className={styles.rowActionButton}
+            onClick={() => onCopy(JSON.stringify(value, null, 2), `Copied ${nodeKey}`)}
+          >
+            Copy value
+          </button>
+          <button
+            type="button"
+            className={styles.rowActionDismiss}
+            onClick={onDismissRowActions}
+            aria-label="Dismiss row actions"
+            title="Dismiss"
+          >
+            <CloseIcon size={14} />
+          </button>
+        </div>
+      )}
+
       {isImage && (
         <InlineImagePreview
           path={value}
@@ -1191,6 +1589,7 @@ function useCompactToolbar(): boolean {
 
 export const JsonTree = memo(function JsonTree({
   data,
+  diffBefore,
   resolvedRefs,
   onNavigateRef,
   onCopy,
@@ -1204,6 +1603,8 @@ export const JsonTree = memo(function JsonTree({
   const [filter, setFilter] = useState(initialFilter ?? '');
   const [searchMode, setSearchMode] = useState<'filter' | 'find'>('filter');
   const [activeMatchIndex, setActiveMatchIndex] = useState(0);
+  const [showDiff, setShowDiff] = useState(true);
+  const [selectedActionPath, setSelectedActionPath] = useState<string | null>(null);
   const [expandGeneration, setExpandGeneration] = useState<{
     mode: 'default' | 'expand' | 'collapse';
     seq: number;
@@ -1212,6 +1613,19 @@ export const JsonTree = memo(function JsonTree({
   const compactToolbar = useCompactToolbar();
   const treeRef = useRef<HTMLDivElement>(null);
   const expansionStore = useMemo(() => createExpansionStore(initialExpanded ?? {}), []);
+  const diffTree = useMemo(() => {
+    if (diffBefore === undefined) return null;
+    const beforeRecord =
+      typeof diffBefore === 'object' &&
+      diffBefore !== null &&
+      !Array.isArray(diffBefore)
+        ? (diffBefore as Record<string, unknown>)
+        : {};
+    return createJsonTreeDiff(beforeRecord, data);
+  }, [data, diffBefore]);
+  const diffMode = diffTree !== null && showDiff;
+  const viewData = diffMode ? diffTree.data : data;
+  const diffNodes = diffMode ? diffTree.nodes : null;
 
   // Keep parent callbacks in refs so every callback handed to JsonNode stays
   // identity-stable for the lifetime of the tree (crucial for React.memo).
@@ -1302,6 +1716,39 @@ export const JsonTree = memo(function JsonTree({
     [expansionStore],
   );
 
+  const handleRowClick = useCallback(
+    (path: string, event: MouseEvent<HTMLDivElement>): void => {
+      const target = event.target;
+      if (target instanceof Element && target.closest('button, a, img')) return;
+      if (typeof window !== 'undefined' && window.getSelection()?.toString()) return;
+      setSelectedActionPath((current) => (current === path ? null : path));
+    },
+    [],
+  );
+
+  const dismissRowActions = useCallback(() => setSelectedActionPath(null), []);
+
+  useEffect(() => {
+    if (!selectedActionPath) return;
+    const dismissOutside = (event: PointerEvent): void => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      if (target.closest('[data-row-actions-for]')) return;
+      if (
+        !target.closest('[data-json-row-path]') ||
+        target.closest('button, a, img')
+      ) {
+        setSelectedActionPath(null);
+      }
+    };
+    document.addEventListener('pointerdown', dismissOutside);
+    return () => document.removeEventListener('pointerdown', dismissOutside);
+  }, [selectedActionPath]);
+
+  useEffect(() => {
+    setShowDiff(true);
+  }, [data, diffBefore]);
+
   const resetExpansion = useCallback(
     (mode: 'expand' | 'collapse'): void => {
       const next = expansionStore.reset();
@@ -1325,9 +1772,9 @@ export const JsonTree = memo(function JsonTree({
   const findMatchesResult = useMemo(
     () =>
       searchMode === 'find' && deferredFilterLower
-        ? collectFindMatches(data, deferredFilterLower, resolvedRefs)
+        ? collectFindMatches(viewData, deferredFilterLower, resolvedRefs)
         : { matches: NO_FIND_MATCHES, truncated: false },
-    [data, deferredFilterLower, resolvedRefs, searchMode],
+    [deferredFilterLower, resolvedRefs, searchMode, viewData],
   );
   const findMatches = findMatchesResult.matches;
   const findMatchesTruncated = findMatchesResult.truncated;
@@ -1352,7 +1799,7 @@ export const JsonTree = memo(function JsonTree({
 
   useEffect(() => {
     setActiveMatchIndex(0);
-  }, [deferredFilterLower, data]);
+  }, [deferredFilterLower, viewData]);
 
   useEffect(() => {
     if (searchMode !== 'find' || activeMatchPath === null) return;
@@ -1363,12 +1810,11 @@ export const JsonTree = memo(function JsonTree({
   }, [activeMatchPath, searchMode]);
 
   const rootEntries = useMemo(() => {
-    const all = Object.entries(data);
-    if (searchMode === 'find' || !deferredFilterLower) {
-      return all;
-    }
-    return all.filter(([key, value]) =>
-      matchesFilter(
+    const all = Object.entries(viewData);
+    return all.filter(([key, value]) => {
+      if (diffMode && !diffNodes?.get(key)?.hasChanges) return false;
+      if (searchMode === 'find' || !deferredFilterLower) return true;
+      return matchesFilter(
         key,
         value,
         deferredFilterLower,
@@ -1376,9 +1822,17 @@ export const JsonTree = memo(function JsonTree({
         filterCache,
         undefined,
         resolvedRefs,
-      ),
-    );
-  }, [data, deferredFilterLower, filterCache, resolvedRefs, searchMode]);
+      );
+    });
+  }, [
+    deferredFilterLower,
+    diffMode,
+    diffNodes,
+    filterCache,
+    resolvedRefs,
+    searchMode,
+    viewData,
+  ]);
 
   const stepMatch = useCallback(
     (direction: -1 | 1) => {
@@ -1470,6 +1924,26 @@ export const JsonTree = memo(function JsonTree({
             Find
           </button>
         </div>
+        {diffBefore !== undefined && (
+          <div className={styles.diffModes} role="group" aria-label="Pretty display mode">
+            <button
+              type="button"
+              className={styles.diffModeButton}
+              aria-pressed={showDiff}
+              onClick={() => setShowDiff(true)}
+            >
+              Diff
+            </button>
+            <button
+              type="button"
+              className={styles.diffModeButton}
+              aria-pressed={!showDiff}
+              onClick={() => setShowDiff(false)}
+            >
+              Snapshot
+            </button>
+          </div>
+        )}
         {searchMode === 'find' && deferredFilterLower.length > 0 && (
           <div className={styles.findControls} role="group" aria-label="Find matches">
             <button
@@ -1522,8 +1996,12 @@ export const JsonTree = memo(function JsonTree({
         role="tree"
         aria-label="Definition JSON"
       >
-        {searchMode === 'filter' && rootEntries.length === 0 ? (
+        {searchMode === 'filter' && deferredFilterLower && rootEntries.length === 0 ? (
           <div className={styles.empty}>No fields match &quot;{filter}&quot;.</div>
+        ) : rootEntries.length === 0 ? (
+          <div className={styles.empty}>
+            {diffMode ? 'No changes to show.' : 'No fields in this snapshot.'}
+          </div>
         ) : (
           rootEntries.map(([key, val]) => (
             <JsonNode
@@ -1538,8 +2016,13 @@ export const JsonTree = memo(function JsonTree({
               expandedByFind={expandedByFind}
               expandGeneration={expandGeneration}
               filterCache={filterCache}
+              diffMode={diffMode}
+              diffNodes={diffNodes}
               expansionStore={expansionStore}
               onTogglePath={handleTogglePath}
+              selectedActionPath={selectedActionPath}
+              onRowClick={handleRowClick}
+              onDismissRowActions={dismissRowActions}
               resolvedRefs={resolvedRefs}
               onNavigateRef={handleNavigateRef}
               onCopy={handleCopy}

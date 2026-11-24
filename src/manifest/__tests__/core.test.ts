@@ -953,6 +953,21 @@ describe('ranking and filtering', () => {
     expect(rank('', entries, { sort: 'index-desc' }).items.map((item) => item.hash)).toEqual([
       62, 61, 60,
     ]);
+    expect(rank('', entries, { sort: 'index-asc' }).items.map((item) => item.hash)).toEqual([
+      60, 61, 62,
+    ]);
+
+    const withMissingIndexes = [
+      makeEntry({ hash: 3, name: 'Charlie', index: 2 }),
+      makeEntry({ hash: 2, name: 'Bravo' }),
+      makeEntry({ hash: 1, name: 'Alpha', index: 1 }),
+    ];
+    expect(
+      rank('', withMissingIndexes, { sort: 'index-asc' }).items.map((item) => item.name),
+    ).toEqual(['Alpha', 'Charlie', 'Bravo']);
+    expect(
+      rank('', withMissingIndexes, { sort: 'index-desc' }).items.map((item) => item.name),
+    ).toEqual(['Charlie', 'Alpha', 'Bravo']);
   });
 
   it('sorts by release and update dates with inferred, index-zero and missing records', () => {
@@ -1206,6 +1221,7 @@ describe('top-K selection equivalence', () => {
     'name-desc',
     'hash-asc',
     'hash-desc',
+    'index-asc',
     'index-desc',
     'release-desc',
     'release-asc',

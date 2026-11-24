@@ -27,6 +27,8 @@ import { useCollectorStore } from '../stores/collector';
 import { useExplorerStore } from '../stores/explorer';
 import { useSettingsStore } from '../stores/settings';
 import {
+  ArrowDownIcon,
+  ArrowUpIcon,
   CheckIcon,
   ChevronRightIcon,
   CloseIcon,
@@ -82,21 +84,57 @@ export function resetSavedResultsScroll(): void {
   savedResultsScroll = null;
 }
 
-const GENERAL_SORT_OPTIONS: ReadonlyArray<{ value: SortMode; label: string }> = [
+type SortField = 'relevance' | 'name' | 'hash' | 'index' | 'release' | 'update';
+
+const GENERAL_SORT_OPTIONS: ReadonlyArray<{ value: SortField; label: string }> = [
   { value: 'relevance', label: 'Relevance' },
-  { value: 'name-asc', label: 'Name A–Z' },
-  { value: 'name-desc', label: 'Name Z–A' },
-  { value: 'hash-asc', label: 'Hash ↑' },
-  { value: 'hash-desc', label: 'Hash ↓' },
-  { value: 'index-desc', label: 'Index ↓' },
+  { value: 'name', label: 'Name' },
+  { value: 'hash', label: 'Hash' },
+  { value: 'index', label: 'Index' },
 ];
 
-const DATE_SORT_OPTIONS: ReadonlyArray<{ value: SortMode; label: string }> = [
-  { value: 'release-desc', label: 'Released ↓' },
-  { value: 'release-asc', label: 'Released ↑' },
-  { value: 'update-desc', label: 'Updated ↓' },
-  { value: 'update-asc', label: 'Updated ↑' },
+const DATE_SORT_OPTIONS: ReadonlyArray<{ value: SortField; label: string }> = [
+  { value: 'release', label: 'Released' },
+  { value: 'update', label: 'Updated' },
 ];
+
+const DEFAULT_SORT_MODES: Record<SortField, SortMode> = {
+  relevance: 'relevance',
+  name: 'name-asc',
+  hash: 'hash-asc',
+  index: 'index-desc',
+  release: 'release-desc',
+  update: 'update-desc',
+};
+
+const SORT_ORDER_LABELS: Record<Exclude<SortMode, 'relevance'>, string> = {
+  'name-asc': 'A–Z',
+  'name-desc': 'Z–A',
+  'hash-asc': 'lowest hash first',
+  'hash-desc': 'highest hash first',
+  'index-asc': 'oldest first',
+  'index-desc': 'newest first',
+  'release-asc': 'oldest release first',
+  'release-desc': 'newest release first',
+  'update-asc': 'least recently updated first',
+  'update-desc': 'recently updated first',
+};
+
+function sortFieldForMode(sortMode: SortMode): SortField {
+  if (sortMode === 'relevance') return 'relevance';
+  return sortMode.slice(0, sortMode.lastIndexOf('-')) as SortField;
+}
+
+function reverseSortMode(sortMode: SortMode): SortMode {
+  if (sortMode === 'relevance') return sortMode;
+  const field = sortMode.slice(0, sortMode.lastIndexOf('-'));
+  const direction = sortMode.endsWith('-asc') ? 'desc' : 'asc';
+  return `${field}-${direction}` as SortMode;
+}
+
+function sortOrderLabel(sortMode: Exclude<SortMode, 'relevance'>): string {
+  return `Sort order: ${SORT_ORDER_LABELS[sortMode]} — click to reverse`;
+}
 
 const COUNT_FORMAT = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
 const UTC_MONTH_FORMAT = new Intl.DateTimeFormat('en-US', {
@@ -942,9 +980,9 @@ export const ResultsPane = memo(function ResultsPane({
         : formatCount(totalMatches)
       : summaryText;
 
-  const sortSections = useMemo<readonly SelectSection<SortMode>[]>(
+  const sortSections = useMemo<readonly SelectSection<SortField>[]>(
     () => [
-      { options: GENERAL_SORT_OPTIONS },
+      { label: 'General', options: GENERAL_SORT_OPTIONS },
       {
         label: 'Dates',
         options: DATE_SORT_OPTIONS.map((option) => ({
@@ -955,6 +993,19 @@ export const ResultsPane = memo(function ResultsPane({
     ],
     [deepSearch],
   );
+  const handleSortFieldChange = useCallback(
+    (field: SortField) => {
+      if (field !== sortFieldForMode(sortMode)) {
+        setSortMode(DEFAULT_SORT_MODES[field]);
+      }
+    },
+    [setSortMode, sortMode],
+  );
+  const handleSortDirectionToggle = useCallback(() => {
+    if (sortMode !== 'relevance') {
+      setSortMode(reverseSortMode(sortMode));
+    }
+  }, [setSortMode, sortMode]);
 
   const clampedSelectedIndex =
     results.length > 0
@@ -1750,17 +1801,40 @@ export const ResultsPane = memo(function ResultsPane({
             </button>
           ) : null}
 
-          <Select
-            className={styles.sort}
-            value={sortMode}
-            sections={sortSections}
-            aria-label="Sort results"
-            title="Sort results"
-            align="end"
-            minPopupWidth={176}
-            onChange={setSortMode}
-            onTriggerKeyDown={stopActivationKeys}
-          />
+          <div
+            className={joinClasses(
+              styles.sortControl,
+              sortMode !== 'relevance' ? styles.sortControlJoined : '',
+            )}
+          >
+            <Select
+              className={styles.sort}
+              value={sortFieldForMode(sortMode)}
+              sections={sortSections}
+              aria-label="Sort results"
+              title="Sort results"
+              align="end"
+              minPopupWidth={176}
+              onChange={handleSortFieldChange}
+              onTriggerKeyDown={stopActivationKeys}
+            />
+            {sortMode !== 'relevance' ? (
+              <button
+                type="button"
+                className={styles.sortDirBtn}
+                aria-label={sortOrderLabel(sortMode)}
+                title={sortOrderLabel(sortMode)}
+                onClick={handleSortDirectionToggle}
+                onKeyDown={stopActivationKeys}
+              >
+                {sortMode.endsWith('-asc') ? (
+                  <ArrowUpIcon size={12} />
+                ) : (
+                  <ArrowDownIcon size={12} />
+                )}
+              </button>
+            ) : null}
+          </div>
 
           {!isNarrowPhone && viewportWidth >= 520 ? (
             <button

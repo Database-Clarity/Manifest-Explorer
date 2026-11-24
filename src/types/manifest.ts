@@ -22,6 +22,7 @@ export type SortMode =
   | 'name-desc'
   | 'hash-asc'
   | 'hash-desc'
+  | 'index-asc'
   | 'index-desc'
   | 'release-desc'
   | 'release-asc'

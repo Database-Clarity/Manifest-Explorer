@@ -1344,10 +1344,26 @@ function scoredComparator(sort: SortMode, entryDates?: Map<SearchIndexEntry, Ent
     case 'hash-desc':
       base = (a, b) => b.entry.hash - a.entry.hash;
       break;
+    case 'index-asc':
+      base = (a, b) => {
+        const aIndex = a.entry.index;
+        const bIndex = b.entry.index;
+        if (aIndex === undefined) {
+          return bIndex === undefined ? compareNames(a.entry, b.entry) : 1;
+        }
+        if (bIndex === undefined) return -1;
+        return aIndex - bIndex || compareNames(a.entry, b.entry);
+      };
+      break;
     case 'index-desc':
       base = (a, b) => {
-        const indexDelta = (b.entry.index ?? -1) - (a.entry.index ?? -1);
-        return indexDelta || compareNames(a.entry, b.entry);
+        const aIndex = a.entry.index;
+        const bIndex = b.entry.index;
+        if (aIndex === undefined) {
+          return bIndex === undefined ? compareNames(a.entry, b.entry) : 1;
+        }
+        if (bIndex === undefined) return -1;
+        return bIndex - aIndex || compareNames(a.entry, b.entry);
       };
       break;
     case 'release-desc':

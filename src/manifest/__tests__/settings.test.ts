@@ -5,8 +5,8 @@ import {
   useSettingsStore,
 } from '../../stores/settings';
 
-describe('persisted date sorting and grouping settings', () => {
-  it('accepts every date sort mode and groupBy when merging persisted settings', () => {
+describe('persisted sorting and grouping settings', () => {
+  it('accepts directional sort modes and groupBy when merging persisted settings', () => {
     expect(DEFAULT_SETTINGS.groupBy).toBe('none');
     const current = useSettingsStore.getState();
     const partialize = useSettingsStore.persist.getOptions().partialize;
@@ -20,13 +20,14 @@ describe('persisted date sorting and grouping settings', () => {
       groupBy: 'table',
     });
 
-    const dateModes = [
+    const sortModes = [
+      'index-asc',
       'release-desc',
       'release-asc',
       'update-desc',
       'update-asc',
     ] as const;
-    for (const sortMode of dateModes) {
+    for (const sortMode of sortModes) {
       const merged = mergePersistedSettings({ sortMode, groupBy: 'table' }, current);
       expect(merged.sortMode).toBe(sortMode);
       expect(merged.groupBy).toBe('table');

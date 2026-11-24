@@ -135,6 +135,100 @@ afterEach(() => {
 });
 
 describe('ResultsPane table grouping', () => {
+  it('renders the six-field Sort select and uses a joined direction toggle', () => {
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createPaneRoot(host);
+    renderPane(root);
+
+    const sortSelect = host.querySelector<HTMLButtonElement>('[role="combobox"]');
+    if (!sortSelect) throw new Error('Sort select was not rendered');
+    expect(host.querySelector('[aria-label^="Sort order:"]')).toBeNull();
+
+    act(() => sortSelect.click());
+    const listbox = document.querySelector('[role="listbox"][aria-label="Sort results"]');
+    expect(
+      [...(listbox?.querySelectorAll<HTMLElement>('[role="option"]') ?? [])].map(
+        (option) => option.textContent,
+      ),
+    ).toEqual(['Relevance', 'Name', 'Hash', 'Index', 'Released', 'Updated']);
+    expect(listbox?.textContent).toContain('General');
+    expect(listbox?.textContent).toContain('Dates');
+
+    const selectField = (field: string): void => {
+      if (!sortSelect.getAttribute('aria-expanded')?.includes('true')) {
+        act(() => sortSelect.click());
+      }
+      const option = document.querySelector<HTMLElement>(
+        `[role="listbox"] [data-value="${field}"]`,
+      );
+      if (!option) throw new Error(`Sort field "${field}" was not rendered`);
+      act(() => option.click());
+    };
+
+    selectField('release');
+    expect(useSettingsStore.getState().sortMode).toBe('release-desc');
+    let directionButton = host.querySelector<HTMLButtonElement>('[aria-label^="Sort order:"]');
+    expect(directionButton?.getAttribute('aria-label')).toBe(
+      'Sort order: newest release first — click to reverse',
+    );
+    expect(directionButton?.querySelector('svg path')?.getAttribute('d')).toBe(
+      'M8 3.5v9M3.5 9 8 13l4.5-4',
+    );
+
+    act(() => directionButton?.click());
+    expect(useSettingsStore.getState().sortMode).toBe('release-asc');
+    directionButton = host.querySelector<HTMLButtonElement>('[aria-label^="Sort order:"]');
+    expect(directionButton?.getAttribute('aria-label')).toBe(
+      'Sort order: oldest release first — click to reverse',
+    );
+    expect(directionButton?.querySelector('svg path')?.getAttribute('d')).toBe(
+      'M8 12.5v-9M3.5 7 8 3l4.5 4',
+    );
+
+    for (const [field, expectedMode] of [
+      ['name', 'name-asc'],
+      ['hash', 'hash-asc'],
+      ['index', 'index-desc'],
+      ['update', 'update-desc'],
+    ] as const) {
+      selectField(field);
+      expect(useSettingsStore.getState().sortMode).toBe(expectedMode);
+      expect(host.querySelector('[aria-label^="Sort order:"]')).not.toBeNull();
+    }
+    host.remove();
+  });
+
+  it('disables date fields during deep search and keeps direction when the field is reselected', () => {
+    useExplorerStore.setState({ deepSearch: true });
+    useSettingsStore.setState({ sortMode: 'name-desc' });
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createPaneRoot(host);
+    renderPane(root);
+
+    let sortSelect = host.querySelector<HTMLButtonElement>('[role="combobox"]');
+    if (!sortSelect) throw new Error('Sort select was not rendered');
+    act(() => sortSelect?.click());
+    expect(
+      document.querySelector('[role="listbox"] [data-value="release"]')?.getAttribute('aria-disabled'),
+    ).toBe('true');
+    expect(
+      document.querySelector('[role="listbox"] [data-value="update"]')?.getAttribute('aria-disabled'),
+    ).toBe('true');
+
+    act(() => sortSelect?.click());
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label^="Sort order:"]')?.click());
+    expect(useSettingsStore.getState().sortMode).toBe('name-asc');
+
+    sortSelect = host.querySelector<HTMLButtonElement>('[role="combobox"]');
+    if (!sortSelect) throw new Error('Sort select was not rendered');
+    act(() => sortSelect.click());
+    act(() => document.querySelector<HTMLElement>('[role="listbox"] [data-value="name"]')?.click());
+    expect(useSettingsStore.getState().sortMode).toBe('name-asc');
+    host.remove();
+  });
+
   it('uses the custom sort control and compact UTC date labels', () => {
     useExplorerStore.setState({
       results: [

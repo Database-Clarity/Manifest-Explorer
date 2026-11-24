@@ -251,6 +251,7 @@ export function mergePersistedSettings(
         'name-desc',
         'hash-asc',
         'hash-desc',
+        'index-asc',
         'index-desc',
         'release-desc',
         'release-asc',

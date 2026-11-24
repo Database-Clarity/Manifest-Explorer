@@ -82,6 +82,14 @@ export function ChevronRightIcon(props: IconProps): ReactNode {
   );
 }
 
+export function ChevronLeftIcon(props: IconProps): ReactNode {
+  return (
+    <IconFrame {...props}>
+      <path d="m10 3.5-4.5 4.5 4.5 4.5" />
+    </IconFrame>
+  );
+}
+
 export function ChevronDownIcon(props: IconProps): ReactNode {
   return (
     <IconFrame {...props}>

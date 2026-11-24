@@ -2,8 +2,7 @@
 @use '../../styles/variables' as theme;
 
 .historyPage {
-  display: grid;
-  grid-template-columns: 17.5rem minmax(0, 1fr);
+  display: flex;
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
@@ -12,253 +11,204 @@
   color: var(--text);
 }
 
-.sidebar {
+.historyWorkspace {
   display: flex;
-  flex-direction: column;
+  flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
-  border-right: 1px solid var(--line);
+  overflow: hidden;
+}
+
+.overviewPane {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 clamp(min(22rem, 38%), 42%, 65%);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--page);
+
+  &:not([hidden]) {
+    flex-basis: var(--history-overview-width, clamp(min(22rem, 38%), 42%, 65%));
+  }
+
+  &[hidden] {
+    display: none;
+  }
+}
+
+.overviewPane.overviewPaneFull {
+  flex: 1 1 auto;
+}
+
+.versionPickerBar {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  height: var(--pane-bar-h);
+  min-height: var(--pane-bar-h);
+  min-width: 0;
+  gap: 0.375rem;
+  padding: 0 0.5rem;
+  border-bottom: 1px solid var(--line);
   background: var(--col);
 }
 
-.sidebarHeading {
-  display: flex;
+.versionStep,
+.mobileTabsButton,
+.maximizeButton {
+  @include ctl.quiet-button;
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: center;
   flex: 0 0 auto;
-  min-height: 3.375rem;
-  padding: 0.625rem 0.75rem;
-  border-bottom: 1px solid var(--hair);
-
-  h1 {
-    margin: 0;
-    color: var(--text);
-    font-family: var(--brand-font-family);
-    font-size: 0.9375rem;
-    font-weight: 700;
-    line-height: 1.2;
-  }
-
-  span {
-    display: block;
-    margin-top: 0.1875rem;
-    color: var(--text3);
-    font-size: 0.6875rem;
-  }
-}
-
-.versionSearchLabel {
-  flex: 0 0 auto;
-  padding: 0.5rem 0.625rem;
-  border-bottom: 1px solid var(--hair);
-}
-
-.versionSearch,
-.entrySearch {
-  @include ctl.field;
-  width: 100%;
-  min-width: 0;
+  min-width: 2rem;
   min-height: 2rem;
-  font-size: 0.75rem;
-  padding-inline-end: 1.75rem;
-}
-
-.mobileVersionSelect {
-  width: 100%;
-  min-width: 0;
-  min-height: 2rem;
-  font-size: 0.75rem;
-}
-
-.versionSearchField,
-.entrySearchField {
-  width: 100%;
-  min-width: 0;
-}
-
-.versionList {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
-  overscroll-behavior-y: auto;
-  padding: 0.25rem 0;
-}
-
-.versionRow {
-  // The archive index has 321 rows; skip layout/paint for offscreen rows while
-  // keeping find-in-page and accessibility intact. The contained intrinsic
-  // size is the content box, so subtract vertical padding from the 3.375rem
-  // outer min-height to keep the skipped and rendered rows the same height.
-  content-visibility: auto;
-  contain-intrinsic-size: auto 2.5rem;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.375rem;
-  width: 100%;
-  min-height: 3.375rem;
-  padding: 0.4375rem 0.625rem;
-  border: 0;
-  border-left: 2px solid transparent;
-  background: transparent;
+  padding: 0 0.375rem;
   color: var(--text2);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
 
-  &:hover {
+  &:focus-visible {
+    @include ctl.focus-ring;
+  }
+}
+
+.versionStep {
+  border: 1px solid var(--hair);
+  border-radius: 0.25rem;
+  background: var(--raised);
+
+  &:hover:not(:disabled) {
+    border-color: var(--ghost-edge);
     background: var(--hover);
     color: var(--text);
   }
 
-  &:focus-visible {
-    @include ctl.focus-ring;
+  &:disabled {
+    opacity: 0.45;
+    cursor: default;
   }
 }
 
-.versionRowActive {
-  border-left-color: var(--accent-ink);
-  background: var(--sel);
-  color: var(--text);
-}
-
-.versionRowMain {
-  display: flex;
-  flex-direction: column;
-  gap: 0.125rem;
-  min-width: 0;
-
-  strong {
-    color: var(--text);
-    font-size: 0.75rem;
-    font-weight: 650;
-  }
-}
-
-.versionString {
-  overflow: hidden;
-  color: var(--text3);
-  font-family: var(--code-font-family);
-  font-size: 0.625rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.versionCounts {
-  display: inline-flex;
-  flex: 0 0 auto;
-  gap: 0.25rem;
-  color: var(--text3);
-  font-family: var(--code-font-family);
-  font-size: 0.625rem;
-  font-variant-numeric: tabular-nums;
-}
-
-.countAdded,
-.kindCountA {
-  color: var(--ins);
-}
-
-.countModified,
-.kindCountM {
-  color: var(--warn);
-}
-
-.countRemoved,
-.kindCountR {
-  color: var(--del-text);
-}
-
-.archiveGap {
-  display: flex;
-  align-items: center;
-  gap: 0.375rem;
-  padding: 0.1875rem 0.625rem;
-  color: var(--warn);
-  font-size: 0.625rem;
-  white-space: nowrap;
-
-  span {
-    flex: 1;
-    height: 1px;
-    background: var(--warn-edge);
-  }
-}
-
-.mobilePicker {
-  display: none;
-}
-
-.historyWorkspace {
-  display: flex;
-  flex-direction: column;
+.versionSelect {
   flex: 1 1 auto;
+  width: 0;
+  min-width: 0;
+  min-height: 2rem;
+  font-size: 0.75rem;
+}
+
+.mobileTabsButton {
+  min-height: 2rem;
+  border: 1px solid var(--hair);
+  border-radius: 0.25rem;
+  background: var(--raised);
+  color: var(--text);
+  font-size: 0.6875rem;
+  white-space: nowrap;
+}
+
+.overviewContent {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
 }
 
-.workspaceTabs {
-  display: flex;
-  align-items: stretch;
-  flex: 0 0 auto;
-  height: var(--pane-bar-h);
-  min-width: 0;
-  overflow-x: auto;
-  overflow-y: hidden;
-  border-bottom: 1px solid var(--line);
-  background: var(--col);
-  scrollbar-width: thin;
-}
+.resizeHandle {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 8px;
+  width: 8px;
+  margin-inline: -4px;
+  cursor: col-resize;
+  touch-action: none;
 
-.workspaceTab,
-.workspaceEntryTab {
-  display: flex;
-  align-items: center;
-  flex: 0 0 auto;
-  min-width: 0;
-  border: 0;
-  border-right: 1px solid var(--hair);
-  border-radius: 0;
-  background: transparent;
-  color: var(--tab);
-  font: inherit;
-  font-size: 0.6875rem;
-}
-
-.workspaceTab {
-  padding: 0 0.75rem;
-  cursor: pointer;
+  &:hover::after,
+  &:focus-visible::after {
+    content: '';
+    position: absolute;
+    inset-block: 0;
+    left: 3px;
+    width: 2px;
+    background: var(--accent-ink);
+  }
 
   &:focus-visible {
-    @include ctl.focus-ring;
-    outline-offset: -2px;
+    outline: none;
   }
 }
 
-.workspaceTab:hover,
-.workspaceEntryTab:hover {
+.entryInspector {
+  position: relative;
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-left: 1px solid var(--line);
+  background: var(--page);
+}
+
+.entryInspectorMaximized {
+  flex: 1 1 auto;
+  border-left: 0;
+}
+
+.inspectorBar {
+  @include ctl.contain-focus-rings;
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  height: var(--pane-bar-h);
+  min-height: var(--pane-bar-h);
+  min-width: 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--col);
+}
+
+.entryTabs {
+  display: flex;
+  align-items: stretch;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+.entryTab {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 0.25rem;
+  min-width: 0;
+  padding-left: 0.375rem;
+  border-right: 1px solid var(--hair);
+  background: transparent;
+  color: var(--tab);
+}
+
+.entryTab:hover {
   background: var(--hover);
   color: var(--text);
 }
 
-.workspaceTabActive {
+.entryTabActive {
   background: var(--raised);
   color: var(--text);
   box-shadow: inset 0 2px 0 var(--accent-ink);
 }
 
-.workspaceEntryTab {
-  gap: 0.25rem;
-  padding-left: 0.375rem;
-}
-
-.workspaceEntrySelect {
+.entryTabSelect {
   display: inline-flex;
   align-items: center;
   gap: 0.3125rem;
   min-width: 0;
-  max-width: 13rem;
+  max-width: 16rem;
   height: 100%;
   padding: 0;
   border: 0;
@@ -266,14 +216,8 @@
   background: transparent;
   color: inherit;
   font: inherit;
+  font-size: 0.6875rem;
   cursor: pointer;
-
-  @media (hover: hover) {
-    &:hover {
-      color: var(--text);
-      background: var(--hover);
-    }
-  }
 
   &:focus-visible {
     @include ctl.focus-ring;
@@ -291,8 +235,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1.25rem;
-  height: 1.25rem;
+  width: 1.375rem;
+  height: 1.375rem;
   margin-right: 0.25rem;
   padding: 0;
   border: 1px solid transparent;
@@ -315,28 +259,25 @@
   }
 }
 
-.tabPanels,
-.panelSlot {
+.maximizeButton {
+  height: 100%;
+  border-left: 1px solid var(--hair);
+  border-radius: 0;
+  background: var(--col);
+}
+
+.diffPanels,
+.diffPanelSlot {
+  display: flex;
   flex: 1 1 auto;
+  flex-direction: column;
   min-width: 0;
   min-height: 0;
-}
-
-.tabPanels {
-  position: relative;
-  display: flex;
-  flex-direction: column;
   overflow: hidden;
 }
 
-.panelSlot {
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-
-  &[hidden] {
-    display: none;
-  }
+.diffPanelSlot[hidden] {
+  display: none;
 }
 
 .overviewScroll {
@@ -350,6 +291,7 @@
 
 .releaseHeader {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
   gap: 1rem;
@@ -371,6 +313,17 @@
   }
 }
 
+.archiveGapNotice {
+  margin-top: 0.5rem;
+  padding: 0.375rem 0.5rem;
+  border: 1px solid var(--warn-edge);
+  border-radius: 0.25rem;
+  background: var(--warn-bg);
+  color: var(--warn);
+  font-size: 0.6875rem;
+  line-height: 1.35;
+}
+
 .eyebrow {
   display: block;
   color: var(--text3);
@@ -386,7 +339,7 @@
   justify-content: flex-end;
   flex-wrap: wrap;
   gap: 0.375rem;
-  max-width: 38rem;
+  max-width: 100%;
   padding-top: 0.375rem;
 
   span {
@@ -699,6 +652,12 @@
   }
 }
 
+.entryCardActive {
+  border-color: var(--accent-ink);
+  background: var(--sel);
+  box-shadow: inset 2px 0 0 var(--accent-ink);
+}
+
 .entryInfo {
   display: flex;
   flex: 1 1 auto;
@@ -929,42 +888,7 @@
   font-size: 0.8125rem;
 }
 
-.srOnly {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}
-
 @media (max-width: 900px) {
-  .historyPage {
-    display: flex;
-    flex-direction: column;
-  }
-
-  .sidebar {
-    display: none;
-  }
-
-  .mobilePicker {
-    display: flex;
-    align-items: center;
-    flex: 0 0 auto;
-    min-width: 0;
-    padding: 0.375rem 0.5rem;
-    border-bottom: 1px solid var(--line);
-    background: var(--col);
-  }
-
-  .mobileVersionSelect {
-    flex: 1 1 auto;
-  }
-
   .overviewScroll {
     padding: 0.75rem 0.625rem 1.5rem;
   }
@@ -995,6 +919,116 @@
 
   .entryModes {
     margin-left: 0;
+  }
+}
+
+@media (max-width: 700px) {
+  .historyWorkspace {
+    position: relative;
+    flex-direction: column;
+  }
+
+  .overviewPane,
+  .overviewPaneFull {
+    flex: 1 1 auto;
+    width: 100%;
+    max-width: none;
+  }
+
+  .overviewPane:not([hidden]) {
+    flex: 1 1 auto;
+  }
+
+  .versionPickerBar {
+    height: auto;
+    min-height: calc(var(--tap) + 0.5rem);
+    gap: 0.25rem;
+    padding: 0.25rem 0.375rem;
+  }
+
+  .versionStep {
+    min-width: var(--tap);
+    min-height: var(--tap);
+    padding: 0;
+  }
+
+  .versionSelect {
+    min-height: var(--tap);
+  }
+
+  .mobileTabsButton {
+    min-height: var(--tap);
+    padding-inline: 0.375rem;
+  }
+
+  .resizeHandle {
+    display: none;
+  }
+
+  .entryInspector {
+    display: none;
+  }
+
+  .entryInspectorMobileOpen {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: flex;
+    width: auto;
+    max-width: none;
+    min-width: 0;
+    border: 0;
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+    background: var(--page);
+  }
+
+  .inspectorBar {
+    height: auto;
+    min-height: var(--tap);
+    gap: 0.25rem;
+    padding: 0 0.375rem;
+  }
+
+  .mobileBackButton {
+    @include ctl.button;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    gap: 0.25rem;
+    min-height: var(--tap);
+    padding: 0 0.375rem;
+    font-size: 0.75rem;
+    white-space: nowrap;
+  }
+
+  .entryTabs {
+    min-height: var(--tap);
+    scrollbar-width: none;
+
+    &::-webkit-scrollbar {
+      display: none;
+    }
+  }
+
+  .entryTab {
+    min-height: var(--tap);
+  }
+
+  .entryTabSelect {
+    max-width: 12rem;
+    min-height: var(--tap);
+  }
+
+  .closeEntryTab {
+    width: var(--tap);
+    height: var(--tap);
+    margin-right: 0;
+  }
+
+  .entryPanel {
+    min-height: 0;
   }
 }
 

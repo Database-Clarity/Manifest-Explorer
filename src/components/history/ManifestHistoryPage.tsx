@@ -7,6 +7,9 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent,
   type ReactNode,
 } from 'react';
 import * as manifestClient from '../../manifest/client';
@@ -30,7 +33,14 @@ import { useSettingsStore } from '../../stores/settings';
 import { BungieIcon } from '../BungieIcon';
 import { JsonDiffView } from '../inspector/JsonDiffView';
 import { JsonTree } from '../inspector/JsonTree';
-import { ChevronRightIcon, ExternalLinkIcon } from '../../ui/Icons';
+import {
+  ArrowLeftIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  ExternalLinkIcon,
+  MaximizeIcon,
+  MinimizeIcon,
+} from '../../ui/Icons';
 import { ClearSearchInput } from '../../ui/ClearSearchInput';
 import { Select } from '../../ui/Select';
 import { getTierColorVar } from '../../ui/rarity';
@@ -125,24 +135,6 @@ function formatDate(date: string, includeYear = true): string {
 
 function versionLabel(version: HistoryVersionMeta): string {
   return `${formatDate(version.date)} · ${version.version ?? version.id}`;
-}
-
-function countsFor(version: HistoryVersionMeta): {
-  a: number;
-  m: number;
-  r: number;
-} | null {
-  if (version.counts) {
-    return { a: version.counts.a, m: version.counts.m, r: version.counts.r };
-  }
-  if (
-    typeof version.added === 'number' &&
-    typeof version.modified === 'number' &&
-    typeof version.removed === 'number'
-  ) {
-    return { a: version.added, m: version.modified, r: version.removed };
-  }
-  return null;
 }
 
 const RELEASE_KINDS: readonly ChangeKind[] = ['a', 'm', 'r', 'u', 'c'];
@@ -244,119 +236,26 @@ function KindBadge({ kind }: { kind: ChangeKind }): ReactNode {
   );
 }
 
-function VersionCounts({ version }: { version: HistoryVersionMeta }): ReactNode {
-  const counts = countsFor(version);
-  if (!counts) return null;
-  return (
-    <span className={styles.versionCounts} aria-label={`${counts.a} added, ${counts.m} modified, ${counts.r} removed`}>
-      <span className={styles.countAdded}>+{counts.a}</span>
-      <span className={styles.countModified}>~{counts.m}</span>
-      <span className={styles.countRemoved}>−{counts.r}</span>
-    </span>
-  );
-}
-
-const VersionSidebar = memo(function VersionSidebar({
-  versions,
-  selectedIndex,
-  search,
-  onSearch,
-  onSelect,
-}: {
-  versions: HistoryVersionMeta[];
-  selectedIndex: number | null;
-  search: string;
-  onSearch: (value: string) => void;
-  onSelect: (index: number) => void;
-}): ReactNode {
-  const normalizedSearch = search.trim().toLowerCase();
-  const filtered = useMemo(() => {
-    if (!normalizedSearch) return versions;
-    return versions.filter((version) =>
-      `${version.date} ${version.version ?? ''} ${version.id}`
-        .toLowerCase()
-        .includes(normalizedSearch),
-    );
-  }, [normalizedSearch, versions]);
-
-  return (
-    <aside className={styles.sidebar} aria-label="Manifest versions">
-      <div className={styles.sidebarHeading}>
-        <div>
-          <h1>Manifest history</h1>
-          <span>{versions.length} archived versions</span>
-        </div>
-      </div>
-      <label className={styles.versionSearchLabel}>
-        <span className={styles.srOnly}>Search versions</span>
-        <ClearSearchInput
-          className={styles.versionSearch}
-          wrapperClassName={styles.versionSearchField}
-          value={search}
-          onValueChange={onSearch}
-          placeholder="Filter by date or version…"
-          clearLabel="Clear version filter"
-        />
-      </label>
-      <div className={styles.versionList} role="listbox" aria-label="Archived manifest versions">
-        {filtered.map((version, position) => {
-          const next = filtered[position + 1];
-          return (
-            <div key={version.i}>
-              <button
-                type="button"
-                role="option"
-                aria-selected={selectedIndex === version.i}
-                className={
-                  selectedIndex === version.i
-                    ? `${styles.versionRow} ${styles.versionRowActive}`
-                    : styles.versionRow
-                }
-                onClick={() => onSelect(version.i)}
-                onMouseDown={preventMiddleClickAutoScroll}
-                onAuxClick={(event) =>
-                  activateOnMiddleClick(event, () => onSelect(version.i))
-                }
-              >
-                <span className={styles.versionRowMain}>
-                  <strong>{formatDate(version.date)}</strong>
-                  <span className={styles.versionString}>{version.version ?? version.id}</span>
-                </span>
-                <VersionCounts version={version} />
-              </button>
-              {version.gapBefore && next && (
-                <div className={styles.archiveGap} role="note">
-                  <span />
-                  Archive gap
-                  <span />
-                </div>
-              )}
-            </div>
-          );
-        })}
-        {filtered.length === 0 && <p className={styles.emptyMessage}>No matching versions.</p>}
-      </div>
-    </aside>
-  );
-});
-
 const EntryCard = memo(function EntryCard({
   entry,
   onOpen,
+  isActive,
 }: {
   entry: ChangedEntry;
   onOpen: (entry: ChangedEntry, focus?: boolean) => void;
+  isActive: boolean;
 }): ReactNode {
   return (
     <button
       type="button"
-      className={styles.entryCard}
+      className={isActive ? `${styles.entryCard} ${styles.entryCardActive}` : styles.entryCard}
+      aria-current={isActive ? 'true' : undefined}
       onClick={(event) => onOpen(entry, !(event.ctrlKey || event.metaKey))}
       onMouseDown={preventMiddleClickAutoScroll}
       onAuxClick={(event) => {
         activateOnMiddleClick(event, () => onOpen(entry, false));
       }}
-      title={`Open ${entry.name} full-page diff`}
+      title={`Open ${entry.name} history diff`}
     >
       <BungieIcon icon={entry.icon} size={36} />
       <span className={styles.entryInfo}>
@@ -384,15 +283,16 @@ const ReleaseOverview = memo(function ReleaseOverview({
   release,
   activeVersion,
   onOpenEntry,
+  activeKey,
   isActive,
 }: {
   release: ManifestReleaseSummary;
   activeVersion: HistoryVersionMeta | null;
   onOpenEntry: (entry: ChangedEntry, focus?: boolean) => void;
+  activeKey: string | null;
   isActive: boolean;
 }): ReactNode {
-  const releaseDate =
-    activeVersion?.i === release.v ? activeVersion.date : release.date;
+  const releaseDate = activeVersion?.date ?? release.date;
   const overviewScrollRef = useRef<HTMLDivElement | null>(null);
   const overviewScrollTopRef = useRef(0);
   const [kindFilter, setKindFilter] = useState<ChangeKind | 'all'>('all');
@@ -565,6 +465,11 @@ const ReleaseOverview = memo(function ReleaseOverview({
           <span className={styles.eyebrow}>Manifest release</span>
           <h2>{formatDate(releaseDate)}</h2>
           <p>{release.version ? `Bungie version ${release.version}` : `Version index ${release.v}`}</p>
+          {activeVersion?.gapBefore && (
+            <div className={styles.archiveGapNotice} role="note">
+              This release follows a gap in the archived manifest history.
+            </div>
+          )}
         </div>
         <div className={styles.totalCounts} aria-label="Release change totals">
           <span className={styles.countAdded}>+{release.totals.a} Added</span>
@@ -699,7 +604,12 @@ const ReleaseOverview = memo(function ReleaseOverview({
                     <>
                       <div className={styles.entryGrid}>
                         {shown.map((entry) => (
-                          <EntryCard entry={entry} onOpen={handleOpenEntry} key={entry.key} />
+                          <EntryCard
+                            entry={entry}
+                            onOpen={handleOpenEntry}
+                            isActive={entry.key === activeKey}
+                            key={entry.key}
+                          />
                         ))}
                       </div>
                       {group.count > shown.length && (
@@ -930,38 +840,25 @@ const EntryDiffPanel = memo(function EntryDiffPanel({
   );
 });
 
-function HistoryWorkspaceTabs({
-  state,
-  onSelectOverview,
+function HistoryEntryTabs({
+  tabs,
+  activeKey,
   onSelectEntry,
   onCloseEntry,
 }: {
-  state: EntryTabState;
-  onSelectOverview: () => void;
+  tabs: ChangedEntry[];
+  activeKey: string | null;
   onSelectEntry: (key: string) => void;
   onCloseEntry: (key: string) => void;
 }): ReactNode {
   return (
-    <div className={styles.workspaceTabs} role="tablist" aria-label="History views">
-      <button
-        type="button"
-        role="tab"
-        aria-selected={state.activeKey === null}
-        className={
-          state.activeKey === null
-            ? `${styles.workspaceTab} ${styles.workspaceTabActive}`
-            : styles.workspaceTab
-        }
-        onClick={onSelectOverview}
-      >
-        Release overview
-      </button>
-      {state.tabs.map((entry) => (
+    <div className={styles.entryTabs} role="tablist" aria-label="History entry diffs">
+      {tabs.map((entry) => (
         <div
           className={
-            state.activeKey === entry.key
-              ? `${styles.workspaceEntryTab} ${styles.workspaceTabActive}`
-              : styles.workspaceEntryTab
+            activeKey === entry.key
+              ? `${styles.entryTab} ${styles.entryTabActive}`
+              : styles.entryTab
           }
           key={entry.key}
           onMouseDown={preventMiddleClickAutoScroll}
@@ -976,9 +873,10 @@ function HistoryWorkspaceTabs({
           <button
             type="button"
             role="tab"
-            aria-selected={state.activeKey === entry.key}
-            className={styles.workspaceEntrySelect}
+            aria-selected={activeKey === entry.key}
+            className={styles.entryTabSelect}
             onClick={() => onSelectEntry(entry.key)}
+            title={entry.name}
           >
             <BungieIcon icon={entry.icon} size={19} />
             <span>{entry.name}</span>
@@ -1004,11 +902,23 @@ export const ManifestHistoryPage = memo(function ManifestHistoryPage({
 }: ManifestHistoryPageProps): ReactNode {
   const [index, setIndex] = useState<HistoryManifestIndex | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [versionSearch, setVersionSearch] = useState('');
   const [release, setRelease] = useState<ManifestReleaseSummary | null>(null);
   const [releaseError, setReleaseError] = useState<string | null>(null);
   const [releaseLoading, setReleaseLoading] = useState(false);
   const [tabState, setTabState] = useState<EntryTabState>({ activeKey: null, tabs: [] });
+  const [mobileInspectorOpen, setMobileInspectorOpen] = useState(false);
+  const [inspectorMaximized, setInspectorMaximized] = useState(false);
+  const [overviewWidth, setOverviewWidth] = useState<number | null>(null);
+  const [workspaceWidth, setWorkspaceWidth] = useState(0);
+  const [isMobile, setIsMobile] = useState(
+    () =>
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(max-width: 700px)').matches,
+  );
+  const workspaceRef = useRef<HTMLDivElement | null>(null);
+  const overviewPaneRef = useRef<HTMLElement | null>(null);
+  const resizeStartRef = useRef<{ x: number; width: number } | null>(null);
 
   const versions = useMemo(
     () => [...(index?.versions ?? [])].sort((a, b) => b.i - a.i),
@@ -1017,8 +927,43 @@ export const ManifestHistoryPage = memo(function ManifestHistoryPage({
   const activeVersionIndex =
     versions.find((version) => version.i === versionIndex)?.i ?? versions[0]?.i ?? null;
   const activeVersion = versions.find((version) => version.i === activeVersionIndex) ?? null;
+  const activeVersionPosition = versions.findIndex((version) => version.i === activeVersionIndex);
+  const olderVersion = versions[activeVersionPosition + 1] ?? null;
+  const newerVersion = activeVersionPosition > 0 ? versions[activeVersionPosition - 1] : null;
   const latestIndex = versions.reduce((maximum, version) => Math.max(maximum, version.i), 0);
   const historyRevision = getHistoryRevision(index);
+  const minOverviewWidth = Math.min(352, workspaceWidth * 0.38);
+  const maxOverviewWidth = Math.max(
+    minOverviewWidth,
+    Math.min(workspaceWidth * 0.65, workspaceWidth - 328),
+  );
+  const effectiveOverviewWidth =
+    overviewWidth === null
+      ? workspaceWidth * 0.42
+      : Math.max(minOverviewWidth, Math.min(maxOverviewWidth, overviewWidth));
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const media = window.matchMedia('(max-width: 700px)');
+    const update = (): void => setIsMobile(media.matches);
+    update();
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
+
+  useEffect(() => {
+    const workspace = workspaceRef.current;
+    if (!workspace) return;
+    const measure = (): void => setWorkspaceWidth(workspace.getBoundingClientRect().width);
+    measure();
+    if (typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver(measure);
+      observer.observe(workspace);
+      return () => observer.disconnect();
+    }
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -1068,15 +1013,19 @@ export const ManifestHistoryPage = memo(function ManifestHistoryPage({
     };
   }, [activeVersionIndex, historyRevision, latestIndex]);
 
-  const openEntry = useCallback((entry: ChangedEntry, focus = true) => {
-    setTabState((current) => {
-      const existing = current.tabs.find((tab) => tab.key === entry.key);
-      return {
-        activeKey: focus ? entry.key : current.activeKey,
-        tabs: existing ? current.tabs : [...current.tabs, entry],
-      };
-    });
-  }, []);
+  const openEntry = useCallback(
+    (entry: ChangedEntry, focus = true) => {
+      setTabState((current) => {
+        const existing = current.tabs.find((tab) => tab.key === entry.key);
+        return {
+          activeKey: focus ? entry.key : current.activeKey ?? entry.key,
+          tabs: existing ? current.tabs : [...current.tabs, entry],
+        };
+      });
+      if (focus && isMobile) setMobileInspectorOpen(true);
+    },
+    [isMobile],
+  );
 
   const closeEntry = useCallback((key: string) => {
     setTabState((current) => {
@@ -1088,57 +1037,142 @@ export const ManifestHistoryPage = memo(function ManifestHistoryPage({
           : current.activeKey;
       return { activeKey, tabs };
     });
-  }, []);
-
-  const selectOverview = useCallback(() => {
-    setTabState((current) => ({ ...current, activeKey: null }));
-  }, []);
+    if (tabState.tabs.length <= 1) {
+      setMobileInspectorOpen(false);
+      setInspectorMaximized(false);
+    }
+  }, [tabState.tabs.length]);
 
   const selectEntryTab = useCallback((key: string) => {
     setTabState((current) => ({ ...current, activeKey: key }));
+    if (isMobile) setMobileInspectorOpen(true);
+  }, [isMobile]);
+
+  const toggleInspectorMaximized = useCallback(() => {
+    setInspectorMaximized((maximized) => !maximized);
   }, []);
+
+  const handleResizePointerDown = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const currentWidth =
+      overviewPaneRef.current?.getBoundingClientRect().width ??
+      workspaceRef.current?.getBoundingClientRect().width ?? 0;
+    resizeStartRef.current = { x: event.clientX, width: currentWidth };
+  }, []);
+
+  const handleResizePointerMove = useCallback(
+    (event: PointerEvent<HTMLDivElement>) => {
+      const start = resizeStartRef.current;
+      if (!start) return;
+      const proposed = start.width + event.clientX - start.x;
+      setOverviewWidth(
+        Math.max(minOverviewWidth, Math.min(maxOverviewWidth, proposed)),
+      );
+    },
+    [maxOverviewWidth, minOverviewWidth],
+  );
+
+  const handleResizePointerUp = useCallback(() => {
+    resizeStartRef.current = null;
+  }, []);
+
+  const handleResizeKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLDivElement>) => {
+      const step = event.shiftKey ? 32 : 8;
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+      event.preventDefault();
+      const currentWidth = overviewWidth ?? effectiveOverviewWidth;
+      const delta = event.key === 'ArrowRight' ? step : -step;
+      setOverviewWidth(
+        Math.max(minOverviewWidth, Math.min(maxOverviewWidth, currentWidth + delta)),
+      );
+    },
+    [effectiveOverviewWidth, maxOverviewWidth, minOverviewWidth, overviewWidth],
+  );
 
   const versionOptions = useMemo(
     () =>
       versions.map((version) => ({
         value: String(version.i),
         label: versionLabel(version),
-        keywords: `${version.version ?? ''} ${version.id ?? ''} ${version.date} ${version.i}`,
+        keywords: [
+          formatDate(version.date),
+          version.date,
+          version.version ?? '',
+          version.id,
+          version.i,
+        ].join(' '),
       })),
     [versions],
   );
 
   return (
     <section className={styles.historyPage} aria-label="Manifest history explorer">
-      <VersionSidebar
-        versions={versions}
-        selectedIndex={activeVersionIndex}
-        search={versionSearch}
-        onSearch={setVersionSearch}
-        onSelect={onSelectVersion}
-      />
-
-      <div className={styles.mobilePicker}>
-        <Select
-          className={styles.mobileVersionSelect}
-          value={String(activeVersionIndex ?? '')}
-          onChange={(value) => onSelectVersion(Number(value))}
-          options={versionOptions}
-          searchable
-          searchPlaceholder="Search versions..."
-          aria-label="Select manifest version"
-        />
-      </div>
-
-      <main className={styles.historyWorkspace}>
-        <HistoryWorkspaceTabs
-          state={tabState}
-          onSelectOverview={selectOverview}
-          onSelectEntry={selectEntryTab}
-          onCloseEntry={closeEntry}
-        />
-        <div className={styles.tabPanels}>
-          <div className={styles.panelSlot} hidden={tabState.activeKey !== null}>
+      <main
+        className={styles.historyWorkspace}
+        ref={workspaceRef}
+        data-mobile-inspector-open={isMobile && mobileInspectorOpen ? 'true' : undefined}
+      >
+        <section
+          ref={overviewPaneRef}
+          className={
+            tabState.tabs.length === 0
+              ? `${styles.overviewPane} ${styles.overviewPaneFull}`
+              : styles.overviewPane
+          }
+          hidden={(isMobile && mobileInspectorOpen) || (!isMobile && inspectorMaximized)}
+          style={
+            !isMobile && tabState.tabs.length > 0 && !inspectorMaximized
+              ? ({ '--history-overview-width': `${effectiveOverviewWidth}px` } as CSSProperties)
+              : undefined
+          }
+          aria-label="Release changes"
+        >
+          <header className={styles.versionPickerBar}>
+            <button
+              type="button"
+              className={styles.versionStep}
+              onClick={() => olderVersion && onSelectVersion(olderVersion.i)}
+              disabled={!olderVersion}
+              aria-label="Older release"
+              title={olderVersion ? formatDate(olderVersion.date) : 'Oldest archived release'}
+            >
+              <ChevronLeftIcon size={15} />
+            </button>
+            <Select
+              className={styles.versionSelect}
+              value={String(activeVersionIndex ?? '')}
+              onChange={(value) => onSelectVersion(Number(value))}
+              options={versionOptions}
+              searchable
+              searchPlaceholder="Search versions or dates..."
+              aria-label="Select manifest version"
+              title={activeVersion ? versionLabel(activeVersion) : 'Select manifest version'}
+            />
+            <button
+              type="button"
+              className={styles.versionStep}
+              onClick={() => newerVersion && onSelectVersion(newerVersion.i)}
+              disabled={!newerVersion}
+              aria-label="Newer release"
+              title={newerVersion ? formatDate(newerVersion.date) : 'Latest archived release'}
+            >
+              <ChevronRightIcon size={15} />
+            </button>
+            {isMobile && tabState.tabs.length > 0 && !mobileInspectorOpen && (
+              <button
+                type="button"
+                className={styles.mobileTabsButton}
+                onClick={() => setMobileInspectorOpen(true)}
+                aria-label={`Return to open tabs, ${tabState.tabs.length}`}
+                title={`Open tabs (${tabState.tabs.length})`}
+              >
+                Tabs ({tabState.tabs.length})
+              </button>
+            )}
+          </header>
+          <div className={styles.overviewContent}>
             {loadError ? (
               <div className={styles.pageState} role="alert">{loadError}</div>
             ) : !index ? (
@@ -1157,23 +1191,84 @@ export const ManifestHistoryPage = memo(function ManifestHistoryPage({
                 release={release}
                 activeVersion={activeVersion}
                 onOpenEntry={openEntry}
-                isActive={tabState.activeKey === null}
+                activeKey={tabState.activeKey}
+                isActive={!isMobile || !mobileInspectorOpen}
               />
             ) : (
               <div className={styles.pageState}>Choose a manifest version to explore.</div>
             )}
           </div>
-          {tabState.tabs.map((entry) => (
-            <div
-              className={styles.panelSlot}
-              hidden={tabState.activeKey !== entry.key}
-              key={entry.key}
-              role="tabpanel"
-            >
-              <EntryDiffPanel entry={entry} onNavigateExplorer={onNavigateExplorer} />
+        </section>
+        {tabState.tabs.length > 0 && !isMobile && !inspectorMaximized && (
+          <div
+            className={styles.resizeHandle}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize release changes pane"
+            aria-valuemin={Math.round(minOverviewWidth)}
+            aria-valuemax={Math.round(maxOverviewWidth)}
+            aria-valuenow={Math.round(effectiveOverviewWidth)}
+            tabIndex={0}
+            onPointerDown={handleResizePointerDown}
+            onPointerMove={handleResizePointerMove}
+            onPointerUp={handleResizePointerUp}
+            onKeyDown={handleResizeKeyDown}
+          />
+        )}
+        {tabState.tabs.length > 0 && (
+          <section
+            className={[
+              styles.entryInspector,
+              !isMobile && inspectorMaximized ? styles.entryInspectorMaximized : '',
+              isMobile && mobileInspectorOpen ? styles.entryInspectorMobileOpen : '',
+            ].filter(Boolean).join(' ')}
+            aria-label="History diff inspector"
+          >
+            <header className={styles.inspectorBar}>
+              {isMobile && mobileInspectorOpen && (
+                <button
+                  type="button"
+                  className={styles.mobileBackButton}
+                  onClick={() => setMobileInspectorOpen(false)}
+                  aria-label="Back to release changes"
+                  title="Back to release changes"
+                >
+                  <ArrowLeftIcon size={15} />
+                  <span>Back</span>
+                </button>
+              )}
+              <HistoryEntryTabs
+                tabs={tabState.tabs}
+                activeKey={tabState.activeKey}
+                onSelectEntry={selectEntryTab}
+                onCloseEntry={closeEntry}
+              />
+              {!isMobile && (
+                <button
+                  type="button"
+                  className={styles.maximizeButton}
+                  onClick={toggleInspectorMaximized}
+                  aria-label={inspectorMaximized ? 'Restore split view' : 'Maximize inspector'}
+                  title={inspectorMaximized ? 'Restore split view' : 'Maximize inspector'}
+                >
+                  {inspectorMaximized ? <MinimizeIcon size={14} /> : <MaximizeIcon size={14} />}
+                </button>
+              )}
+            </header>
+            <div className={styles.diffPanels}>
+              {tabState.tabs.map((entry) => (
+                <div
+                  className={styles.diffPanelSlot}
+                  hidden={tabState.activeKey !== entry.key}
+                  key={entry.key}
+                  role="tabpanel"
+                >
+                  <EntryDiffPanel entry={entry} onNavigateExplorer={onNavigateExplorer} />
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          </section>
+        )}
       </main>
     </section>
   );

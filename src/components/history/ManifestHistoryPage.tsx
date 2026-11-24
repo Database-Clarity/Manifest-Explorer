@@ -27,10 +27,15 @@ import { useSettingsStore } from '../../stores/settings';
 import { BungieIcon } from '../BungieIcon';
 import { JsonDiffView } from '../inspector/JsonDiffView';
 import { JsonTree } from '../inspector/JsonTree';
-import { ExternalLinkIcon } from '../../ui/Icons';
+import { ChevronRightIcon, ExternalLinkIcon } from '../../ui/Icons';
 import { ClearSearchInput } from '../../ui/ClearSearchInput';
 import { getTierColorVar } from '../../ui/rarity';
 import { activateOnMiddleClick, preventMiddleClickAutoScroll } from '../middleClick';
+import {
+  formatBucketDiffLabel,
+  formatBucketEntryCount,
+  isBucketExpanded,
+} from './historyBuckets';
 import styles from './ManifestHistoryPage.module.scss';
 
 export interface ManifestHistoryPageProps {
@@ -383,6 +388,30 @@ const ReleaseOverview = memo(function ReleaseOverview({
   // update renders immediately while the expensive tuple filtering below runs
   // at a lower priority against the deferred query.
   const deferredSearch = useDeferredValue(search);
+  const searchKey = deferredSearch.trim();
+  const isSearching = searchKey.length > 0;
+  const [manualBucketsState, setManualBucketsState] = useState<{
+    versionIndex: number;
+    overrides: Record<string, boolean>;
+  }>(() => ({ versionIndex: release.v, overrides: {} }));
+  const [searchBucketsState, setSearchBucketsState] = useState<{
+    versionIndex: number;
+    query: string;
+    overrides: Record<string, boolean>;
+  }>(() => ({ versionIndex: release.v, query: searchKey, overrides: {} }));
+  useEffect(() => {
+    setManualBucketsState({ versionIndex: release.v, overrides: {} });
+  }, [release.v]);
+  useEffect(() => {
+    setSearchBucketsState({ versionIndex: release.v, query: searchKey, overrides: {} });
+  }, [release.v, searchKey]);
+  const manualBucketOverrides =
+    manualBucketsState.versionIndex === release.v ? manualBucketsState.overrides : {};
+  const searchBucketOverrides =
+    searchBucketsState.versionIndex === release.v && searchBucketsState.query === searchKey
+      ? searchBucketsState.overrides
+      : {};
+  const openBucketOverrides = isSearching ? searchBucketOverrides : manualBucketOverrides;
   const [showCountsState, setShowCountsState] = useState<{
     versionIndex: number;
     counts: Record<string, number>;
@@ -430,6 +459,66 @@ const ReleaseOverview = memo(function ReleaseOverview({
         friendlyTableName(a.table).localeCompare(friendlyTableName(b.table)),
       );
   }, [deferredSearch, kindFilter, release]);
+  const allVisibleGroupsOpen =
+    groups.length > 0 &&
+    groups.every((group) =>
+      isBucketExpanded(group.table, openBucketOverrides, isSearching),
+    );
+
+  const setBucketOpen = useCallback(
+    (table: string, open: boolean) => {
+      if (isSearching) {
+        setSearchBucketsState((current) => ({
+          versionIndex: release.v,
+          query: searchKey,
+          overrides: {
+            ...(current.versionIndex === release.v && current.query === searchKey
+              ? current.overrides
+              : {}),
+            [table]: open,
+          },
+        }));
+      } else {
+        setManualBucketsState((current) => ({
+          versionIndex: release.v,
+          overrides: {
+            ...(current.versionIndex === release.v ? current.overrides : {}),
+            [table]: open,
+          },
+        }));
+      }
+    },
+    [isSearching, release.v, searchKey],
+  );
+
+  const setVisibleGroupsOpen = useCallback(
+    (open: boolean) => {
+      const visibleOverrides = Object.fromEntries(
+        groups.map((group) => [group.table, open]),
+      );
+      if (isSearching) {
+        setSearchBucketsState((current) => ({
+          versionIndex: release.v,
+          query: searchKey,
+          overrides: {
+            ...(current.versionIndex === release.v && current.query === searchKey
+              ? current.overrides
+              : {}),
+            ...visibleOverrides,
+          },
+        }));
+      } else {
+        setManualBucketsState((current) => ({
+          versionIndex: release.v,
+          overrides: {
+            ...(current.versionIndex === release.v ? current.overrides : {}),
+            ...visibleOverrides,
+          },
+        }));
+      }
+    },
+    [groups, isSearching, release.v, searchKey],
+  );
 
   return (
     <div className={styles.overviewScroll}>
@@ -467,15 +556,26 @@ const ReleaseOverview = memo(function ReleaseOverview({
             </button>
           ))}
         </div>
-        <ClearSearchInput
-          className={styles.entrySearch}
-          wrapperClassName={styles.entrySearchField}
-          value={search}
-          onValueChange={setSearch}
-          placeholder="Search name, subtitle, hash, or table…"
-          aria-label="Search changed entries"
-          clearLabel="Clear entry search"
-        />
+        <div className={styles.overviewSearchRow}>
+          {groups.length > 0 && (
+            <button
+              type="button"
+              className={styles.expandGroups}
+              onClick={() => setVisibleGroupsOpen(!allVisibleGroupsOpen)}
+            >
+              {allVisibleGroupsOpen ? 'Collapse all' : 'Expand all'}
+            </button>
+          )}
+          <ClearSearchInput
+            className={styles.entrySearch}
+            wrapperClassName={styles.entrySearchField}
+            value={search}
+            onValueChange={setSearch}
+            placeholder="Search name, subtitle, hash, or table…"
+            aria-label="Search changed entries"
+            clearLabel="Clear entry search"
+          />
+        </div>
       </div>
 
       {groups.length === 0 ? (
@@ -485,56 +585,107 @@ const ReleaseOverview = memo(function ReleaseOverview({
           {groups.map((group) => {
             const { table } = group;
             const showLimit = showCounts[table] ?? 60;
+            const isOpen = isBucketExpanded(table, openBucketOverrides, isSearching);
             const shown: ChangedEntry[] = [];
-            for (const kind of RELEASE_KINDS) {
-              for (const tuple of group.tuplesByKind[kind]) {
+            if (isOpen) {
+              for (const kind of RELEASE_KINDS) {
+                for (const tuple of group.tuplesByKind[kind]) {
+                  if (shown.length >= showLimit) break;
+                  shown.push(entryFromReleaseTuple(release, table, kind, tuple));
+                }
                 if (shown.length >= showLimit) break;
-                shown.push(entryFromReleaseTuple(release, table, kind, tuple));
               }
-              if (shown.length >= showLimit) break;
             }
+            const groupId = `history-group-${release.v}-${encodeURIComponent(table)}`;
             return (
-              <details className={styles.tableGroup} key={table} open>
-                <summary className={styles.tableGroupSummary}>
-                  <span>{friendlyTableName(table)}</span>
-                  <span className={styles.tableGroupMeta}>
-                    {group.count.toLocaleString()} entries
+              <section className={styles.tableGroup} key={table}>
+                <button
+                  type="button"
+                  className={styles.tableGroupSummary}
+                  aria-expanded={isOpen}
+                  aria-controls={groupId}
+                  onClick={() => setBucketOpen(table, !isOpen)}
+                >
+                  <span className={styles.tableGroupTitle}>
+                    <ChevronRightIcon
+                      className={
+                        isOpen
+                          ? `${styles.bucketChevron} ${styles.bucketChevronOpen}`
+                          : styles.bucketChevron
+                      }
+                      size={14}
+                    />
+                    <span className={styles.tableGroupName}>{friendlyTableName(table)}</span>
+                    <span className={styles.entryTotal}>
+                      {formatBucketEntryCount(group.count)}
+                    </span>
+                  </span>
+                  <span className={styles.tableGroupAside}>
                     <span className={styles.tableKindCounts}>
                       {RELEASE_KINDS.map((kind) => {
                         const count = group.countsByKind[kind];
                         return count > 0 ? (
-                          <span key={kind} className={styles[`kindCount${kind.toUpperCase()}`]}>
-                            {KIND_SIGNS[kind]}{count}
+                          <span
+                            key={kind}
+                            className={`${styles.tableKindCount} ${styles[`tableKindCount${kind.toUpperCase()}`]}`}
+                          >
+                            {formatBucketDiffLabel(kind, count)}
                           </span>
                         ) : null;
                       })}
                     </span>
+                    {group.count > 1 && (
+                      <span className={styles.diffBar} aria-hidden="true">
+                        {RELEASE_KINDS.map((kind) => {
+                          if (kind === 'c') return null;
+                          const count =
+                            kind === 'u'
+                              ? group.countsByKind.u + group.countsByKind.c
+                              : group.countsByKind[kind];
+                          if (count === 0) return null;
+                          const barKind = kind === 'u' ? 'other' : kind;
+                          return (
+                            <span
+                              key={kind}
+                              className={styles[`diffBar${barKind.toUpperCase()}`]}
+                              style={{ width: `${(count / group.count) * 100}%` }}
+                            />
+                          );
+                        })}
+                      </span>
+                    )}
                   </span>
-                </summary>
-                <div className={styles.entryGrid}>
-                  {shown.map((entry) => (
-                    <EntryCard entry={entry} onOpen={onOpenEntry} key={entry.key} />
-                  ))}
+                </button>
+                <div id={groupId} className={styles.tableGroupContent}>
+                  {isOpen && (
+                    <>
+                      <div className={styles.entryGrid}>
+                        {shown.map((entry) => (
+                          <EntryCard entry={entry} onOpen={onOpenEntry} key={entry.key} />
+                        ))}
+                      </div>
+                      {group.count > shown.length && (
+                        <button
+                          type="button"
+                          className={styles.showMore}
+                          onClick={() =>
+                            setShowCountsState((current) => ({
+                              versionIndex: release.v,
+                              counts: {
+                                ...(current.versionIndex === release.v ? current.counts : {}),
+                                [table]: Math.min(group.count, showLimit + 60),
+                              },
+                            }))
+                          }
+                        >
+                          Show {Math.min(60, group.count - shown.length)} more
+                          <span> · {group.count - shown.length} remaining</span>
+                        </button>
+                      )}
+                    </>
+                  )}
                 </div>
-                {group.count > shown.length && (
-                  <button
-                    type="button"
-                    className={styles.showMore}
-                    onClick={() =>
-                      setShowCountsState((current) => ({
-                        versionIndex: release.v,
-                        counts: {
-                          ...(current.versionIndex === release.v ? current.counts : {}),
-                          [table]: Math.min(group.count, showLimit + 60),
-                        },
-                      }))
-                    }
-                  >
-                    Show {Math.min(60, group.count - shown.length)} more
-                    <span> · {group.count - shown.length} remaining</span>
-                  </button>
-                )}
-              </details>
+              </section>
             );
           })}
         </div>

@@ -447,8 +447,31 @@
   font-size: 0.625rem;
 }
 
+.overviewSearchRow {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
 .entrySearchField {
+  flex: 1 1 20rem;
+  width: auto;
   max-width: 34rem;
+}
+
+.expandGroups {
+  @include ctl.button;
+  flex: 0 0 auto;
+  min-height: 2rem;
+  padding: 0 0.625rem;
+  color: var(--text2);
+  font-size: 0.6875rem;
+  white-space: nowrap;
+
+  &:focus-visible {
+    @include ctl.focus-ring;
+  }
 }
 
 .tableGroups {
@@ -467,18 +490,19 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 0.75rem;
+  width: 100%;
   min-height: 2.375rem;
   padding: 0.5rem 0.625rem;
+  border: 0;
   border-radius: 0.3125rem;
+  background: transparent;
   color: var(--text);
+  font: inherit;
   font-size: 0.8125rem;
   font-weight: 650;
   cursor: pointer;
-
-  &::marker {
-    color: var(--link);
-  }
 
   @media (hover: hover) {
     &:hover {
@@ -491,25 +515,152 @@
   }
 }
 
-.tableGroupMeta,
+.tableGroupTitle {
+  display: inline-flex;
+  align-items: center;
+  flex: 1 1 11rem;
+  gap: 0.375rem;
+  min-width: 0;
+}
+
+.bucketChevron {
+  flex: 0 0 auto;
+  color: var(--text3);
+  transition: transform 120ms ease;
+}
+
+.bucketChevronOpen {
+  transform: rotate(90deg);
+}
+
+.tableGroupName {
+  min-width: 0;
+}
+
+.entryTotal {
+  flex: 0 0 auto;
+  padding: 0.125rem 0.375rem;
+  border: 1px solid var(--hair);
+  border-radius: 999px;
+  background: var(--raised);
+  color: var(--text2);
+  font-size: 0.625rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.tableGroupAside {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  min-width: 0;
+  margin-left: auto;
+}
+
 .tableKindCounts {
   display: inline-flex;
   align-items: center;
-  gap: 0.375rem;
-  color: var(--text3);
-  font-size: 0.6875rem;
-  font-weight: 400;
-}
-
-.tableKindCounts {
+  justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 0.25rem;
-  font-family: var(--code-font-family);
-  font-variant-numeric: tabular-nums;
+  min-width: 0;
 }
 
-.kindCountU,
-.kindCountC {
+.tableKindCount {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.375rem;
+  padding: 0.125rem 0.375rem;
+  border: 1px solid var(--hair);
+  border-radius: 0.25rem;
+  background: var(--raised);
+  font-size: 0.625rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+
+.tableKindCountA {
+  border-color: color-mix(in srgb, var(--ins), var(--hair) 58%);
+  background: var(--ins-bg);
+  color: var(--ins);
+}
+
+.tableKindCountM {
+  border-color: var(--warn-edge);
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+.tableKindCountR {
+  border-color: color-mix(in srgb, var(--del-text), var(--hair) 58%);
+  background: var(--del-bg);
+  color: var(--del-text);
+}
+
+.tableKindCountU {
+  background: var(--strip);
   color: var(--text2);
+}
+
+.tableKindCountC {
+  border-color: color-mix(in srgb, var(--link), var(--hair) 58%);
+  background: color-mix(in srgb, var(--link), var(--col) 91%);
+  color: var(--link);
+}
+
+.diffBar {
+  display: flex;
+  flex: 0 0 3.5rem;
+  width: 3.5rem;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--strip);
+}
+
+.diffBarA,
+.diffBarM,
+.diffBarR,
+.diffBarOTHER {
+  display: block;
+  flex: 0 0 auto;
+  height: 100%;
+}
+
+.diffBarA {
+  background: var(--ins);
+}
+
+.diffBarM {
+  background: var(--warn);
+}
+
+.diffBarR {
+  background: var(--del-text);
+}
+
+.diffBarOTHER {
+  background: var(--text3);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bucketChevron {
+    transition: none;
+  }
+}
+
+.tableGroupContent {
+  min-width: 0;
+}
+
+.tableGroupContent:empty {
+  display: none;
 }
 
 .entryGrid {
@@ -873,12 +1024,22 @@
     }
   }
 
-  .tableGroupMeta {
-    font-size: 0.625rem;
+  .tableGroupSummary {
+    align-items: flex-start;
+    gap: 0.375rem;
+  }
+
+  .tableGroupTitle {
+    flex-basis: 100%;
+  }
+
+  .tableGroupAside {
+    justify-content: flex-start;
+    margin-left: 1.25rem;
   }
 
   .tableKindCounts {
-    display: none;
+    justify-content: flex-start;
   }
 
   .entryCard {
@@ -893,5 +1054,11 @@
     min-height: 2rem;
     padding: 0 0.375rem;
     font-size: 0.625rem;
+  }
+}
+
+@media (max-width: 419px) {
+  .diffBar {
+    display: none;
   }
 }

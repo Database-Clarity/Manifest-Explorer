@@ -21,6 +21,7 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   ClarityWordmark,
+  HeartFilledIcon,
   KofiIcon,
 } from '../ui/Icons';
 import { Popover } from '../ui/Popover';
@@ -238,10 +239,21 @@ function SettingsPopoverBody({
             </button>
           </div>
           <div className={styles.aboutLinks}>
-            <a href="https://d2clarity.com" target="_blank" rel="noopener noreferrer">
-              <ClarityWordmark height={15} aria-label="Clarity" />
-              <span>· d2clarity.com</span>
-            </a>
+            <div className={styles.creditLine}>
+              <span>Made with</span>
+              <HeartFilledIcon size={12} aria-label="love" />
+              <span>by</span>
+              <a
+                className={styles.creditLink}
+                href="https://d2clarity.com"
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="Clarity"
+                title="Visit Clarity"
+              >
+                <ClarityWordmark height={16} aria-label="Clarity" />
+              </a>
+            </div>
             <a
               className={styles.kofiButton}
               href="https://ko-fi.com/D2Clarity"
@@ -249,7 +261,7 @@ function SettingsPopoverBody({
               rel="noopener noreferrer"
             >
               <KofiIcon size={15} />
-              Support on Ko-Fi
+              Support our work on Ko-Fi
             </a>
           </div>
         </section>

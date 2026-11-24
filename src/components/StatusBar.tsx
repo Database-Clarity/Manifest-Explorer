@@ -2,7 +2,7 @@
 import { memo, type ReactNode } from 'react';
 import type { ManifestStatus } from '../types/manifest';
 import { useExplorerStore } from '../stores/explorer';
-import { ClarityLogoMark, KofiIcon } from '../ui/Icons';
+import { ClarityWordmark, HeartFilledIcon, KofiIcon } from '../ui/Icons';
 import styles from './StatusBar.module.scss';
 
 export interface StatusBarProps {
@@ -133,16 +133,21 @@ export const StatusBar = memo(function StatusBar({
           Shortcuts (?)
         </button>
         <span className={styles.actionDivider} aria-hidden="true" />
-        <a
-          className={styles.barLink}
-          href="https://d2clarity.com"
-          target="_blank"
-          rel="noopener noreferrer"
-          title="Clarity website (d2clarity.com)"
-        >
-          <ClarityLogoMark size={13} />
-          Clarity
-        </a>
+        <span className={styles.credit}>
+          <span>Made with</span>
+          <HeartFilledIcon size={10} aria-label="love" />
+          <span>by</span>
+          <a
+            className={`${styles.barLink} ${styles.creditLink}`}
+            href="https://d2clarity.com"
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="Clarity"
+            title="Visit Clarity"
+          >
+            <ClarityWordmark height={12} aria-label="Clarity" />
+          </a>
+        </span>
         <a
           className={cx(styles.barLink, styles.kofiButton)}
           href="https://ko-fi.com/D2Clarity"
@@ -151,7 +156,7 @@ export const StatusBar = memo(function StatusBar({
           title="Support Clarity on Ko-Fi"
         >
           <KofiIcon size={12} />
-          Support on Ko-Fi
+          Support us on Ko-Fi
         </a>
       </div>
     </footer>

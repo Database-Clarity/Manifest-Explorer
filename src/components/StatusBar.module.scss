@@ -150,6 +150,22 @@
   }
 }
 
+.credit {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.1875rem;
+  flex: 0 0 auto;
+  color: var(--text2);
+  font-size: 0.625rem;
+  white-space: nowrap;
+}
+
+.creditLink {
+  padding-right: 0.125rem;
+  padding-left: 0.125rem;
+  line-height: 0;
+}
+
 .kofiButton {
   gap: 0.25rem;
   border-color: var(--kofi-bg);

@@ -3,9 +3,9 @@ import { createPortal } from 'react-dom';
 import type { ChangelogEntry } from '../data/changelog';
 import {
   ChevronDownIcon,
-  ClarityLogoMark,
+  ClarityWordmark,
   CloseIcon,
-  ExternalLinkIcon,
+  HeartFilledIcon,
   KofiIcon,
   ManifestMark,
 } from '../ui/Icons';
@@ -103,23 +103,28 @@ export function ChangelogDialog({
             <span className={styles.eyebrow}>
               <ManifestMark size={18} />
               <span>Manifest Explorer</span>
+              <span className={styles.credit}>
+                <span aria-hidden="true">·</span>
+                <span>Made with</span>
+                <HeartFilledIcon size={11} aria-label="love" />
+                <span>by</span>
+                <a
+                  className={styles.creditLink}
+                  href="https://d2clarity.com"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label="Clarity"
+                  title="Visit Clarity"
+                >
+                  <ClarityWordmark height={15} aria-label="Clarity" />
+                </a>
+              </span>
             </span>
             <h2 id={titleId} className={styles.title}>
               What’s new
             </h2>
           </div>
           <div className={styles.headerLinks}>
-            <a
-              className={styles.headerLink}
-              href="https://d2clarity.com"
-              target="_blank"
-              rel="noopener noreferrer"
-              title="Visit the Clarity website"
-            >
-              <ClarityLogoMark size={13} />
-              <span>d2clarity.com</span>
-              <ExternalLinkIcon size={10} className={styles.headerLinkIcon} />
-            </a>
             <a
               className={`${styles.headerLink} ${styles.kofiLink}`}
               href="https://ko-fi.com/D2Clarity"
@@ -128,7 +133,7 @@ export function ChangelogDialog({
               title="Support Clarity on Ko-Fi"
             >
               <KofiIcon size={14} />
-              <span>Support on Ko-Fi</span>
+              <span>Support our work on Ko-Fi</span>
             </a>
           </div>
           <button

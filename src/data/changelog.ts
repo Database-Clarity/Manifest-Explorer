@@ -28,6 +28,30 @@ export {
 
 export const CHANGELOG: readonly ChangelogEntry[] = [
   {
+    version: '2026.11.24-2',
+    date: 'Nov 24, 2026',
+    title: 'Faster loading, snappier search & smoother mobile history',
+    summary: 'Significantly smaller initial downloads, much faster search and cross-reference lookups, lower memory usage, and smoother scrolling on phones.',
+    sections: [
+      {
+        heading: 'Speed & efficiency',
+        items: [
+          'Cut the initial page download nearly in half by loading the History page, inspector tabs, dialogs, and image upscaling tools only when you open them.',
+          'Search, Load more, Variants, and References are dramatically faster and use about 20% less memory.',
+          'Large JSON objects, huge history diffs, massive manifest updates, and widely referenced items now load in smooth chunks instead of freezing the page, and repeat visits reuse cached data.',
+        ],
+      },
+      {
+        heading: 'Mobile fixes',
+        items: [
+          'Fixed touch scrolling across the /history page and inside History Diff, Pretty, and JSON views.',
+          'Long JSON lines in diffs and snapshots now wrap cleanly by default so you do not have to scroll sideways to read changes.',
+          'Moved the mobile History page link into Settings so the top search bar keeps its full width.',
+        ],
+      },
+    ],
+  },
+  {
     version: '2026.11.24-1',
     date: 'Nov 24, 2026',
     title: 'Manifest History page, lossless diffs & desktop polish',

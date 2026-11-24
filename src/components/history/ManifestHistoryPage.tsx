@@ -737,25 +737,30 @@ const EntryDiffPanel = memo(function EntryDiffPanel({
           />
         </div>
       ) : mode === 'pretty' ? (
-        <JsonTree
-          data={treeData}
-          resolvedRefs={resolvedRefs}
-          onNavigateRef={handleNavigateRef}
-          onCopy={(text) => copyText(text)}
-          imageScaling={imageScaling}
-        />
+        <div className={styles.entryContent}>
+          <JsonTree
+            data={treeData}
+            resolvedRefs={resolvedRefs}
+            onNavigateRef={handleNavigateRef}
+            onCopy={(text) => copyText(text)}
+            imageScaling={imageScaling}
+            embedded
+          />
+        </div>
       ) : (
-        <div className={styles.jsonPanel}>
-          <div className={styles.jsonToolbar}>
-            <button type="button" onClick={() => copyText(JSON.stringify(displaySnapshot ?? null, null, 2))}>
-              Copy JSON
-            </button>
-            <button type="button" onClick={() => downloadJson(displaySnapshot, entry)}>
-              <DownloadIcon size={13} />
-              Download .json
-            </button>
+        <div className={styles.entryContent}>
+          <div className={styles.jsonPanel}>
+            <div className={styles.jsonToolbar}>
+              <button type="button" onClick={() => copyText(JSON.stringify(displaySnapshot ?? null, null, 2))}>
+                Copy JSON
+              </button>
+              <button type="button" onClick={() => downloadJson(displaySnapshot, entry)}>
+                <DownloadIcon size={13} />
+                Download .json
+              </button>
+            </div>
+            <JsonSyntaxView value={displaySnapshot} />
           </div>
-          <JsonSyntaxView value={displaySnapshot} />
         </div>
       )}
     </div>

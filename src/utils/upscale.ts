@@ -287,7 +287,8 @@ function easuSetQuad(
   lC: number,
   lD: number,
   lE: number,
-): [number, number, number] {
+  accumulated: Float64Array,
+): void {
   // Bilinear corner weight: 0 = S (top-left), 1 = T (top-right),
   // 2 = U (bottom-left), 3 = V (bottom-right).
   let w: number;
@@ -317,7 +318,9 @@ function easuSetQuad(
   lenYT = lenYT > 1 ? 1 : lenYT < 0 ? 0 : lenYT;
   lenYT *= lenYT;
 
-  return [dirX * w, dirY * w, (lenXT + lenYT) * w];
+  accumulated[0] = accumulated[0]! + dirX * w;
+  accumulated[1] = accumulated[1]! + dirY * w;
+  accumulated[2] = accumulated[2]! + (lenXT + lenYT) * w;
 }
 
 /** Single FSR 1.0 EASU pass in premultiplied space. */
@@ -329,6 +332,7 @@ function easuScale(source: FloatImage, targetWidth: number, targetHeight: number
 
   const colors = new Float32Array(48); // 12 taps * RGBA
   const luma = new Float32Array(12);
+  const quadAccumulated = new Float64Array(3);
 
   for (let dy = 0; dy < targetHeight; dy += 1) {
     const srcY = (dy + 0.5) * scaleY - 0.5;
@@ -342,8 +346,8 @@ function easuScale(source: FloatImage, targetWidth: number, targetHeight: number
 
       // Load the 12 taps (clamped to the source bounds).
       for (let t = 0; t < 12; t += 1) {
-        const sx = fx0 + (EASU_TAP_X[t] ?? 0);
-        const sy = fy0 + (EASU_TAP_Y[t] ?? 0);
+        const sx = fx0 + EASU_TAP_X[t]!;
+        const sy = fy0 + EASU_TAP_Y[t]!;
         const cx = sx < 0 ? 0 : sx >= srcW ? srcW - 1 : sx;
         const cy = sy < 0 ? 0 : sy >= srcH ? srcH - 1 : sy;
         const o = (cy * srcW + cx) * 4;
@@ -360,40 +364,30 @@ function easuScale(source: FloatImage, targetWidth: number, targetHeight: number
       }
 
       // Named taps: b=0 c=1 e=2 f=3 g=4 h=5 i=6 j=7 k=8 l=9 n=10 o=11.
-      const lB = luma[0] ?? 0;
-      const lC = luma[1] ?? 0;
-      const lE = luma[2] ?? 0;
-      const lF = luma[3] ?? 0;
-      const lG = luma[4] ?? 0;
-      const lH = luma[5] ?? 0;
-      const lI = luma[6] ?? 0;
-      const lJ = luma[7] ?? 0;
-      const lK = luma[8] ?? 0;
-      const lL = luma[9] ?? 0;
-      const lN = luma[10] ?? 0;
-      const lO = luma[11] ?? 0;
+      const lB = luma[0]!;
+      const lC = luma[1]!;
+      const lE = luma[2]!;
+      const lF = luma[3]!;
+      const lG = luma[4]!;
+      const lH = luma[5]!;
+      const lI = luma[6]!;
+      const lJ = luma[7]!;
+      const lK = luma[8]!;
+      const lL = luma[9]!;
+      const lN = luma[10]!;
+      const lO = luma[11]!;
 
       // Accumulate gradient direction and edge length from the four sub-quads.
-      let dirX = 0;
-      let dirY = 0;
-      let len = 0;
-
-      const q1 = easuSetQuad(px, py, 0, lB, lE, lF, lG, lJ);
-      dirX += q1[0];
-      dirY += q1[1];
-      len += q1[2];
-      const q2 = easuSetQuad(px, py, 1, lC, lF, lG, lH, lK);
-      dirX += q2[0];
-      dirY += q2[1];
-      len += q2[2];
-      const q3 = easuSetQuad(px, py, 2, lF, lI, lJ, lK, lN);
-      dirX += q3[0];
-      dirY += q3[1];
-      len += q3[2];
-      const q4 = easuSetQuad(px, py, 3, lG, lJ, lK, lL, lO);
-      dirX += q4[0];
-      dirY += q4[1];
-      len += q4[2];
+      quadAccumulated[0] = 0;
+      quadAccumulated[1] = 0;
+      quadAccumulated[2] = 0;
+      easuSetQuad(px, py, 0, lB, lE, lF, lG, lJ, quadAccumulated);
+      easuSetQuad(px, py, 1, lC, lF, lG, lH, lK, quadAccumulated);
+      easuSetQuad(px, py, 2, lF, lI, lJ, lK, lN, quadAccumulated);
+      easuSetQuad(px, py, 3, lG, lJ, lK, lL, lO, quadAccumulated);
+      const dirX = quadAccumulated[0]!;
+      const dirY = quadAccumulated[1]!;
+      const len = quadAccumulated[2]!;
 
       // Normalize the direction vector, guarding the (near-)zero case.
       const dirLenSq = dirX * dirX + dirY * dirY;
@@ -429,8 +423,8 @@ function easuScale(source: FloatImage, targetWidth: number, targetHeight: number
       let aW = 0;
 
       for (let t = 0; t < 12; t += 1) {
-        const offX = (EASU_TAP_X[t] ?? 0) - px;
-        const offY = (EASU_TAP_Y[t] ?? 0) - py;
+        const offX = EASU_TAP_X[t]! - px;
+        const offY = EASU_TAP_Y[t]! - py;
         const vx = offX * ndirX + offY * ndirY;
         const vy = offX * -ndirY + offY * ndirX;
         const vxl = vx * len2x;
@@ -446,10 +440,10 @@ function easuScale(source: FloatImage, targetWidth: number, targetHeight: number
         const w = wB * wA;
 
         const ci = t * 4;
-        aR += (colors[ci] ?? 0) * w;
-        aG += (colors[ci + 1] ?? 0) * w;
-        aB += (colors[ci + 2] ?? 0) * w;
-        aA += (colors[ci + 3] ?? 0) * w;
+        aR += colors[ci]! * w;
+        aG += colors[ci + 1]! * w;
+        aB += colors[ci + 2]! * w;
+        aA += colors[ci + 3]! * w;
         aW += w;
       }
 

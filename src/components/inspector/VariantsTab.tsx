@@ -1,4 +1,4 @@
-import { memo, type ReactNode } from 'react';
+import { memo, useState, type ReactNode } from 'react';
 import type { DefinitionRef, VariantItem } from '../../types/manifest';
 import { BungieIcon } from '../BungieIcon';
 import { DiffIcon, ExternalLinkIcon } from '../../ui/Icons';
@@ -6,6 +6,9 @@ import { getTierColorVar } from '../../ui/rarity';
 import { Skeleton } from '../../ui/Skeleton';
 import { activateOnMiddleClick, preventMiddleClickAutoScroll } from '../middleClick';
 import styles from './InspectorTabs.module.scss';
+
+/** Dummy, ornament, and shader families can run into the hundreds. */
+const VARIANT_CHUNK_SIZE = 120;
 
 export interface VariantsTabProps {
   currentRef: DefinitionRef;
@@ -22,6 +25,12 @@ export const VariantsTab = memo(function VariantsTab({
   onNavigateRef,
   onDiffVariant,
 }: VariantsTabProps): ReactNode {
+  const scopeKey = `${currentRef.table}:${currentRef.hash}:${variants.length}`;
+  const [chunk, setChunk] = useState({ key: scopeKey, limit: VARIANT_CHUNK_SIZE });
+  const limit = chunk.key === scopeKey ? chunk.limit : VARIANT_CHUNK_SIZE;
+  const visible = variants.length > limit ? variants.slice(0, limit) : variants;
+  const remaining = variants.length - visible.length;
+
   if (loading) {
     return (
       <div className={styles.scrollBody}>
@@ -50,7 +59,7 @@ export const VariantsTab = memo(function VariantsTab({
         {variants.length} definitions share this name family.
       </div>
       <div className={styles.entityList}>
-        {variants.map((item) => {
+        {visible.map((item) => {
           const isCurrent =
             item.hash === currentRef.hash && item.table === currentRef.table;
           const tierColor = getTierColorVar(item.tierType);
@@ -134,6 +143,30 @@ export const VariantsTab = memo(function VariantsTab({
           );
         })}
       </div>
+      {remaining > 0 && (
+        <div className={styles.inlineBtnGroup}>
+          <button
+            type="button"
+            className={styles.smallBtn}
+            onClick={() =>
+              setChunk({
+                key: scopeKey,
+                limit: Math.min(variants.length, limit + VARIANT_CHUNK_SIZE),
+              })
+            }
+          >
+            Show {Math.min(VARIANT_CHUNK_SIZE, remaining)} more (
+            {remaining.toLocaleString()} remaining)
+          </button>
+          <button
+            type="button"
+            className={styles.smallBtn}
+            onClick={() => setChunk({ key: scopeKey, limit: variants.length })}
+          >
+            Show all
+          </button>
+        </div>
+      )}
     </div>
   );
 });

@@ -61,6 +61,8 @@ export interface JsonTreeProps {
   initialExpanded?: Record<string, boolean>;
   onExpandedChange?: (expanded: Record<string, boolean>) => void;
   imageScaling?: ImageScalingMode;
+  /** Let the containing History page own vertical scrolling. */
+  embedded?: boolean;
 }
 
 interface ColorSwatch {
@@ -1197,6 +1199,7 @@ export const JsonTree = memo(function JsonTree({
   initialExpanded,
   onExpandedChange,
   imageScaling = 'sharp',
+  embedded = false,
 }: JsonTreeProps): ReactNode {
   const [filter, setFilter] = useState(initialFilter ?? '');
   const [searchMode, setSearchMode] = useState<'filter' | 'find'>('filter');
@@ -1430,7 +1433,11 @@ export const JsonTree = memo(function JsonTree({
     : SEARCH_PLACEHOLDERS[searchMode].full;
 
   return (
-    <div className={styles.wrapper}>
+    <div
+      className={
+        embedded ? `${styles.wrapper} ${styles.embeddedWrapper}` : styles.wrapper
+      }
+    >
       <div className={styles.toolbar}>
         <ClearSearchInput
           className={styles.filterInput}
@@ -1509,7 +1516,7 @@ export const JsonTree = memo(function JsonTree({
       </div>
 
       <div
-        className={styles.tree}
+        className={embedded ? `${styles.tree} ${styles.embeddedTree}` : styles.tree}
         ref={treeRef}
         data-inspector-scroll="true"
         role="tree"

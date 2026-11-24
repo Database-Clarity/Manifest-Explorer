@@ -519,6 +519,37 @@ function DefinitionInspectorImpl({
     return detail ? JSON.stringify(detail.data, null, 2) : '';
   }, [detail]);
 
+  // Stable handlers for memoized child tabs: inline arrows here would defeat
+  // `memo()` every time the inspector chrome (tabs, history banner, width)
+  // re-renders.
+  const pinCurrentAsBaseline = useCallback(() => {
+    if (!currentRef) {
+      return;
+    }
+    pinForDiff({
+      table: currentRef.table,
+      hash: unsignedHash,
+      label: itemName,
+      icon: iconPath,
+    });
+  }, [currentRef, iconPath, itemName, pinForDiff, unsignedHash]);
+
+  const handlePinDiffClick = useCallback(() => {
+    flushScroll();
+    pinCurrentAsBaseline();
+    pushNotice({ tone: 'info', message: `Pinned ${itemName} as diff baseline` });
+  }, [flushScroll, itemName, pinCurrentAsBaseline, pushNotice]);
+
+  const handleDiffVariant = useCallback(
+    (variantRef: DefinitionRef) => {
+      flushScroll();
+      pinCurrentAsBaseline();
+      onNavigateRef(variantRef, false);
+      setActiveTab('diff');
+    },
+    [flushScroll, onNavigateRef, pinCurrentAsBaseline, setActiveTab],
+  );
+
   const handleDownloadJson = useCallback(() => {
     if (!detail) {
       return;
@@ -1042,16 +1073,7 @@ function DefinitionInspectorImpl({
           <button
             type="button"
             className={styles.actionBtn}
-            onClick={() => {
-              flushScroll();
-              pinForDiff({
-                table: currentRef.table,
-                hash: unsignedHash,
-                label: itemName,
-                icon: iconPath,
-              });
-              pushNotice({ tone: 'info', message: `Pinned ${itemName} as diff baseline` });
-            }}
+            onClick={handlePinDiffClick}
             title="Pin as diff baseline"
           >
             <DiffIcon size={13} />
@@ -1184,7 +1206,7 @@ function DefinitionInspectorImpl({
                   initialExpanded={activeEntry?.jsonExpanded}
                   onExpandedChange={handleJsonExpandedChange}
                   imageScaling={imageScaling}
-                  onNavigateRef={(ref, inNewTab) => navigateWithFlush(ref, inNewTab)}
+                  onNavigateRef={navigateWithFlush}
                   onCopy={copyText}
                 />
               </div>
@@ -1203,7 +1225,7 @@ function DefinitionInspectorImpl({
                     clarityLoading={clarityLoading}
                     showClarity={showClarity}
                     imageScaling={imageScaling}
-                    onNavigateRef={(ref, inNewTab) => navigateWithFlush(ref, inNewTab)}
+                    onNavigateRef={navigateWithFlush}
                     onCopy={copyText}
                     onLoadFullItem={onLoadFullItem}
                   />
@@ -1221,18 +1243,8 @@ function DefinitionInspectorImpl({
                     currentRef={currentRef}
                     variants={variants}
                     loading={variantsLoading}
-                    onNavigateRef={(ref, inNewTab) => navigateWithFlush(ref, inNewTab)}
-                    onDiffVariant={(variantRef) => {
-                      flushScroll();
-                      pinForDiff({
-                        table: currentRef.table,
-                        hash: unsignedHash,
-                        label: itemName,
-                        icon: iconPath,
-                      });
-                      onNavigateRef(variantRef, false);
-                      setActiveTab('diff');
-                    }}
+                    onNavigateRef={navigateWithFlush}
+                    onDiffVariant={handleDiffVariant}
                   />
                 </Suspense>
               </div>
@@ -1245,9 +1257,10 @@ function DefinitionInspectorImpl({
               >
                 <Suspense fallback={<InspectorTabFallback />}>
                   <LazyReferencesTab
+                    scopeKey={`${currentRef.table}:${currentRef.hash}`}
                     response={references}
                     loading={referencesLoading}
-                    onNavigateRef={(ref, inNewTab) => navigateWithFlush(ref, inNewTab)}
+                    onNavigateRef={navigateWithFlush}
                     onLoadPriorityTable={onLoadPriorityTable}
                   />
                 </Suspense>
@@ -1296,18 +1309,9 @@ function DefinitionInspectorImpl({
                     pinnedRef={pinnedDiffRef}
                     pinnedDetail={pinnedDetail}
                     pinnedLoading={pinnedLoading}
-                    onPinCurrent={() =>
-                      pinForDiff({
-                        table: currentRef.table,
-                        hash: unsignedHash,
-                        label: itemName,
-                        icon: iconPath,
-                      })
-                    }
+                    onPinCurrent={pinCurrentAsBaseline}
                     onClearPin={clearPinnedDiff}
-                    onNavigateRef={(ref, inNewTab) =>
-                      navigateWithFlush(ref, inNewTab)
-                    }
+                    onNavigateRef={navigateWithFlush}
                   />
                 </Suspense>
               </div>
@@ -1326,7 +1330,7 @@ function DefinitionInspectorImpl({
                     currentData={detail.data}
                     resolvedRefs={detail.resolvedRefs}
                     imageScaling={imageScaling}
-                    onNavigateRef={(ref, inNewTab) => navigateWithFlush(ref, inNewTab)}
+                    onNavigateRef={navigateWithFlush}
                     onCopy={copyText}
                   />
                 </Suspense>

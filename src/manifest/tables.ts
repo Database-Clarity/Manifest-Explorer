@@ -458,6 +458,7 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 
 function asString(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
+  if (value.length === 0) return undefined;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
 }
@@ -483,6 +484,7 @@ function asStringArray(value: unknown): string[] | undefined {
 }
 
 function normalizeText(value: string): string {
+  if (value.length === 0) return '';
   return value.replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
@@ -490,12 +492,40 @@ function truncate(value: string, max: number): string {
   return value.length > max ? value.slice(0, max) : value;
 }
 
-function firstString(...values: unknown[]): string | undefined {
-  for (const value of values) {
-    const text = asString(value);
-    if (text) return text;
-  }
-  return undefined;
+function firstString(
+  value0?: unknown,
+  value1?: unknown,
+  value2?: unknown,
+  value3?: unknown,
+  value4?: unknown,
+  value5?: unknown,
+  value6?: unknown,
+  value7?: unknown,
+  value8?: unknown,
+): string | undefined {
+  let text = asString(value0);
+  if (text) return text;
+  text = asString(value1);
+  if (text) return text;
+  text = asString(value2);
+  if (text) return text;
+  text = asString(value3);
+  if (text) return text;
+  text = asString(value4);
+  if (text) return text;
+  text = asString(value5);
+  if (text) return text;
+  text = asString(value6);
+  if (text) return text;
+  text = asString(value7);
+  if (text) return text;
+  return asString(value8);
+}
+
+function appendTextPart(current: string, value: unknown): string {
+  const text = asString(value);
+  if (!text) return current;
+  return current ? `${current} ${text}` : text;
 }
 
 /**
@@ -537,19 +567,16 @@ export function extractTableEntrySummary(
       raw.traitName,
     ) ?? friendlyName;
 
-  const descriptionParts = [
-    displayProperties?.description,
-    raw.flavorText,
-    displayProperties?.flavorText,
-    raw.displaySource,
-    raw.sourceString,
-    raw.description,
-    raw.tooltip,
-  ]
-    .map((value) => asString(value))
-    .filter((value): value is string => value !== undefined);
+  let description = '';
+  description = appendTextPart(description, displayProperties?.description);
+  description = appendTextPart(description, raw.flavorText);
+  description = appendTextPart(description, displayProperties?.flavorText);
+  description = appendTextPart(description, raw.displaySource);
+  description = appendTextPart(description, raw.sourceString);
+  description = appendTextPart(description, raw.description);
+  description = appendTextPart(description, raw.tooltip);
 
-  const descLower = truncate(normalizeText(descriptionParts.join(' ')), 600);
+  const descLower = truncate(normalizeText(description), 600);
   const nameLower = normalizeText(name);
   const subtitleLower = normalizeText(subtitle);
 

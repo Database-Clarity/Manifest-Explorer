@@ -91,6 +91,51 @@ const STREAM_FLUSH_ENTRIES = 2500;
 const STREAM_FLUSH_BYTES = 10_000_000;
 const RAW_TABLE_MEMORY_BUDGET_BYTES = 96 * 1024 * 1024;
 const REVERSE_REFERENCE_CACHE_LIMIT = 16;
+export const REVERSE_REFERENCE_BLOOM_BITS = 4096;
+const REVERSE_REFERENCE_BLOOM_PROBES = 4;
+
+export interface HashBloomFilter {
+  bits: Uint32Array;
+}
+
+export function createHashBloomFilter(): HashBloomFilter {
+  return { bits: new Uint32Array(REVERSE_REFERENCE_BLOOM_BITS >>> 5) };
+}
+
+function mixBloomHash(value: number): number {
+  let hash = value >>> 0;
+  hash ^= hash >>> 16;
+  hash = Math.imul(hash, 0x7feb352d);
+  hash ^= hash >>> 15;
+  hash = Math.imul(hash, 0x846ca68b);
+  hash ^= hash >>> 16;
+  return hash >>> 0;
+}
+
+export function addHashToBloomFilter(filter: HashBloomFilter, value: number): void {
+  if (!Number.isInteger(value)) return;
+  const unsigned = toUnsignedHash(value);
+  const first = mixBloomHash(unsigned);
+  const step = mixBloomHash(unsigned ^ 0x9e3779b9) | 1;
+  for (let probe = 0; probe < REVERSE_REFERENCE_BLOOM_PROBES; probe += 1) {
+    const bit = (first + probe * step) & (REVERSE_REFERENCE_BLOOM_BITS - 1);
+    const word = bit >>> 5;
+    filter.bits[word] = filter.bits[word]! | (1 << (bit & 31));
+  }
+}
+
+export function hashBloomFilterMayContain(filter: HashBloomFilter, value: number): boolean {
+  if (!Number.isInteger(value)) return false;
+  const unsigned = toUnsignedHash(value);
+  const first = mixBloomHash(unsigned);
+  const step = mixBloomHash(unsigned ^ 0x9e3779b9) | 1;
+  for (let probe = 0; probe < REVERSE_REFERENCE_BLOOM_PROBES; probe += 1) {
+    const bit = (first + probe * step) & (REVERSE_REFERENCE_BLOOM_BITS - 1);
+    if ((filter.bits[bit >>> 5]! & (1 << (bit & 31))) === 0) return false;
+  }
+  return true;
+}
+
 const fullItemWaiters = new Map<number, Array<(parsed: Record<string, unknown>) => void>>();
 const BUNGIE_MANIFEST_URL = 'https://www.bungie.net/Platform/Destiny2/Manifest/';
 const CLARITY_URL =
@@ -303,6 +348,7 @@ const persistedRawTables = new Set<string>();
 const fullItemLru = new Map<number, Record<string, unknown>>();
 const categoryNameMap = new Map<number, string>();
 const loadingPromises = new Map<string, Promise<void>>();
+const reverseReferenceBlooms = new Map<string, HashBloomFilter>();
 let fullItemCount = 0;
 let retainedRawTableBytes = 0;
 let clarityPromise: Promise<Map<number, ClarityDescriptionEntry>> | undefined;
@@ -375,6 +421,53 @@ function estimateRawTableBytes(data: Record<string, Record<string, unknown>>): n
   return sampled === 0 ? 64 : Math.round((sampleBytes / sampled) * count + 64);
 }
 
+function addDefinitionNumbersToBloom(value: unknown, filter: HashBloomFilter): void {
+  if (typeof value === 'number') {
+    if (Number.isInteger(value)) addHashToBloomFilter(filter, value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const child of value) {
+      if (typeof child === 'number' || (typeof child === 'object' && child !== null)) {
+        addDefinitionNumbersToBloom(child, filter);
+      }
+    }
+    return;
+  }
+  if (typeof value !== 'object' || value === null) return;
+
+  const record = value as Record<string, unknown>;
+  for (const key in record) {
+    if (key === 'displayProperties' || key === 'flavorText') continue;
+    const child = record[key];
+    if (typeof child === 'number' || (typeof child === 'object' && child !== null)) {
+      addDefinitionNumbersToBloom(child, filter);
+    }
+  }
+}
+
+export function buildTableHashBloomFilter(
+  data: Record<string, Record<string, unknown>>,
+): HashBloomFilter {
+  const filter = createHashBloomFilter();
+  for (const hashKey in data) {
+    addDefinitionNumbersToBloom(data[hashKey], filter);
+  }
+  return filter;
+}
+
+function getTableReferenceBloom(
+  table: string,
+  data: Record<string, Record<string, unknown>>,
+): HashBloomFilter {
+  let filter = reverseReferenceBlooms.get(table);
+  if (!filter) {
+    filter = buildTableHashBloomFilter(data);
+    reverseReferenceBlooms.set(table, filter);
+  }
+  return filter;
+}
+
 function isProtectedRawTable(table: string): boolean {
   return (
     (CORE_BOOT_TABLES as readonly string[]).includes(table) ||
@@ -402,6 +495,7 @@ function retainRawTable(
   const oldBytes = tableDataBytes.get(table) ?? 0;
   retainedRawTableBytes = Math.max(0, retainedRawTableBytes - oldBytes);
   const bytes = estimateRawTableBytes(data);
+  getTableReferenceBloom(table, data);
   tableDataBytes.set(table, bytes);
   retainedRawTableBytes += bytes;
   if (persisted) persistedRawTables.add(table);
@@ -1349,6 +1443,7 @@ function resetEngineState(): void {
   descriptionStringPool.clear();
   sourceStringPool.clear();
   loadingPromises.clear();
+  reverseReferenceBlooms.clear();
   fullItemCount = 0;
   fullEnrichmentPending = true;
   indexDirty = false;
@@ -1510,6 +1605,7 @@ async function init(
       emitStatus(true);
       emitTables(true);
       emitCatalog();
+      scheduleTextSearchIndexWarmup();
       void backgroundUpdateCheck();
       void refreshD2aiMappingsFromRemote().then((updated) => {
         if (updated) {
@@ -1593,6 +1689,7 @@ async function init(
       emitStatus(true);
       emitTables(true);
       emitCatalog();
+      scheduleTextSearchIndexWarmup();
     }
   })();
 
@@ -1648,6 +1745,7 @@ async function resumeBackgroundIndexing(): Promise<void> {
     emitStatus(true);
     emitTables(true);
     emitCatalog();
+    scheduleTextSearchIndexWarmup();
   }
 }
 
@@ -1906,6 +2004,7 @@ async function loadAllTables(): Promise<void> {
     if (wasReady) {
       state.phase = 'ready';
       state.currentTable = undefined;
+      scheduleTextSearchIndexWarmup();
     }
     emitStatus(true);
     emitTables(true);
@@ -1915,6 +2014,24 @@ async function loadAllTables(): Promise<void> {
 // ---------------------------------------------------------------------------
 // Search
 // ---------------------------------------------------------------------------
+
+function scheduleTextSearchIndexWarmup(): void {
+  const generation = indexGeneration;
+  const start = (): void => {
+    if (generation !== indexGeneration || !state.initialized) return;
+    void prepareTextSearchIndex(entries).catch((error: unknown) => {
+      console.error('[manifest] Failed to prepare the text search index:', error);
+    });
+  };
+  const idleWindow = globalThis as typeof globalThis & {
+    requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
+  };
+  if (typeof idleWindow.requestIdleCallback === 'function') {
+    idleWindow.requestIdleCallback(start, { timeout: 1_000 });
+  } else {
+    setTimeout(start, 0);
+  }
+}
 
 async function search(
   query: string,
@@ -1979,9 +2096,7 @@ async function search(
     // in yielding batches while the worker is otherwise idle.
     setTimeout(() => {
       if (state.phase !== 'ready' || generation !== indexGeneration) return;
-      void prepareTextSearchIndex(entries).catch((error: unknown) => {
-        console.error('[manifest] Failed to prepare the text search index:', error);
-      });
+      scheduleTextSearchIndexWarmup();
     }, 0);
   }
   searchPageCache = { key: cacheKey, response };
@@ -2034,16 +2149,89 @@ let activeDeepSearchMask = 0;
 let activeDeepSearchFoundMask = 0;
 let activeDeepSearchUsesMask = true;
 const deepSearchFoundTerms = new Set<string>();
+const deepSearchLowerKeyCache = new Map<string, string>();
+const deepSearchLowerTextCache = new Map<string, string>();
+const DEEP_SEARCH_LETTER_FREQUENCY = 'etaoinshrdlcumwfgypbvkjxqz';
 
-function hasDeepSearchTerm(value: unknown, term: string): boolean {
+function lowerDeepSearchKey(key: string): string {
+  let lower = deepSearchLowerKeyCache.get(key);
+  if (lower === undefined) {
+    lower = key.toLowerCase();
+    if (deepSearchLowerKeyCache.size < 256) deepSearchLowerKeyCache.set(key, lower);
+  }
+  return lower;
+}
+
+function lowerDeepSearchText(text: string): string {
+  const cached = deepSearchLowerTextCache.get(text);
+  if (cached !== undefined) return cached;
+  const lower = text.toLowerCase();
+  if (text.length <= 96) {
+    if (deepSearchLowerTextCache.size >= 256) {
+      const oldest = deepSearchLowerTextCache.keys().next().value;
+      if (oldest !== undefined) deepSearchLowerTextCache.delete(oldest);
+    }
+    deepSearchLowerTextCache.set(text, lower);
+  }
+  return lower;
+}
+
+function chooseDeepSearchProbeChar(term: string): string {
+  let selected = '';
+  let selectedRank = -1;
+  for (let index = 0; index < term.length; index += 1) {
+    const code = term.charCodeAt(index);
+    if (code >= 48 && code <= 57) {
+      if (selectedRank < 27) {
+        selected = term.charAt(index);
+        selectedRank = 27;
+      }
+      continue;
+    }
+    if (code < 97 || code > 122) continue;
+    const rank = DEEP_SEARCH_LETTER_FREQUENCY.indexOf(term.charAt(index));
+    if (rank > selectedRank) {
+      selected = term.charAt(index);
+      selectedRank = rank;
+    }
+  }
+  return selected;
+}
+
+function hasDeepSearchProbeChar(value: string, probe: string): boolean {
+  if (!probe) return true;
+  const code = probe.charCodeAt(0);
+  if (code >= 97 && code <= 122) {
+    if (value.indexOf(probe) !== -1 || value.indexOf(String.fromCharCode(code - 32)) !== -1) {
+      return true;
+    }
+    // Unicode's lowercase mappings for long s, dotted capital I and Kelvin
+    // sign can introduce these ASCII letters without a literal ASCII byte.
+    if (probe === 's' && value.indexOf('\u017f') !== -1) return true;
+    if (probe === 'i' && value.indexOf('\u0130') !== -1) return true;
+    if (probe === 'k' && value.indexOf('\u212a') !== -1) return true;
+    return false;
+  }
+  return value.indexOf(probe) !== -1;
+}
+
+function hasDeepSearchTerm(value: unknown, term: string, probe: string): boolean {
   if (value === null || value === undefined) return false;
-  if (typeof value === 'string') return value.toLowerCase().includes(term);
+  if (typeof value === 'string') {
+    return (
+      value.length >= term.length &&
+      hasDeepSearchProbeChar(value, probe) &&
+      lowerDeepSearchText(value).indexOf(term) !== -1
+    );
+  }
   if (typeof value === 'number' || typeof value === 'boolean') {
-    return String(value).toLowerCase().includes(term);
+    const text = String(value);
+    return text.length >= term.length && text.toLowerCase().indexOf(term) !== -1;
   }
   if (Array.isArray(value)) {
+    if (value.length === 0) return false;
     for (const child of value) {
-      if (hasDeepSearchTerm(child, term)) return true;
+      if (hasDeepSearchTerm(child, term, probe)) return true;
     }
     return false;
   }
@@ -2051,7 +2239,14 @@ function hasDeepSearchTerm(value: unknown, term: string): boolean {
     const record = value as Record<string, unknown>;
     for (const key in record) {
       if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
-      if (key.toLowerCase().includes(term) || hasDeepSearchTerm(record[key], term)) return true;
+      if (
+        (key.length >= term.length &&
+          hasDeepSearchProbeChar(key, probe) &&
+          lowerDeepSearchKey(key).indexOf(term) !== -1) ||
+        hasDeepSearchTerm(record[key], term, probe)
+      ) {
+        return true;
+      }
     }
   }
   return false;
@@ -2064,7 +2259,7 @@ function deepSearchAllTermsFound(): boolean {
 }
 
 function checkDeepSearchText(text: string): void {
-  const lower = text.toLowerCase();
+  const lower = lowerDeepSearchText(text);
   if (activeDeepSearchUsesMask) {
     for (let i = 0; i < activeDeepSearchTerms.length; i += 1) {
       const bit = 1 << i;
@@ -2091,6 +2286,7 @@ function visitDeepSearchValue(value: unknown): boolean {
     return deepSearchAllTermsFound();
   }
   if (Array.isArray(value)) {
+    if (value.length === 0) return false;
     for (const child of value) {
       if (visitDeepSearchValue(child)) return true;
     }
@@ -2100,7 +2296,7 @@ function visitDeepSearchValue(value: unknown): boolean {
     const record = value as Record<string, unknown>;
     for (const key in record) {
       if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
-      checkDeepSearchText(key);
+      checkDeepSearchText(lowerDeepSearchKey(key));
       if (deepSearchAllTermsFound() || visitDeepSearchValue(record[key])) return true;
     }
   }
@@ -2108,9 +2304,9 @@ function visitDeepSearchValue(value: unknown): boolean {
 }
 
 /** Search object text without serializing every definition into a new JSON string. */
-function matchesAllValues(value: unknown, terms: string[]): boolean {
+function matchesAllValues(value: unknown, terms: string[], probe: string): boolean {
   if (terms.length === 0) return true;
-  if (terms.length === 1) return hasDeepSearchTerm(value, terms[0]!);
+  if (terms.length === 1) return hasDeepSearchTerm(value, terms[0]!, probe);
   activeDeepSearchTerms = terms;
   activeDeepSearchUsesMask = terms.length <= 31;
   if (activeDeepSearchUsesMask) {
@@ -2126,26 +2322,65 @@ function truncateString(value: string, max: number): string {
   return value.length > max ? value.slice(0, max) : value;
 }
 
+function deepPrimitiveMatches(value: string | number | boolean, terms: string[]): boolean {
+  const text = typeof value === 'string' ? value : String(value);
+  const lower = lowerDeepSearchText(text);
+  for (const term of terms) {
+    if (lower.indexOf(term) === -1) return false;
+  }
+  return true;
+}
+
 /** Walk a parsed definition and return the first path whose value matches all terms. */
 function findDeepMatch(value: unknown, terms: string[], path: string): DeepMatchSnippet | undefined {
   if (value === null || value === undefined) return undefined;
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-    const text = String(value).toLowerCase();
-    if (terms.every((term) => text.includes(term))) {
+    if (deepPrimitiveMatches(value, terms)) {
       return { path, preview: truncateString(String(value), DEEP_MATCH_PREVIEW_MAX) };
     }
     return undefined;
   }
   if (Array.isArray(value)) {
     for (let i = 0; i < value.length; i++) {
+      const child = value[i];
+      if (child === null || child === undefined) continue;
+      if (typeof child === 'string' || typeof child === 'number' || typeof child === 'boolean') {
+        if (deepPrimitiveMatches(child, terms)) {
+          const childPath = path ? `${path}[${i}]` : `[${i}]`;
+          return {
+            path: childPath,
+            preview: truncateString(String(child), DEEP_MATCH_PREVIEW_MAX),
+          };
+        }
+        continue;
+      }
+      if (Array.isArray(child) ? child.length === 0 : Object.keys(child as object).length === 0) {
+        continue;
+      }
       const childPath = path ? `${path}[${i}]` : `[${i}]`;
-      const found = findDeepMatch(value[i], terms, childPath);
+      const found = findDeepMatch(child, terms, childPath);
       if (found) return found;
     }
     return undefined;
   }
   const record = value as Record<string, unknown>;
-  for (const [key, child] of Object.entries(record)) {
+  for (const key in record) {
+    if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
+    const child = record[key];
+    if (typeof child === 'string' || typeof child === 'number' || typeof child === 'boolean') {
+      if (deepPrimitiveMatches(child, terms)) {
+        const childPath = path ? `${path}.${key}` : key;
+        return {
+          path: childPath,
+          preview: truncateString(String(child), DEEP_MATCH_PREVIEW_MAX),
+        };
+      }
+      continue;
+    }
+    if (child === null || child === undefined) continue;
+    if (Array.isArray(child) ? child.length === 0 : Object.keys(child as object).length === 0) {
+      continue;
+    }
     const childPath = path ? `${path}.${key}` : key;
     const found = findDeepMatch(child, terms, childPath);
     if (found) return found;
@@ -2204,6 +2439,7 @@ function scanTableForDeepSearch(
   data: Record<string, Record<string, unknown>>,
   terms: string[],
   scan: DeepScanState,
+  probe: string,
   onlyArtifactPerks = false,
 ): void {
   const artifactHashes = onlyArtifactPerks ? getArtifactPerkHashes() : undefined;
@@ -2215,7 +2451,7 @@ function scanTableForDeepSearch(
     if (onlyArtifactPerks) {
       if (!artifactHashes?.has(hash)) continue;
     }
-    if (!matchesAllValues(raw, terms)) continue;
+    if (!matchesAllValues(raw, terms, probe)) continue;
     if (onlyArtifactPerks) {
       entry = getIndexedEntry(table, hash) ?? entryByHash.get(hash);
       if (entry?.isArtifactPerk !== true) continue;
@@ -2279,6 +2515,7 @@ async function deepSearch(
 ): Promise<SearchResponse> {
   const startedAt = Date.now();
   const terms = parseDeepSearchTerms(query);
+  const probe = terms.length === 1 ? chooseDeepSearchProbeChar(terms[0]!) : '';
   const cap = normalizeDeepSearchLimit(maxResults);
   const scan: DeepScanState = { items: [], totalMatches: 0, cap };
 
@@ -2297,7 +2534,7 @@ async function deepSearch(
       } else {
         const lite = await getRawTableFromCache('DestinyInventoryItemLiteDefinition');
         if (lite) {
-          scanTableForDeepSearch('DestinyInventoryItemLiteDefinition', lite, terms, scan, true);
+          scanTableForDeepSearch('DestinyInventoryItemLiteDefinition', lite, terms, scan, probe, true);
         }
       }
     } else if (requestedTable === INVENTORY_ITEM_TABLE) {
@@ -2305,12 +2542,12 @@ async function deepSearch(
         await scanFullItemsForDeepSearch(terms, scan);
       } else {
         const lite = await getRawTableFromCache('DestinyInventoryItemLiteDefinition');
-        if (lite) scanTableForDeepSearch('DestinyInventoryItemLiteDefinition', lite, terms, scan);
+        if (lite) scanTableForDeepSearch('DestinyInventoryItemLiteDefinition', lite, terms, scan, probe);
       }
     } else {
       const mem = await getRawTableFromCache(requestedTable);
       if (mem) {
-        scanTableForDeepSearch(requestedTable, mem, terms, scan);
+        scanTableForDeepSearch(requestedTable, mem, terms, scan, probe);
       } else {
         // A missing table may have been evicted after its durable IDB write;
         // getRawTableFromCache already attempts that reload.
@@ -2323,7 +2560,7 @@ async function deepSearch(
       if (table === 'DestinyInventoryItemLiteDefinition' && hasFull) continue;
       const data = await getRawTableFromCache(table);
       if (!data) continue;
-      scanTableForDeepSearch(table, data, terms, scan);
+      scanTableForDeepSearch(table, data, terms, scan, probe);
     }
     if (hasFull) await scanFullItemsForDeepSearch(terms, scan);
   }
@@ -3230,6 +3467,7 @@ async function getReverseReferences(
     data: Record<string, Record<string, unknown>>,
   ): void => {
     scannedTables.push(table);
+    if (!hashBloomFilterMayContain(getTableReferenceBloom(table, data), target)) return;
     for (const hashKey in data) {
       const raw = data[hashKey]!;
       const sourceHash = toUnsignedHash(Number(hashKey));

@@ -65,6 +65,10 @@
   gap: 1px;
   padding: 1px;
   font-size: 0.6875rem;
+
+  @include theme.mobile {
+    display: none;
+  }
 }
 
 .pageNavLink,
@@ -77,6 +81,17 @@
 .pageNavActive,
 .pageNavActive:hover:not(:disabled) {
   @include ctl.segmented-active;
+}
+
+.historyBack {
+  @include ctl.quiet-button;
+  display: none;
+  flex: 0 0 auto;
+  min-height: var(--tap);
+  padding: 0 0.5rem;
+  color: var(--link);
+  font-size: 0.75rem;
+  white-space: nowrap;
 }
 
 @include theme.mobile-or-coarse {
@@ -331,6 +346,18 @@
 }
 
 @include theme.mobile {
+  .brandHistory .brandText {
+    display: inline;
+  }
+
+  .barHistoryMobile .searchCluster {
+    display: none;
+  }
+
+  .barHistoryMobile .historyBack {
+    display: inline-flex;
+  }
+
   .barSearchFocused {
     align-items: flex-start;
     min-height: var(--tap);

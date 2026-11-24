@@ -8,13 +8,7 @@ import {
   type ReactNode,
 } from 'react';
 import type { ImageScalingMode } from '../../types/manifest';
-import { upscaleAnime4k } from '../../utils/anime4k';
-import {
-  upscale,
-  upscaleEasu,
-  upscalePerkSdf,
-  type RgbaImage,
-} from '../../utils/upscale';
+import type { RgbaImage } from '../../utils/upscale';
 import {
   CheckIcon,
   CloseIcon,
@@ -70,6 +64,7 @@ const STAGE_PADDING = 32;
 const FEEDBACK_MS = 1_800;
 const DOWNLOAD_URL_REVOKE_MS = 1_000;
 const OPEN_TAB_URL_REVOKE_MS = 60_000;
+const AUTO_UPSCALE_ICON_MAX_DIMENSION = 256;
 const FOCUSABLE_SELECTOR = [
   'a[href]',
   'button:not([disabled])',
@@ -78,6 +73,26 @@ const FOCUSABLE_SELECTOR = [
   'textarea:not([disabled])',
   '[tabindex]:not([tabindex="-1"])',
 ].join(',');
+
+type UpscaleModule = typeof import('../../utils/upscale');
+type Anime4kModule = typeof import('../../utils/anime4k');
+type PerkVectorModule = typeof import('../../utils/perkVector');
+
+let upscaleModulePromise: Promise<UpscaleModule> | undefined;
+let anime4kModulePromise: Promise<Anime4kModule> | undefined;
+let perkVectorModulePromise: Promise<PerkVectorModule> | undefined;
+
+function loadUpscaleModule(): Promise<UpscaleModule> {
+  return (upscaleModulePromise ??= import('../../utils/upscale'));
+}
+
+function loadAnime4kModule(): Promise<Anime4kModule> {
+  return (anime4kModulePromise ??= import('../../utils/anime4k'));
+}
+
+function loadPerkVectorModule(): Promise<PerkVectorModule> {
+  return (perkVectorModulePromise ??= import('../../utils/perkVector'));
+}
 
 const SCALING_OPTIONS: ReadonlyArray<{
   value: ScalingMode;
@@ -135,6 +150,18 @@ function toScalingMode(defaultScaling: ImageScalingMode): ScalingMode {
 /** Canvas-resampled modes (the rest render the raw <img>). */
 function isCanvasMode(mode: ScalingMode): mode is 'anime4k' | 'perk-sdf' | 'mitchell' {
   return mode === 'anime4k' || mode === 'perk-sdf' || mode === 'mitchell';
+}
+
+/** Auto-run the heavier engines for compact, icon-shaped assets only. */
+function isEligibleAutoUpscaleIcon(asset: LoadedAsset): boolean {
+  const { width, height } = asset;
+  return (
+    width > 0 &&
+    height > 0 &&
+    width <= AUTO_UPSCALE_ICON_MAX_DIMENSION &&
+    height <= AUTO_UPSCALE_ICON_MAX_DIMENSION &&
+    Math.min(width, height) / Math.max(width, height) >= 0.5
+  );
 }
 
 function readDevicePixelRatio(): number {
@@ -256,6 +283,7 @@ export function ImageLightbox({
   onCopy,
 }: ImageLightboxProps): ReactNode {
   const [mode, setMode] = useState<ScalingMode>(() => toScalingMode(defaultScaling));
+  const [userSelectedMode, setUserSelectedMode] = useState(false);
   const [zoom, setZoom] = useState<ZoomSelection>('fit');
   const [exactDevicePixels, setExactDevicePixels] = useState(false);
   const [backdrop, setBackdrop] = useState<BackdropMode>('dark');
@@ -357,6 +385,7 @@ export function ImageLightbox({
 
   useEffect(() => {
     setMode(toScalingMode(defaultScaling));
+    setUserSelectedMode(false);
   }, [defaultScaling]);
 
   useLayoutEffect(() => {
@@ -458,6 +487,14 @@ export function ImageLightbox({
       return;
     }
 
+    // Keep the lightbox shell and plain-image path small. The preference can
+    // still auto-upscale compact icons; other assets load an engine only after
+    // the user explicitly selects a canvas-based scaling mode.
+    if (!userSelectedMode && !isEligibleAutoUpscaleIcon(asset)) {
+      setUpscaleResult('fallback');
+      return;
+    }
+
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -483,65 +520,97 @@ export function ImageLightbox({
       return;
     }
 
-    const outContext = canvas.getContext('2d');
-    if (!outContext) {
-      setUpscaleResult('fallback');
-      return;
-    }
+    setUpscaleResult('fallback');
+    let cancelled = false;
+    const loadModules: Promise<
+      readonly [UpscaleModule, Anime4kModule | null, PerkVectorModule | null]
+    > =
+      mode === 'anime4k'
+        ? Promise.all([loadUpscaleModule(), loadAnime4kModule()]).then(
+            ([upscaleModule, anime4kModule]) => [upscaleModule, anime4kModule, null] as const,
+          )
+        : mode === 'perk-sdf'
+          ? Promise.all([loadUpscaleModule(), loadPerkVectorModule()]).then(
+              ([upscaleModule, perkVectorModule]) => [upscaleModule, null, perkVectorModule] as const,
+            )
+          : loadUpscaleModule().then((upscaleModule) => [upscaleModule, null, null] as const);
 
-    try {
-      canvas.width = targetWidth;
-      canvas.height = targetHeight;
+    void loadModules
+      .then(([upscaleModule, anime4kModule, perkVectorModule]) => {
+        if (cancelled) return;
+        const outContext = canvas.getContext('2d');
+        if (!outContext) {
+          setUpscaleResult('fallback');
+          return;
+        }
 
-      if (targetWidth === asset.width && targetHeight === asset.height) {
-        outContext.imageSmoothingEnabled = false;
-        outContext.clearRect(0, 0, targetWidth, targetHeight);
-        outContext.drawImage(asset.image, 0, 0);
-        setUpscaleResult('ready');
-        return;
-      }
+        try {
+          canvas.width = targetWidth;
+          canvas.height = targetHeight;
 
-      const sourceCanvas = document.createElement('canvas');
-      sourceCanvas.width = asset.width;
-      sourceCanvas.height = asset.height;
-      const sourceContext = sourceCanvas.getContext('2d', { willReadFrequently: true });
-      if (!sourceContext) {
-        setUpscaleResult('fallback');
-        return;
-      }
+          if (targetWidth === asset.width && targetHeight === asset.height) {
+            outContext.imageSmoothingEnabled = false;
+            outContext.clearRect(0, 0, targetWidth, targetHeight);
+            outContext.drawImage(asset.image, 0, 0);
+            setUpscaleResult('ready');
+            return;
+          }
 
-      sourceContext.clearRect(0, 0, asset.width, asset.height);
-      sourceContext.drawImage(asset.image, 0, 0);
-      const sourceData = sourceContext.getImageData(0, 0, asset.width, asset.height);
-      const source: RgbaImage = {
-        data: sourceData.data,
-        width: asset.width,
-        height: asset.height,
-      };
+          const sourceCanvas = document.createElement('canvas');
+          sourceCanvas.width = asset.width;
+          sourceCanvas.height = asset.height;
+          const sourceContext = sourceCanvas.getContext('2d', { willReadFrequently: true });
+          if (!sourceContext) {
+            setUpscaleResult('fallback');
+            return;
+          }
 
-      let resampled: RgbaImage;
-      if (mode === 'anime4k') {
-        // WebGL2 CNN, falling back to the CPU EASU 2x cascade when unavailable.
-        resampled =
-          upscaleAnime4k(source, targetWidth, targetHeight) ??
-          upscaleEasu(source, targetWidth, targetHeight);
-      } else if (mode === 'perk-sdf') {
-        resampled = upscalePerkSdf(source, targetWidth, targetHeight);
-      } else {
-        resampled = upscale(source, targetWidth, targetHeight, mode);
-      }
+          sourceContext.clearRect(0, 0, asset.width, asset.height);
+          sourceContext.drawImage(asset.image, 0, 0);
+          const sourceData = sourceContext.getImageData(0, 0, asset.width, asset.height);
+          const source: RgbaImage = {
+            data: sourceData.data,
+            width: asset.width,
+            height: asset.height,
+          };
 
-      outContext.putImageData(
-        new ImageData(resampled.data as Uint8ClampedArray<ArrayBuffer>, targetWidth, targetHeight),
-        0,
-        0,
-      );
-      setUpscaleResult('ready');
-    } catch {
-      // Tainted canvas or an unsupported ImageData path: use the <img> fallback.
-      setUpscaleResult('fallback');
-    }
-  }, [mode, asset, display.width, display.height, dpr]);
+          let resampled: RgbaImage;
+          if (mode === 'anime4k') {
+            // WebGL2 CNN, falling back to the CPU EASU 2x cascade without WebGL2.
+            resampled =
+              anime4kModule?.upscaleAnime4k(source, targetWidth, targetHeight) ??
+              upscaleModule.upscaleEasu(source, targetWidth, targetHeight);
+          } else if (mode === 'perk-sdf') {
+            resampled =
+              perkVectorModule?.upscalePerkVector(source, targetWidth, targetHeight) ??
+              upscaleModule.upscaleMitchell(source, targetWidth, targetHeight);
+          } else {
+            resampled = upscaleModule.upscale(source, targetWidth, targetHeight, mode);
+          }
+
+          outContext.putImageData(
+            new ImageData(
+              resampled.data as Uint8ClampedArray<ArrayBuffer>,
+              targetWidth,
+              targetHeight,
+            ),
+            0,
+            0,
+          );
+          setUpscaleResult('ready');
+        } catch {
+          // Tainted canvas or an unsupported ImageData path: use the <img> fallback.
+          setUpscaleResult('fallback');
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setUpscaleResult('fallback');
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [mode, asset, display.width, display.height, dpr, userSelectedMode]);
 
   const stageClass =
     backdrop === 'dark'
@@ -731,7 +800,10 @@ export function ImageLightbox({
                   className={`${styles.segment} ${
                     mode === option.value ? styles.segmentActive : ''
                   }`}
-                  onClick={() => setMode(option.value)}
+                  onClick={() => {
+                    setUserSelectedMode(true);
+                    setMode(option.value);
+                  }}
                   aria-pressed={mode === option.value}
                   title={option.title}
                 >

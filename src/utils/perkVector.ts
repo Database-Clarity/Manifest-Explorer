@@ -8,6 +8,12 @@ const ISO = 0.5;
 const FIT_ERROR = 0.24;
 const TRACE_ERROR = 0.3;
 const VERTICAL_SAMPLES = 16;
+const NARROW_BAND_OFFSETS = (width: number): readonly (readonly [number, number])[] => [
+  [1, width],
+  [width, 1],
+  [width - 1, width + 1],
+  [width + 1, width - 1],
+];
 const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
 
 /** Persistent midtones carry shading even along a single palette axis. */
@@ -213,14 +219,21 @@ function traceContours(coverage: Float64Array, width: number, height: number, op
   const field = new Float64Array(stride * rows);
   for (let y = 1; y < rows - 1; y += 1) {
     const sy = Math.max(0, Math.min(height - 1, y - pad));
-    field.set(coverage.subarray(sy * width, (sy + 1) * width), y * stride + pad);
+    const sourceOffset = sy * width;
+    const targetOffset = y * stride + pad;
+    for (let x = 0; x < width; x += 1) {
+      field[targetOffset + x] = coverage[sourceOffset + x]!;
+    }
     field.fill(coverage[sy * width]!, y * stride + 1, y * stride + pad);
     field.fill(coverage[(sy + 1) * width - 1]!, y * stride + pad + width, (y + 1) * stride - 1);
   }
 
   const points: Point[] = [];
   const edges = new Int32Array(2 * field.length).fill(-1);
-  const adjacent: number[][] = [];
+  // A contour vertex has degree two. Store its two neighbors directly rather
+  // than allocating a small JS array for every crossing point.
+  const adjacentFirst: number[] = [];
+  const adjacentSecond: number[] = [];
   let ambiguousCells = 0;
   function crossing(p: number, step: number, x: number, y: number): number {
     const vertical = step === stride;
@@ -230,13 +243,16 @@ function traceContours(coverage: Float64Array, width: number, height: number, op
     const t = (ISO - a) / (field[p + step]! - a);
     const index = points.length;
     points.push({ x: x + (vertical ? 0 : t), y: y + (vertical ? t : 0) });
-    adjacent.push([]);
+    adjacentFirst.push(-1);
+    adjacentSecond.push(-1);
     edges[edge] = index;
     return index;
   }
   function join(a: number, b: number) {
-    adjacent[a]!.push(b);
-    adjacent[b]!.push(a);
+    if (adjacentFirst[a] === -1) adjacentFirst[a] = b;
+    else adjacentSecond[a] = b;
+    if (adjacentFirst[b] === -1) adjacentFirst[b] = a;
+    else adjacentSecond[b] = a;
   }
 
   for (let y = 0; y < rows - 1; y += 1) {
@@ -299,7 +315,8 @@ function traceContours(coverage: Float64Array, width: number, height: number, op
     do {
       visited[current] = 1;
       const point = points[current]!;
-      const next = adjacent[current]!.find((id) => id !== previous)!;
+      const first = adjacentFirst[current]!;
+      const next = first !== previous ? first : adjacentSecond[current]!;
       const nextPoint = points[next]!;
       if (point.x !== nextPoint.x || point.y !== nextPoint.y) loop.push(point);
       previous = current;
@@ -896,6 +913,26 @@ function interpolateDetail(a: number, b: number, c: number, d: number, t: number
   return Math.max(Math.min(b, c), Math.min(Math.max(b, c), value));
 }
 
+function sampleFieldRow(
+  field: Float64Array,
+  width: number,
+  row: number,
+  xPrev: number,
+  x0: number,
+  x1: number,
+  xNext: number,
+  t: number,
+): number {
+  const start = row * width;
+  return interpolateDetail(
+    field[start + xPrev]!,
+    field[start + x0]!,
+    field[start + x1]!,
+    field[start + xNext]!,
+    t,
+  );
+}
+
 /** Measure agreement along the two diagonals around each source sample. */
 function diagonalCoherence(field: Float64Array, width: number, height: number): Float32Array {
   const directions = new Float32Array(field.length);
@@ -921,14 +958,25 @@ function sampleDiagonal(field: Float64Array, width: number, height: number, x: n
   const across = x - sign * y;
   const line = Math.floor(across);
   const along = (sign * x + y) / 2;
-  const sample = (k: number) => {
+  const sample = (k: number): number => {
     const row = along - sign * k / 2;
-    const lo = Math.floor(row), fraction = row - lo;
-    const at = (j: number) => field[Math.max(0, Math.min(height - 1, j)) * width
-      + Math.max(0, Math.min(width - 1, k + sign * j))]!;
-    return at(lo) * (1 - fraction) + at(lo + 1) * fraction;
+    const lo = Math.floor(row);
+    const fraction = row - lo;
+    const row0 = Math.max(0, Math.min(height - 1, lo));
+    const row1 = Math.max(0, Math.min(height - 1, lo + 1));
+    const x0 = Math.max(0, Math.min(width - 1, k + sign * lo));
+    const x1 = Math.max(0, Math.min(width - 1, k + sign * (lo + 1)));
+    const a = field[row0 * width + x0]!;
+    const b = field[row1 * width + x1]!;
+    return a * (1 - fraction) + b * fraction;
   };
-  return interpolateDetail(sample(line - 1), sample(line), sample(line + 1), sample(line + 2), across - line);
+  return interpolateDetail(
+    sample(line - 1),
+    sample(line),
+    sample(line + 1),
+    sample(line + 2),
+    across - line,
+  );
 }
 
 /** Retain coherent fine structures that a single contour cannot express. */
@@ -941,6 +989,7 @@ function restoreDetail(
   const weights = new Float32Array(residual.length);
   const narrow = new Float32Array(residual.length);
   const featureWeights = new Float32Array(residual.length);
+  const narrowBandOffsets = NARROW_BAND_OFFSETS(sourceWidth);
   const minimumError = textured ? 0.08 : 0.14;
   let hasDetail = false;
   for (let y = 0; y < sourceHeight; y += 1) {
@@ -973,7 +1022,7 @@ function restoreDetail(
       // coverage never crosses the tracing isoline. Check across and along it.
       let narrowBand = false;
       if (Math.abs(error) >= 0.08 && x > 0 && x < sourceWidth - 1 && y > 0 && y < sourceHeight - 1) {
-        for (const [across, along] of [[1, sourceWidth], [sourceWidth, 1], [sourceWidth - 1, sourceWidth + 1], [sourceWidth + 1, sourceWidth - 1]] as const) {
+        for (const [across, along] of narrowBandOffsets) {
           const left = (value - field[p - across]!) * direction;
           const right = (value - field[p + across]!) * direction;
           const paired = Math.min(Math.abs(value - field[p - along]!), Math.abs(value - field[p + along]!));
@@ -1037,12 +1086,12 @@ function restoreDetail(
       // to retain one-texel openings between adjoining partial coverages.
       const bias = Math.max(band, Number(textured));
       const tx = fx + (wx - fx) * bias, ty = fy + (wy - fy) * bias;
-      const alongRow = (row: number) => {
-        const start = row * sourceWidth;
-        return interpolateDetail(field[start + xPrev]!, field[start + x0]!, field[start + x1]!, field[start + xNext]!, tx);
-      };
       const cubic = interpolateDetail(
-        alongRow(Math.max(0, y0 - 1)), alongRow(y0), alongRow(y1), alongRow(Math.min(sourceHeight - 1, y1 + 1)), ty,
+        sampleFieldRow(field, sourceWidth, Math.max(0, y0 - 1), xPrev, x0, x1, xNext, tx),
+        sampleFieldRow(field, sourceWidth, y0, xPrev, x0, x1, xNext, tx),
+        sampleFieldRow(field, sourceWidth, y1, xPrev, x0, x1, xNext, tx),
+        sampleFieldRow(field, sourceWidth, Math.min(sourceHeight - 1, y1 + 1), xPrev, x0, x1, xNext, tx),
+        ty,
       );
       const top = field[a]! * (1 - fx) + field[b]! * fx;
       const bottom = field[c]! * (1 - fx) + field[d]! * fx;
@@ -1252,7 +1301,10 @@ function preserveSymmetry(
       if (p >= q || p >= r || p >= s) continue;
       const weight = Math.min(weightAt(p, rotation), weightAt(q, rotation), weightAt(r, rotation), weightAt(s, rotation));
       const average = (mask[p]! + mask[q]! + mask[r]! + mask[s]!) * 0.25;
-      for (const i of [p, q, r, s]) mask[i]! += (average - mask[i]!) * weight;
+      mask[p]! += (average - mask[p]!) * weight;
+      mask[q]! += (average - mask[q]!) * weight;
+      mask[r]! += (average - mask[r]!) * weight;
+      mask[s]! += (average - mask[s]!) * weight;
     }
   } else {
     averagePairs(halfTurn);
@@ -1323,7 +1375,7 @@ function protectNarrowRuns(
         const support = Math.min(phase(p - along), phase(p + along));
         if (Math.max(left, right) > 0.3 || support < 0.65) continue;
         const mass = left + center + right;
-        const length = Math.hypot(nx, ny);
+        const length = nx !== 0 && ny !== 0 ? Math.SQRT2 : 1;
         const confidence = Math.min(center, support) - Math.max(left, right);
         if (best && best.confidence >= confidence) continue;
         best = { nx: nx / length, ny: ny / length, center: (right - left) / (mass * length),
@@ -1681,7 +1733,7 @@ function restoreAngledCorners(
       const [a, b] = sides as [StraightLine, StraightLine];
       const vertex = intersectStraightLines(a, b);
       const corner = loop[index]!;
-      if (!vertex || Math.hypot(vertex.x - corner.x, vertex.y - corner.y) > 1.05
+      if (!vertex || (vertex.x - corner.x) ** 2 + (vertex.y - corner.y) ** 2 > 1.05 ** 2
         || dot(a.direction, b.direction) < -0.62 || dot(a.direction, b.direction) > 0.94) continue;
       const nx = [a.direction.y, b.direction.y], ny = [-a.direction.x, -b.direction.x];
       if (nx.every((x, i) => Math.min(Math.abs(x), Math.abs(ny[i]!)) < 0.08)) continue;
@@ -2337,7 +2389,7 @@ function restoreCrowdedCircles(
     const { x0, x1, y0, y1, centerX, centerY, middleX, middleY, spanX, spanY } = shape;
     const seed = (spanX + spanY) / 4;
     const neighbors = shapes.filter(other => other !== shape && Math.abs((other.spanX + other.spanY) / 4 - seed) <= 0.38
-      && Math.hypot(other.centerX - centerX, other.centerY - centerY) < 18);
+      && (other.centerX - centerX) ** 2 + (other.centerY - centerY) ** 2 < 18 ** 2);
     if (neighbors.length < 2) continue;
     const dark = field[middleY * sourceWidth + middleX]! < ISO;
     const sites: Array<{ x: number; y: number; sample: number; foreign: boolean }> = [];
@@ -2346,12 +2398,13 @@ function restoreCrowdedCircles(
       circleCoverage(x - model[0]!, y - model[1]!, x + dx - model[0]!, y + dy - model[1]!, model[2]!);
     for (let y = y0; y < y1; y += 1) {
       for (let x = x0; x < x1; x += 1) {
-        const distance = Math.hypot(x + 0.5 - centerX, y + 0.5 - centerY);
-        if (distance > seed + 1.18) continue;
+        const dx = x + 0.5 - centerX, dy = y + 0.5 - centerY;
+        if (dx * dx + dy * dy > (seed + 1.18) ** 2) continue;
         const foreign = neighbors.some(other => {
           const dx = Math.max(0, x - other.centerX, other.centerX - x - 1);
           const dy = Math.max(0, y - other.centerY, other.centerY - y - 1);
-          return Math.hypot(dx, dy) < (other.spanX + other.spanY) / 4 + 0.24;
+          const radius = (other.spanX + other.spanY) / 4 + 0.24;
+          return dx * dx + dy * dy < radius * radius;
         });
         const value = field[y * sourceWidth + x]!;
         sites.push({ x, y, sample: dark ? 1 - value : value, foreign });
@@ -2448,7 +2501,7 @@ function restoreCircularContours(
     if (completed.has(outer)) continue;
     const group = [outer];
     for (const circle of candidates) {
-      if (completed.has(circle) || Math.hypot(circle.x - outer.x, circle.y - outer.y) >= 0.3) continue;
+      if (completed.has(circle) || (circle.x - outer.x) ** 2 + (circle.y - outer.y) ** 2 >= 0.3 ** 2) continue;
       const distance = group[group.length - 1]!.radius - circle.radius;
       if (distance < 0.7 || distance > 6) continue;
       group.push(circle);
@@ -2465,8 +2518,13 @@ function restoreCircularContours(
         y < Math.min(sourceHeight, Math.ceil(model[1]! + outer.radius + margin)); y += 1) {
         for (let x = Math.max(0, Math.floor(model[0]! - outer.radius - margin));
           x < Math.min(sourceWidth, Math.ceil(model[0]! + outer.radius + margin)); x += 1) {
-          const distance = Math.hypot(x + 0.5 - model[0]!, y + 0.5 - model[1]!);
-          if (rings.some(circle => Math.abs(distance - circle.radius) <= margin)) {
+          const dx = x + 0.5 - model[0]!, dy = y + 0.5 - model[1]!;
+          const distanceSq = dx * dx + dy * dy;
+          if (rings.some(circle => {
+            const minimum = Math.max(0, circle.radius - margin);
+            const maximum = circle.radius + margin;
+            return distanceSq >= minimum * minimum && distanceSq <= maximum * maximum;
+          })) {
             sites.push({ x, y, value: field[y * sourceWidth + x]! });
           }
         }

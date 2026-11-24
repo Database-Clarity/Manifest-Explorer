@@ -158,6 +158,9 @@ function JsonLine({ line, filter }: { line: JsonDiffLine; filter: string }): Rea
       <span className={styles.newLineNumber} aria-hidden="true">
         {line.newLine ?? ''}
       </span>
+      <span className={styles.mobileLineNumber} aria-hidden="true">
+        {line.newLine ?? line.oldLine ?? ''}
+      </span>
       <span className={styles.signGutter} aria-hidden="true">
         {sign}
       </span>
@@ -407,6 +410,7 @@ export const JsonDiffView = memo(function JsonDiffView({
       ? 'split'
       : 'inline',
   );
+  const [wrap, setWrap] = useState(true);
   const [expandedLines, setExpandedLines] = useState<ReadonlySet<number>>(() => new Set());
   const [expandAll, setExpandAll] = useState(false);
   const [lineLimitState, setLineLimitState] = useState<{
@@ -495,7 +499,12 @@ export const JsonDiffView = memo(function JsonDiffView({
   };
 
   return (
-    <section className={styles.viewer} aria-label="JSON diff">
+    <section
+      className={`${styles.viewer} ${wrap ? '' : styles.unwrapped} ${
+        layout === 'split' ? styles.splitLayout : ''
+      }`}
+      aria-label="JSON diff"
+    >
       <div className={styles.toolbar}>
         <span className={styles.summary}>
           <strong className={styles.addedCount}>+{diff.added}</strong>
@@ -519,6 +528,14 @@ export const JsonDiffView = memo(function JsonDiffView({
               </button>
             ))}
           </div>
+          <button
+            type="button"
+            aria-pressed={wrap}
+            onClick={() => setWrap((current) => !current)}
+            title={wrap ? 'Turn off soft line wrapping' : 'Turn on soft line wrapping'}
+          >
+            Wrap
+          </button>
           <button
             type="button"
             onClick={() => {

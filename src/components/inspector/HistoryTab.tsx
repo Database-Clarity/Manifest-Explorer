@@ -6,10 +6,12 @@ import type {
 } from '../../types/manifest';
 import {
   fetchItemHistory,
+  reconstructRevisionPair,
   reconstructRevisionSnapshot,
   type HistoryVersionMeta,
   type ItemHistoryResult,
   type ResolvedItemRevision,
+  type RevisionSnapshotPair,
 } from '../../manifest/history';
 import { JsonDiffView, JsonSyntaxView } from './JsonDiffView';
 import { JsonTree } from './JsonTree';
@@ -20,7 +22,7 @@ import styles from './InspectorTabs.module.scss';
 type HistoryView = 'updates' | 'compare';
 type RevisionMode = 'diff' | 'pretty' | 'json';
 type CompareMode = 'diff' | 'from-json' | 'to-json';
-type SnapshotLookup = (version: number) => unknown;
+type SnapshotPairLookup = (version: number) => RevisionSnapshotPair;
 const CURRENT_VERSION = 'current';
 
 const REVISION_MODES: ReadonlyArray<{ value: RevisionMode; label: string }> = [
@@ -224,6 +226,7 @@ function SnapshotPretty({
       imageScaling={imageScaling}
       onNavigateRef={onNavigateRef}
       onCopy={onCopy}
+      embedded
     />
   );
 }
@@ -239,7 +242,7 @@ const RevisionCard = memo(function RevisionCard({
   imageScaling,
   onNavigateRef,
   onCopy,
-  getSnapshot,
+  getSnapshotPair,
 }: {
   revision: ResolvedItemRevision;
   expanded: boolean;
@@ -251,19 +254,16 @@ const RevisionCard = memo(function RevisionCard({
   imageScaling: ImageScalingMode;
   onNavigateRef: (ref: DefinitionRef, inNewTab?: boolean) => void;
   onCopy: (text: string, label: string) => void;
-  /** Cached reconstruction for this tab's `(table, hash, currentData)` scope. */
-  getSnapshot: SnapshotLookup;
+  /** Cached reconstruction pair for this tab's `(table, hash, currentData)` scope. */
+  getSnapshotPair: SnapshotPairLookup;
 }): ReactNode {
   const [mode, setMode] = useState<RevisionMode>('diff');
-  // Snapshot reconstruction is cached per version, so expanding, collapsing, or
-  // flipping Diff/Pretty/JSON after the first visit is an object lookup.
+  // One reconstruction walk produces both sides of this revision, and the tab
+  // caches both versions, so flipping modes or revisiting stays O(1).
   const { before, after } = useMemo(() => {
     if (!expanded) return { before: null, after: null };
-    return {
-      before: revision.k === 'a' ? null : getSnapshot(revision.v - 1),
-      after: getSnapshot(revision.v),
-    };
-  }, [expanded, getSnapshot, revision]);
+    return getSnapshotPair(revision.v);
+  }, [expanded, getSnapshotPair, revision.v]);
   const versionLabel = revision.version.version ?? revision.version.id;
 
   return (
@@ -314,7 +314,13 @@ const RevisionCard = memo(function RevisionCard({
             )}
           </div>
           {mode === 'diff' ? (
-            <JsonDiffView before={before} after={after} filter={filter} onCopy={onCopy} />
+            <JsonDiffView
+              before={before}
+              after={after}
+              filter={filter}
+              onCopy={onCopy}
+              defaultLayout="inline"
+            />
           ) : mode === 'pretty' ? (
             <SnapshotPretty
               snapshot={after}
@@ -389,25 +395,39 @@ export const HistoryTab = memo(function HistoryTab({
   }, [result]);
 
   // One cache per `(table, hash, currentData, revisions)` scope. Snapshots are
-  // detached clones from the history module and are safe to share between the
-  // Diff/Pretty/JSON views, so revisiting a revision (or flipping modes) never
-  // replays patches again.
-  const getSnapshot = useMemo<SnapshotLookup>(() => {
-    const cache = new Map<string, unknown>();
+  // detached clones from the history module, so they are safe to share between
+  // the Diff/Pretty/JSON views. Reconstructing a revision pair populates both
+  // `v` and `v - 1` at once, which halves patch work per expanded card.
+  const { getSnapshot, getSnapshotPair } = useMemo(() => {
     const prefix = `${table}:${hash}:`;
-    return (version: number): unknown => {
+    const snapshots = new Map<string, unknown>();
+    const pairs = new Map<string, RevisionSnapshotPair>();
+    const revisions = result?.revisions ?? [];
+
+    const getSnapshot = (version: number): unknown => {
       const key = `${prefix}${version}`;
-      if (cache.has(key)) {
-        return cache.get(key);
+      if (snapshots.has(key)) {
+        return snapshots.get(key);
       }
-      const snapshot = reconstructRevisionSnapshot(
-        currentData,
-        result?.revisions ?? [],
-        version,
-      );
-      cache.set(key, snapshot);
+      const snapshot = reconstructRevisionSnapshot(currentData, revisions, version);
+      snapshots.set(key, snapshot);
       return snapshot;
     };
+
+    const getSnapshotPair = (version: number): RevisionSnapshotPair => {
+      const key = `${prefix}${version}`;
+      const cached = pairs.get(key);
+      if (cached) {
+        return cached;
+      }
+      const pair = reconstructRevisionPair(currentData, revisions, version);
+      pairs.set(key, pair);
+      snapshots.set(key, pair.after);
+      snapshots.set(`${prefix}${version - 1}`, pair.before);
+      return pair;
+    };
+
+    return { getSnapshot, getSnapshotPair };
   }, [currentData, hash, result, table]);
 
   const toggleRevision = useCallback((version: number) => {
@@ -544,7 +564,7 @@ export const HistoryTab = memo(function HistoryTab({
                     imageScaling={imageScaling}
                     onNavigateRef={onNavigateRef}
                     onCopy={onCopy}
-                    getSnapshot={getSnapshot}
+                    getSnapshotPair={getSnapshotPair}
                   />
                   {(hasGapAfter || hasGapBeforeFirst) && <HistoryGap />}
                 </div>

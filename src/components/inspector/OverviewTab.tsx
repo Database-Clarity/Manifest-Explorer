@@ -16,10 +16,12 @@ import type {
   DefinitionRef,
   ImageScalingMode,
   OverviewLinkedEntity,
+  OverviewLore,
   OverviewPerk,
   OverviewSocket,
   OverviewSocketCategory,
   OverviewSocketPlug,
+  OverviewStat,
 } from '../../types/manifest';
 import { bungieAssetUrl } from '../../manifest/hash';
 import { getShortTableName } from '../../manifest/tables';
@@ -71,6 +73,31 @@ const LARGE_CATEGORY_PLUG_COUNT = 40;
 const LARGE_SOCKET_PLUG_COUNT = 6;
 const FILTERED_POOL_PLUG_COUNT = 10;
 const DEFAULT_ICON_SIZE = 28;
+
+type OverviewWithParentArtifact = NonNullable<DefinitionDetailPayload['overview']> & {
+  parentArtifact?: { hash: number; name: string; icon?: string };
+};
+
+type OverviewDisplayProps = { name?: string; description?: string };
+
+interface DerivedOverviewStat extends OverviewStat {
+  percent: number;
+}
+
+interface OverviewDerived {
+  overview: OverviewWithParentArtifact | undefined;
+  displayProps: OverviewDisplayProps | undefined;
+  tierColor: string | undefined;
+  socketCategories: OverviewSocketCategory[];
+  perks: OverviewPerk[];
+  stats: DerivedOverviewStat[];
+  lore: OverviewLore | null;
+  collectible: { hash: number; sourceString: string; name: string } | null;
+  parentArtifact: { hash: number; name: string; icon?: string } | null;
+  categories: { hash: number; name: string }[];
+  linkedEntities: OverviewLinkedEntity[];
+  hasOverviewContent: boolean;
+}
 
 interface RefButtonProps {
   ref: DefinitionRef;
@@ -642,31 +669,65 @@ export const OverviewTab = memo(function OverviewTab({
 }: OverviewTabProps): ReactNode {
   const [lightbox, setLightbox] = useState<string | null>(null);
   const handleNavigateRef = useStableNavigate(onNavigateRef);
-  const overview = detail.overview;
-  type OverviewWithParentArtifact = NonNullable<DefinitionDetailPayload['overview']> & {
-    parentArtifact?: { hash: number; name: string; icon?: string };
-  };
-  const parentArtifact = (overview as OverviewWithParentArtifact | undefined)?.parentArtifact;
-  const displayProps = detail.data.displayProperties as
-    | { name?: string; description?: string }
-    | undefined;
 
-  const rawTier = detail.data.tierType;
-  const tierColor = getTierColorVar(typeof rawTier === 'number' ? rawTier : undefined);
+  // Overview data is rebuilt from the full definition payload. Cache the
+  // extracted collections and per-stat bar percentages so inspector chrome
+  // updates never re-walk categories, perks, stats, or linked entities.
+  const {
+    overview,
+    displayProps,
+    tierColor,
+    socketCategories,
+    perks,
+    stats,
+    lore,
+    collectible,
+    parentArtifact,
+    categories,
+    linkedEntities,
+    hasOverviewContent,
+  } = useMemo<OverviewDerived>(() => {
+    const nextOverview = detail.overview as OverviewWithParentArtifact | undefined;
+    const nextDisplayProps = detail.data.displayProperties as
+      | OverviewDisplayProps
+      | undefined;
+    const nextStats = nextOverview?.stats ?? [];
+    return {
+      overview: nextOverview,
+      displayProps: nextDisplayProps,
+      tierColor: getTierColorVar(
+        typeof detail.data.tierType === 'number' ? detail.data.tierType : undefined,
+      ),
+      socketCategories: nextOverview?.socketCategories ?? [],
+      perks: nextOverview?.perks ?? [],
+      stats: nextStats.map((stat) => ({
+        ...stat,
+        percent:
+          stat.maximumValue > 0
+            ? Math.max(0, Math.min(100, (stat.value / stat.maximumValue) * 100))
+            : 0,
+      })),
+      lore: nextOverview?.lore ?? null,
+      collectible: nextOverview?.collectible ?? null,
+      parentArtifact: nextOverview?.parentArtifact ?? null,
+      categories: nextOverview?.categories ?? [],
+      linkedEntities: nextOverview?.linkedEntities ?? [],
+      hasOverviewContent:
+        Boolean(nextDisplayProps?.description) ||
+        Boolean(nextOverview?.flavorText) ||
+        Boolean(nextOverview?.displaySource) ||
+        Boolean(nextOverview?.screenshot) ||
+        nextStats.length > 0 ||
+        Boolean(nextOverview?.socketCategories?.length) ||
+        Boolean(nextOverview?.perks?.length) ||
+        Boolean(nextOverview?.lore) ||
+        Boolean(nextOverview?.collectible) ||
+        Boolean(nextOverview?.parentArtifact) ||
+        Boolean(nextOverview?.linkedEntities?.length),
+    };
+  }, [detail]);
 
-  const hasContent =
-    Boolean(displayProps?.description) ||
-    Boolean(overview?.flavorText) ||
-    Boolean(overview?.displaySource) ||
-    Boolean(overview?.screenshot) ||
-    Boolean(overview?.stats?.length) ||
-    Boolean(overview?.socketCategories?.length) ||
-    Boolean(overview?.perks?.length) ||
-    Boolean(overview?.lore) ||
-    Boolean(overview?.collectible) ||
-    Boolean(parentArtifact) ||
-    Boolean(overview?.linkedEntities?.length) ||
-    Boolean(clarityEntry);
+  const hasContent = hasOverviewContent || Boolean(clarityEntry);
 
   return (
     <div className={styles.scrollBody} data-inspector-scroll="true">
@@ -732,7 +793,7 @@ export const OverviewTab = memo(function OverviewTab({
           overview.className ||
           overview.ammoType ||
           parentArtifact ||
-          overview.categories?.length) && (
+          categories.length > 0) && (
         <section className={styles.section}>
           <h3 className={styles.sectionTitle}>Attributes</h3>
           <dl className={styles.kvGrid}>
@@ -803,11 +864,11 @@ export const OverviewTab = memo(function OverviewTab({
                 <dd>{overview.className}</dd>
               </>
             )}
-            {overview.categories && overview.categories.length > 0 && (
+            {categories.length > 0 && (
               <>
                 <dt>Categories</dt>
                 <dd className={styles.inlineList}>
-                  {overview.categories.map((cat) => (
+                  {categories.map((cat) => (
                     <RefButton
                       key={cat.hash}
                       ref={{
@@ -859,112 +920,109 @@ export const OverviewTab = memo(function OverviewTab({
         </section>
       )}
 
-      {overview?.stats && overview.stats.length > 0 && (
+      {stats.length > 0 && (
         <section className={styles.section}>
           <h3 className={styles.sectionTitle}>Stats</h3>
           <div className={styles.statList}>
-            {overview.stats.map((stat) => {
-              const pct =
-                stat.maximumValue > 0
-                  ? Math.max(0, Math.min(100, (stat.value / stat.maximumValue) * 100))
-                  : 0;
-              return (
-                <div key={stat.statHash} className={styles.statRow}>
-                  <RefButton
-                    ref={{
-                      table: 'DestinyStatDefinition',
-                      hash: stat.statHash,
-                      label: stat.name || undefined,
-                    }}
-                    className={styles.statName}
-                    title={stat.description}
-                    onNavigate={handleNavigateRef}
-                  >
-                    {stat.name}
-                  </RefButton>
-                  <span className={styles.statVal}>{stat.value}</span>
-                  {stat.isBar ? (
-                    <div className={styles.statBarTrack} aria-hidden="true">
-                      <div className={styles.statBarFill} style={{ width: `${pct}%` }} />
-                    </div>
-                  ) : (
-                    <span className={styles.statPlain} />
-                  )}
-                </div>
-              );
-            })}
+            {stats.map((stat) => (
+              <div key={stat.statHash} className={styles.statRow}>
+                <RefButton
+                  ref={{
+                    table: 'DestinyStatDefinition',
+                    hash: stat.statHash,
+                    label: stat.name || undefined,
+                  }}
+                  className={styles.statName}
+                  title={stat.description}
+                  onNavigate={handleNavigateRef}
+                >
+                  {stat.name}
+                </RefButton>
+                <span className={styles.statVal}>{stat.value}</span>
+                {stat.isBar ? (
+                  <div className={styles.statBarTrack} aria-hidden="true">
+                    <div
+                      className={styles.statBarFill}
+                      style={{ width: `${stat.percent}%` }}
+                    />
+                  </div>
+                ) : (
+                  <span className={styles.statPlain} />
+                )}
+              </div>
+            ))}
           </div>
         </section>
       )}
 
-      {overview?.socketCategories && overview.socketCategories.length > 0 && (
+      {socketCategories.length > 0 && (
         <SocketsSection
           key={`sockets:${detail.table}:${detail.hash}`}
-          categories={overview.socketCategories}
+          categories={socketCategories}
           onNavigate={handleNavigateRef}
         />
       )}
 
-      {overview?.perks && overview.perks.length > 0 && (
+      {perks.length > 0 && (
         <SandboxPerksSection
           key={`perks:${detail.table}:${detail.hash}`}
-          perks={overview.perks}
+          perks={perks}
           onNavigate={handleNavigateRef}
         />
       )}
 
-      {overview?.collectible && (
+      {collectible && (
         <section className={styles.section}>
           <h3 className={styles.sectionTitle}>Collectible</h3>
           <RefButton
             ref={{
               table: 'DestinyCollectibleDefinition',
-              hash: overview.collectible.hash,
-              label: overview.collectible.name || undefined,
+              hash: collectible.hash,
+              label: collectible.name || undefined,
             }}
             className={styles.entityRow}
             onNavigate={handleNavigateRef}
           >
             <span className={styles.entityText}>
-              <span className={styles.entityName}>{overview.collectible.name}</span>
-              {overview.collectible.sourceString && (
+              <span className={styles.entityName}>{collectible.name}</span>
+              {collectible.sourceString && (
                 <span className={styles.entitySub}>
-                  {overview.collectible.sourceString}
+                  {collectible.sourceString}
                 </span>
               )}
             </span>
-            <span className={styles.entityHash}>{overview.collectible.hash}</span>
+            <span className={styles.entityHash}>{collectible.hash}</span>
           </RefButton>
         </section>
       )}
 
-      {overview?.lore && (
+      {lore && (
         <section className={styles.section}>
           <h3 className={styles.sectionTitle}>
             Lore —{' '}
             <RefButton
               ref={{
                 table: 'DestinyLoreDefinition',
-                hash: overview.lore.loreHash,
-                label: overview.lore.name || undefined,
+                hash: lore.loreHash,
+                label: lore.name || undefined,
               }}
               className={styles.inlineLink}
               onNavigate={handleNavigateRef}
             >
-              {overview.lore.name || `Lore ${overview.lore.loreHash}`}
+              {lore.name || `Lore ${lore.loreHash}`}
             </RefButton>
           </h3>
-          {overview.lore.subtitle && (
-            <p className={styles.flavor}>{overview.lore.subtitle}</p>
+          {lore.subtitle && (
+            <p className={styles.flavor}>{lore.subtitle}</p>
           )}
-          <div className={styles.loreText}>{overview.lore.description}</div>
+          <div className={styles.loreText}>{lore.description}</div>
         </section>
       )}
 
-      {overview?.linkedEntities && overview.linkedEntities.length > 0 && (
+      {linkedEntities.length > 0 && (
         <LinkedDefinitionsSection
           key={`linked:${detail.table}:${detail.hash}`}
-          linkedEntities={overview.linkedEntities}
+          linkedEntities={linkedEntities}
           onNavigate={handleNavigateRef}
         />
       )}

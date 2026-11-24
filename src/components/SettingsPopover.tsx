@@ -38,6 +38,8 @@ export interface SettingsPopoverProps {
   onOpenHelp: () => void;
   onOpenCollector: () => void;
   hasUnseenChangelog?: boolean;
+  activePage?: 'explorer' | 'history';
+  onNavigatePage?: (path: '/' | '/history') => void;
 }
 
 const THEME_OPTIONS: ReadonlyArray<readonly [ThemeMode, string]> = [
@@ -132,6 +134,8 @@ function SettingsPopoverBody({
   onOpenHelp,
   onOpenCollector,
   hasUnseenChangelog = false,
+  activePage = 'explorer',
+  onNavigatePage,
 }: SettingsPopoverProps): ReactNode {
   const [confirmClear, setConfirmClear] = useState(false);
   const [keyOpen, setKeyOpen] = useState(false);
@@ -189,6 +193,18 @@ function SettingsPopoverBody({
         <section className={styles.section}>
           <h2 className={styles.sectionTitle}>About &amp; tools</h2>
           <div className={styles.aboutActions}>
+            {onNavigatePage && (
+              <button
+                type="button"
+                className={`${styles.aboutBtn} ${styles.pageNavAction}`}
+                onClick={() => {
+                  onClose();
+                  onNavigatePage(activePage === 'history' ? '/' : '/history');
+                }}
+              >
+                <span>{activePage === 'history' ? 'Manifest Explorer' : 'Manifest History'}</span>
+              </button>
+            )}
             <button
               type="button"
               className={styles.aboutBtn}

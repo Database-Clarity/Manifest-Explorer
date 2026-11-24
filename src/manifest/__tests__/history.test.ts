@@ -6,6 +6,7 @@ import {
   fetchManifestRelease,
   getHistoryBucketHex,
   reconstructRemovedSnapshot,
+  reconstructRevisionPair,
   reconstructRevisionSnapshot,
   type ItemRevision,
   type HistoryManifestIndex,
@@ -163,6 +164,161 @@ describe('reverse-patch reconstruction', () => {
       sockets: { socketEntries: [{ singleInitialItemHash: 42 }] },
     });
     expect(reconstructRemovedSnapshot(revisions, 7)).toBeNull();
+  });
+});
+
+describe('reconstructRevisionPair', () => {
+  function expectPairMatchesSnapshots(
+    current: unknown,
+    revisions: ItemRevision[],
+    version: number,
+  ): void {
+    const pair = reconstructRevisionPair(current, revisions, version);
+    expect(pair.after).toEqual(reconstructRevisionSnapshot(current, revisions, version));
+    expect(pair.before).toEqual(
+      reconstructRevisionSnapshot(current, revisions, version - 1),
+    );
+  }
+
+  it('returns both sides of an Added revision without fabricating a prior snapshot', () => {
+    const current = { displayProperties: { name: 'Item' } };
+    const revisions: ItemRevision[] = [
+      { v: 5, k: 'a', d: [[1, '/displayProperties', { name: 'Item' }]] },
+    ];
+
+    const pair = reconstructRevisionPair(current, revisions, 5);
+
+    expect(pair.after).toEqual(current);
+    expect(pair.after).not.toBe(current);
+    expect(pair.before).toBeNull();
+    expect(reconstructRevisionSnapshot(current, revisions, 4)).toBeNull();
+    expectPairMatchesSnapshots(current, revisions, 5);
+  });
+
+  it('matches single-snapshot reconstruction for modified revisions', () => {
+    const current = {
+      displayProperties: { name: 'Latest', 'a/b~c': 'new' },
+      list: ['x', 'b'],
+      nested: { values: [2, 2, 3] },
+      added: { ok: true },
+    };
+    const original = JSON.stringify(current);
+    const revisions: ItemRevision[] = [
+      {
+        v: 2,
+        k: 'm',
+        d: [
+          [0, '/displayProperties/name', 'Old', 'Middle'],
+          [0, '/displayProperties/a~1b~0c', 'old', 'new'],
+          [2, '/removed', 'bye'],
+          [2, '/list/0', 'a'],
+          [2, '/list/1', 'c'],
+        ],
+      },
+      {
+        v: 3,
+        k: 'm',
+        d: [
+          [0, '/displayProperties/name', 'Middle', 'Latest'],
+          [1, '/added', { ok: true }],
+          [1, '/list/0', 'x'],
+          [0, '/nested/values/0', 1, 2],
+          [1, '/nested/values/2', 3],
+        ],
+      },
+    ];
+
+    expectPairMatchesSnapshots(current, revisions, 2);
+    expectPairMatchesSnapshots(current, revisions, 3);
+    expect(JSON.stringify(current)).toBe(original);
+  });
+
+  it('matches single-snapshot reconstruction across a multi-revision sequence', () => {
+    const current = {
+      name: 'v5',
+      values: [10, 20, 'c'],
+      nested: { a: { b: 2 } },
+    };
+    const original = JSON.stringify(current);
+    const revisions: ItemRevision[] = [
+      {
+        v: 2,
+        k: 'a',
+        d: [
+          [1, '/name', 'v2'],
+          [1, '/values', [10]],
+          [1, '/nested', { a: { b: 1 }, gone: false }],
+        ],
+      },
+      {
+        v: 3,
+        k: 'm',
+        d: [
+          [0, '/name', 'v2', 'v3'],
+          [1, '/values/1', 20],
+        ],
+      },
+      {
+        v: 4,
+        k: 'm',
+        d: [
+          [0, '/name', 'v3', 'v4'],
+          [2, '/nested/gone', false],
+          [1, '/values/2', 'c'],
+        ],
+      },
+      {
+        v: 5,
+        k: 'm',
+        d: [
+          [0, '/name', 'v4', 'v5'],
+          [0, '/nested/a/b', 1, 2],
+        ],
+      },
+    ];
+
+    for (let version = 1; version <= 6; version += 1) {
+      expectPairMatchesSnapshots(current, revisions, version);
+    }
+    expect(reconstructRevisionSnapshot(current, revisions, 3)).toEqual({
+      name: 'v3',
+      values: [10, 20],
+      nested: { a: { b: 1 }, gone: false },
+    });
+    expect(JSON.stringify(current)).toBe(original);
+  });
+
+  it('keeps the two sides detached from each other and from revision data', () => {
+    const current = { values: [1, 2, 3], meta: { label: 'new' } };
+    const revisions: ItemRevision[] = [
+      { v: 2, k: 'm', d: [[0, '/values/0', 0, 1]] },
+      {
+        v: 3,
+        k: 'm',
+        d: [
+          [0, '/values/1', 1, 2],
+          [1, '/values/2', 3],
+          [0, '/meta', { label: 'old' }, { label: 'new' }],
+        ],
+      },
+    ];
+
+    const pair = reconstructRevisionPair(current, revisions, 3);
+    expect(pair.before).not.toBe(pair.after);
+    expect(pair.before).toEqual({
+      values: [1, 1],
+      meta: { label: 'old' },
+    });
+
+    (pair.before as { values: number[] }).values.push(99);
+    (pair.after as { meta: { label: string } }).meta.label = 'mutated';
+
+    expect(reconstructRevisionSnapshot(current, revisions, 2)).toEqual({
+      values: [1, 1],
+      meta: { label: 'old' },
+    });
+    expect(current).toEqual({ values: [1, 2, 3], meta: { label: 'new' } });
+    expect(revisions[1]?.d?.[2]).toEqual([0, '/meta', { label: 'old' }, { label: 'new' }]);
   });
 });
 

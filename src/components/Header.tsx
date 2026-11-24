@@ -394,6 +394,7 @@ export const Header = memo(function Header({
   const filtersOpen = menu?.name === 'filters';
   const collectorOpen = menu?.name === 'collector';
   const settingsOpen = menu?.name === 'settings';
+  const isHistoryMobile = activePage === 'history' && isMobileViewport;
 
   return (
     <>
@@ -402,11 +403,12 @@ export const Header = memo(function Header({
           className={cx(
             styles.bar,
             searchFocused && isMobileViewport && styles.barSearchFocused,
+            isHistoryMobile && styles.barHistoryMobile,
           )}
         >
           <button
             type="button"
-            className={styles.brand}
+            className={cx(styles.brand, isHistoryMobile && styles.brandHistory)}
             onClick={handleBrandClick}
             aria-label="Manifest Explorer home"
             title="Manifest Explorer"
@@ -416,6 +418,20 @@ export const Header = memo(function Header({
             </span>
             <span className={styles.brandText}>Manifest Explorer</span>
           </button>
+
+          {isHistoryMobile && (
+            <button
+              type="button"
+              className={styles.historyBack}
+              onClick={() => {
+                setMenu(null);
+                onNavigatePage?.('/');
+              }}
+              aria-label="Back to Explorer"
+            >
+              ← Explorer
+            </button>
+          )}
 
           <nav className={styles.pageNav} aria-label="Main navigation">
             <button
@@ -641,6 +657,8 @@ export const Header = memo(function Header({
             onOpenCollector={() => setMenu({ name: 'collector', source: 'settings' })}
             hasUnseenChangelog={hasUnseenChangelog}
             onLocaleChange={onLocaleChange}
+            activePage={activePage}
+            onNavigatePage={onNavigatePage}
           />
         </Suspense>
       )}

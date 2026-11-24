@@ -73,6 +73,16 @@
   }
 }
 
+.pageNavAction {
+  display: none;
+}
+
+@media (max-width: 700px) {
+  .pageNavAction {
+    display: flex;
+  }
+}
+
 .aboutBadge {
   flex: 0 0 auto;
   padding: 0.125rem 0.375rem;

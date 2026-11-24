@@ -342,6 +342,11 @@ function cloneJsonValue<T>(value: T): T {
 }
 
 function decodePointerSegment(segment: string): string {
+  // Almost every pointer segment is a plain field name or index. Skipping the
+  // regular expression for those keeps reconstruction hot loops cheap.
+  if (!segment.includes('~')) {
+    return segment;
+  }
   return segment.replace(/~[01]/g, (escape) => (escape === '~1' ? '/' : '~'));
 }
 
@@ -349,7 +354,9 @@ function pointerSegments(path: string): string[] {
   if (!path.startsWith('/')) {
     return [];
   }
-  return path.slice(1).split('/').map(decodePointerSegment);
+  const body = path.slice(1);
+  const segments = body.split('/');
+  return body.includes('~') ? segments.map(decodePointerSegment) : segments;
 }
 
 function arrayIndex(segment: string): number | null {
@@ -498,6 +505,27 @@ function reversePatch(root: unknown, op: CompactDiffOp): void {
   }
 }
 
+/** Reverse one revision's operations in place, last applied change first. */
+function reversePatchRange(root: unknown, ops: readonly CompactDiffOp[]): void {
+  for (let index = ops.length - 1; index >= 0; index -= 1) {
+    const op = ops[index];
+    if (op) {
+      reversePatch(root, op);
+    }
+  }
+}
+
+function findEarliestAddedVersion(revisions: readonly ItemRevision[]): number | null {
+  let earliest: number | null = null;
+  for (const revision of revisions) {
+    if (revision.k !== 'a') continue;
+    if (earliest === null || revision.v < earliest) {
+      earliest = revision.v;
+    }
+  }
+  return earliest;
+}
+
 /**
  * Reconstruct the item as it appeared at a manifest version. Revisions describe
  * forward changes, so changes after the target version are applied in reverse,
@@ -508,36 +536,65 @@ export function reconstructRevisionSnapshot(
   revisions: readonly ItemRevision[],
   targetVersion?: number | HistoryVersionMeta | null,
 ): unknown {
-  const snapshot = cloneJsonValue(currentData);
   if (targetVersion === undefined || targetVersion === null) {
-    return snapshot;
+    return cloneJsonValue(currentData);
   }
   const target = typeof targetVersion === 'number' ? targetVersion : targetVersion.i;
-  const firstAddedVersion = revisions
-    .filter((revision) => revision.k === 'a')
-    .reduce<number | null>(
-      (earliest, revision) =>
-        earliest === null ? revision.v : Math.min(earliest, revision.v),
-      null,
-    );
   // An item has no snapshot before its first recorded Added revision. Returning
   // null also lets callers render an all-added diff without fabricating fields.
+  const firstAddedVersion = findEarliestAddedVersion(revisions);
   if (firstAddedVersion !== null && target < firstAddedVersion) {
     return null;
   }
-  const laterRevisions = [...revisions]
-    .filter((revision) => revision.v > target)
-    .sort((a, b) => b.v - a.v);
-  for (const revision of laterRevisions) {
-    const ops = revision.d ?? [];
-    for (let index = ops.length - 1; index >= 0; index -= 1) {
-      const op = ops[index];
-      if (op) {
-        reversePatch(snapshot, op);
-      }
+  const snapshot = cloneJsonValue(currentData);
+  const laterRevisions: ItemRevision[] = [];
+  for (const revision of revisions) {
+    if (revision.v > target) {
+      laterRevisions.push(revision);
     }
   }
+  laterRevisions.sort((a, b) => b.v - a.v);
+  for (const revision of laterRevisions) {
+    reversePatchRange(snapshot, revision.d ?? []);
+  }
   return snapshot;
+}
+
+export interface RevisionSnapshotPair {
+  /** State immediately before the revision at `targetVersion`. */
+  before: unknown;
+  /** State immediately after the revision at `targetVersion`. */
+  after: unknown;
+}
+
+/**
+ * Reconstruct both sides of a single revision in one pass. The snapshot at the
+ * target version is rebuilt from current data once, cloned, and only the target
+ * revision's operations are reversed to produce the prior state. That halves
+ * the patch work compared with calling {@link reconstructRevisionSnapshot} for
+ * both `version` and `version - 1`.
+ */
+export function reconstructRevisionPair(
+  currentData: unknown,
+  revisions: readonly ItemRevision[],
+  targetVersion: number | HistoryVersionMeta,
+): RevisionSnapshotPair {
+  const target = typeof targetVersion === 'number' ? targetVersion : targetVersion.i;
+  const after = reconstructRevisionSnapshot(currentData, revisions, target);
+  if (after === null) {
+    return { before: null, after: null };
+  }
+  const targetRevision = revisions.find((revision) => revision.v === target);
+  if (!targetRevision) {
+    return { before: cloneJsonValue(after), after };
+  }
+  if (targetRevision.k === 'a' && target === findEarliestAddedVersion(revisions)) {
+    // The item did not exist one version earlier.
+    return { before: null, after };
+  }
+  const before = cloneJsonValue(after);
+  reversePatchRange(before, targetRevision.d ?? []);
+  return { before, after };
 }
 
 /**

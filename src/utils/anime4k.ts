@@ -520,8 +520,7 @@ function buildInputRgb(source: RgbaImage, transparent: boolean): Uint8Array {
 
   // Multi-source BFS to fill transparent pixels with the nearest colour.
   const seen = new Uint8Array(w * h);
-  const qx = new Int32Array(w * h);
-  const qy = new Int32Array(w * h);
+  const queue = new Int32Array(w * h);
   let tail = 0;
   for (let y = 0; y < h; y += 1) {
     for (let x = 0; x < w; x += 1) {
@@ -534,9 +533,7 @@ function buildInputRgb(source: RgbaImage, transparent: boolean): Uint8Array {
       rgb[i + 3] = 255;
       if (a > 8) {
         seen[p] = 1;
-        qx[tail] = x;
-        qy[tail] = y;
-        tail += 1;
+        queue[tail++] = p;
       }
     }
   }
@@ -547,29 +544,51 @@ function buildInputRgb(source: RgbaImage, transparent: boolean): Uint8Array {
 
   let head = 0;
   while (head < tail) {
-    const x = qx[head] ?? 0;
-    const y = qy[head] ?? 0;
-    head += 1;
-    const si = (y * w + x) * 4;
-    const steps: Array<[number, number]> = [
-      [x + 1, y],
-      [x - 1, y],
-      [x, y + 1],
-      [x, y - 1],
-    ];
-    for (const [nx, ny] of steps) {
-      if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
-      const np = ny * w + nx;
-      if (seen[np]) continue;
+    const p = queue[head++]!;
+    const x = p % w;
+    const si = p * 4;
+
+    // Keep the original right, left, down, up visitation order while avoiding
+    // a four-tuple array allocation for every dequeued pixel.
+    if (x + 1 < w && !seen[p + 1]) {
+      const np = p + 1;
       seen[np] = 1;
       const ni = np * 4;
       rgb[ni] = rgb[si] ?? 0;
       rgb[ni + 1] = rgb[si + 1] ?? 0;
       rgb[ni + 2] = rgb[si + 2] ?? 0;
       rgb[ni + 3] = 255;
-      qx[tail] = nx;
-      qy[tail] = ny;
-      tail += 1;
+      queue[tail++] = np;
+    }
+    if (x > 0 && !seen[p - 1]) {
+      const np = p - 1;
+      seen[np] = 1;
+      const ni = np * 4;
+      rgb[ni] = rgb[si] ?? 0;
+      rgb[ni + 1] = rgb[si + 1] ?? 0;
+      rgb[ni + 2] = rgb[si + 2] ?? 0;
+      rgb[ni + 3] = 255;
+      queue[tail++] = np;
+    }
+    if (p + w < w * h && !seen[p + w]) {
+      const np = p + w;
+      seen[np] = 1;
+      const ni = np * 4;
+      rgb[ni] = rgb[si] ?? 0;
+      rgb[ni + 1] = rgb[si + 1] ?? 0;
+      rgb[ni + 2] = rgb[si + 2] ?? 0;
+      rgb[ni + 3] = 255;
+      queue[tail++] = np;
+    }
+    if (p >= w && !seen[p - w]) {
+      const np = p - w;
+      seen[np] = 1;
+      const ni = np * 4;
+      rgb[ni] = rgb[si] ?? 0;
+      rgb[ni + 1] = rgb[si + 1] ?? 0;
+      rgb[ni + 2] = rgb[si + 2] ?? 0;
+      rgb[ni + 3] = 255;
+      queue[tail++] = np;
     }
   }
   return rgb;

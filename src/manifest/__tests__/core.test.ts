@@ -46,8 +46,10 @@ import { SEARCH_INDEX_SCHEMA_VERSION } from '../idb';
 import {
   SEARCH_INDEX_PERSIST_INTERVAL_MS,
   SEARCH_INDEX_PERSIST_TABLE_BATCH,
+  buildTableHashBloomFilter,
   createCoalescedWriter,
   deriveCachedTableStatuses,
+  hashBloomFilterMayContain,
   isEnrichmentDependencyTable,
   normalizeDeepSearchLimit,
   shouldFlushSearchIndex,
@@ -609,11 +611,13 @@ describe('ranking and filtering', () => {
         name:
           index === 3
             ? 'Sunshot'
-            : index % 13 === 0
-              ? 'Solar Rifle'
-              : index % 7 === 0
-                ? 'Solar Sword'
-                : `Synthetic Item ${index}`,
+            : index === 19
+              ? 'Ārc Solar Rifle'
+              : index % 13 === 0
+                ? 'Solar Rifle'
+                : index % 7 === 0
+                  ? 'Solar Sword'
+                  : `Synthetic Item ${index}`,
         subtitle: index % 5 === 0 ? 'Legendary Weapon' : 'Armor',
         descLower: index === 11 ? 'descriptionneedle only lives here' : '',
         parentArtifactName: index === 17 ? 'Solar Rifle Artifact' : undefined,
@@ -628,6 +632,8 @@ describe('ranking and filtering', () => {
       'is:dummy OR solar rifle',
       'descriptionneedle',
       'solar artifact',
+      'rif',
+      'ārc',
       '-solar rifle',
       '-solar',
       'a',
@@ -667,6 +673,67 @@ describe('ranking and filtering', () => {
       expect(indexed.totalMatches).toBe(fullScan.totalMatches);
       expect(indexed.scopeEntryCount).toBe(fullScan.scopeEntryCount);
       expect(indexed.hiddenUnnamedCount).toBe(fullScan.hiddenUnnamedCount);
+    }
+  });
+
+  it('keeps Bloom-filtered reverse-reference table results identical to exact scans', () => {
+    const tables: Record<string, Record<string, Record<string, unknown>>> = {
+      DestinyRecordDefinition: {
+        '100': {
+          requirements: { itemHash: 42, values: [7, -99, '42', true] },
+          displayProperties: { ignoredHash: 42 },
+        },
+        '101': { empty: [], text: 'no numeric reference' },
+      },
+      DestinyCollectibleDefinition: {
+        '200': { scope: { itemHashes: [99, 42] }, displayProperties: { hash: 88 } },
+      },
+      DestinyLoreDefinition: {
+        '300': { loreHash: 88, amount: 1.5, flag: false },
+      },
+    };
+    const exactReferences = (target: number): string[] => {
+      const matches: string[] = [];
+      const visit = (value: unknown): boolean => {
+        if (typeof value === 'number') return Number.isInteger(value) && toUnsignedHash(value) === target;
+        if (Array.isArray(value)) return value.some((child) => visit(child));
+        if (typeof value !== 'object' || value === null) return false;
+        for (const [key, child] of Object.entries(value)) {
+          if (key === 'displayProperties' || key === 'flavorText') continue;
+          if (visit(child)) return true;
+        }
+        return false;
+      };
+      for (const [table, records] of Object.entries(tables)) {
+        for (const [sourceHash, raw] of Object.entries(records)) {
+          if (visit(raw)) matches.push(`${table}:${sourceHash}`);
+        }
+      }
+      return matches.sort();
+    };
+
+    for (const target of [42, 7, toUnsignedHash(-99), 88, 123456]) {
+      const expected = exactReferences(target);
+      const filtered: string[] = [];
+      for (const [table, records] of Object.entries(tables)) {
+        const bloom = buildTableHashBloomFilter(records);
+        if (!hashBloomFilterMayContain(bloom, target)) continue;
+        for (const [sourceHash, raw] of Object.entries(records)) {
+          const containsTarget = (value: unknown): boolean => {
+            if (typeof value === 'number') return Number.isInteger(value) && toUnsignedHash(value) === target;
+            if (Array.isArray(value)) return value.some(containsTarget);
+            if (typeof value !== 'object' || value === null) return false;
+            return Object.entries(value).some(
+              ([key, child]) =>
+                key !== 'displayProperties' &&
+                key !== 'flavorText' &&
+                containsTarget(child),
+            );
+          };
+          if (containsTarget(raw)) filtered.push(`${table}:${sourceHash}`);
+        }
+      }
+      expect(filtered.sort()).toEqual(expected);
     }
   });
 

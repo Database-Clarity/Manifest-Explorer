@@ -1413,16 +1413,17 @@ function isWordCharCode(code: number): boolean {
   );
 }
 
-function hasWordBoundary(haystack: string, needle: string): boolean {
+function nameSubstringScore(haystack: string, needle: string): number {
   let index = haystack.indexOf(needle);
+  if (index === -1) return 0;
   while (index !== -1) {
     const afterIndex = index + needle.length;
     const beforeOk = index === 0 || !isWordCharCode(haystack.charCodeAt(index - 1));
     const afterOk = afterIndex >= haystack.length || !isWordCharCode(haystack.charCodeAt(afterIndex));
-    if (beforeOk && afterOk) return true;
+    if (beforeOk && afterOk) return 200;
     index = haystack.indexOf(needle, index + 1);
   }
-  return false;
+  return 100;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1615,8 +1616,8 @@ function scoreToken(entry: SearchIndexEntry, token: string, context?: SearchCont
   if (!token) return 0;
   if (entry.nameLower === token) return 500;
   if (entry.nameLower.startsWith(token)) return 300;
-  if (hasWordBoundary(entry.nameLower, token)) return 200;
-  if (entry.nameLower.includes(token)) return 100;
+  const nameScore = nameSubstringScore(entry.nameLower, token);
+  if (nameScore > 0) return nameScore;
   if (entry.subtitleLower.includes(token)) return 50;
   if (entry.parentArtifactName && parentArtifactNameLower(entry.parentArtifactName).includes(token)) {
     return 40;
@@ -1630,7 +1631,9 @@ function scoreToken(entry: SearchIndexEntry, token: string, context?: SearchCont
 
 interface TextSearchIndex {
   entryCount: number;
-  postings: Map<string, Uint32Array>;
+  words: string[];
+  wordPostings: Uint32Array[];
+  wordTrigramPostings: Map<number, Uint32Array>;
   tablePostings: Map<string, Uint32Array>;
   tableCounts: Map<string, { count: number; unnamedCount: number }>;
   unnamedCount: number;
@@ -1645,33 +1648,90 @@ const textSearchIndexes = new WeakMap<SearchIndexEntry[], TextSearchIndex>();
 const textSearchBuilds = new WeakMap<SearchIndexEntry[], Promise<void>>();
 const textSearchVersions = new WeakMap<SearchIndexEntry[], number>();
 const MIN_TEXT_INDEX_ENTRIES = 128;
-const TEXT_INDEX_BUILD_BATCH_ENTRIES = 2048;
+const TEXT_INDEX_BUILD_BATCH_ENTRIES = 8192;
 
 function yieldTextIndexBuild(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-function collectEntryTrigrams(entry: SearchIndexEntry, trigrams: Set<string>): void {
-  const add = (text: string | undefined): void => {
-    if (!text || text.length < 3) return;
-    for (let index = 0; index <= text.length - 3; index += 1) {
-      trigrams.add(text.slice(index, index + 3));
-    }
-  };
+/**
+ * Pack the low byte of each UTF-16 code unit into a number. Non-ASCII text can
+ * collide with another trigram, which only widens the candidate set; the final
+ * exact scorer still decides matches, so no valid result can be omitted.
+ */
+function numericTrigramAt(text: string, index: number): number {
+  return (
+    ((text.charCodeAt(index) & 0xff) << 16) |
+    ((text.charCodeAt(index + 1) & 0xff) << 8) |
+    (text.charCodeAt(index + 2) & 0xff)
+  );
+}
 
-  add(entry.nameLower);
-  add(entry.subtitleLower);
-  add(entry.descLower);
-  if (entry.parentArtifactName) add(parentArtifactNameLower(entry.parentArtifactName));
+function addTextTrigrams(text: string | undefined, trigrams: Set<number>): void {
+  if (!text || text.length < 3) return;
+  let trigram =
+    ((text.charCodeAt(0) & 0xff) << 16) |
+    ((text.charCodeAt(1) & 0xff) << 8) |
+    (text.charCodeAt(2) & 0xff);
+  for (let index = 0; index <= text.length - 3; index += 1) {
+    trigrams.add(trigram);
+    if (index + 3 < text.length) {
+      trigram = ((trigram << 8) & 0xffff00) | (text.charCodeAt(index + 3) & 0xff);
+    }
+  }
+}
+
+function addTextWords(
+  text: string | undefined,
+  entryIndex: number,
+  wordsById: Map<string, number>,
+  words: string[],
+  postings: Array<number | number[]>,
+  seenWords: Set<string>,
+): void {
+  if (!text) return;
+  let wordStart = -1;
+  let wordHasLetter = false;
+  for (let index = 0; index <= text.length; index += 1) {
+    const code = index < text.length ? text.charCodeAt(index) : -1;
+    if (isWordCharCode(code)) {
+      if (wordStart === -1) wordStart = index;
+      if (code >= 97 && code <= 122) wordHasLetter = true;
+      continue;
+    }
+    if (wordStart === -1) continue;
+    if (wordHasLetter) {
+      const word = text.slice(wordStart, index);
+      if (!seenWords.has(word)) {
+        seenWords.add(word);
+        let wordId = wordsById.get(word);
+        if (wordId === undefined) {
+          wordId = words.length;
+          wordsById.set(word, wordId);
+          words.push(word);
+          postings.push(entryIndex);
+        } else {
+          const existing = postings[wordId]!;
+          if (typeof existing === 'number') postings[wordId] = [existing, entryIndex];
+          else existing.push(entryIndex);
+        }
+      }
+    }
+    wordStart = -1;
+    wordHasLetter = false;
+  }
 }
 
 async function buildTextSearchIndex(
   entries: SearchIndexEntry[],
   isCurrent: () => boolean,
 ): Promise<TextSearchIndex | undefined> {
-  const counts = new Map<string, number>();
+  const wordsById = new Map<string, number>();
+  const words: string[] = [];
+  const wordPostingLists: Array<number | number[]> = [];
   const tableCounts = new Map<string, { count: number; unnamedCount: number }>();
-  const trigrams = new Set<string>();
+  const tablePostingLists = new Map<string, number[]>();
+  const seenWords = new Set<string>();
   let unnamedCount = 0;
 
   for (let start = 0; start < entries.length; start += TEXT_INDEX_BUILD_BATCH_ENTRIES) {
@@ -1684,73 +1744,90 @@ async function buildTextSearchIndex(
       if (!tableCount) {
         tableCount = { count: 0, unnamedCount: 0 };
         tableCounts.set(table, tableCount);
+        tablePostingLists.set(table, []);
       }
       tableCount.count += 1;
+      tablePostingLists.get(table)!.push(entryIndex);
       if (!entry.name) tableCount.unnamedCount += 1;
       if (entry.isArtifactPerk === true) {
         let artifactCount = tableCounts.get(ARTIFACT_PERKS_KEY);
         if (!artifactCount) {
           artifactCount = { count: 0, unnamedCount: 0 };
           tableCounts.set(ARTIFACT_PERKS_KEY, artifactCount);
+          tablePostingLists.set(ARTIFACT_PERKS_KEY, []);
         }
         artifactCount.count += 1;
+        tablePostingLists.get(ARTIFACT_PERKS_KEY)!.push(entryIndex);
         if (!entry.name) artifactCount.unnamedCount += 1;
       }
-      trigrams.clear();
-      collectEntryTrigrams(entry, trigrams);
-      for (const trigram of trigrams) counts.set(trigram, (counts.get(trigram) ?? 0) + 1);
+      seenWords.clear();
+      addTextWords(entry.nameLower, entryIndex, wordsById, words, wordPostingLists, seenWords);
+      addTextWords(entry.subtitleLower, entryIndex, wordsById, words, wordPostingLists, seenWords);
+      addTextWords(entry.descLower, entryIndex, wordsById, words, wordPostingLists, seenWords);
+      if (entry.parentArtifactName) {
+        addTextWords(
+          parentArtifactNameLower(entry.parentArtifactName),
+          entryIndex,
+          wordsById,
+          words,
+          wordPostingLists,
+          seenWords,
+        );
+      }
     }
     if (end < entries.length) await yieldTextIndexBuild();
     if (!isCurrent()) return undefined;
   }
 
-  const postings = new Map<string, Uint32Array>();
-  const cursors = new Map<string, number>();
-  const tableCursors = new Map<string, number>();
-  for (const [trigram, count] of counts) {
-    postings.set(trigram, new Uint32Array(count));
-    cursors.set(trigram, 0);
+  const wordTrigramLists = new Map<number, number[]>();
+  const wordTrigrams = new Set<number>();
+  for (let start = 0; start < words.length; start += TEXT_INDEX_BUILD_BATCH_ENTRIES) {
+    const end = Math.min(words.length, start + TEXT_INDEX_BUILD_BATCH_ENTRIES);
+    for (let wordId = start; wordId < end; wordId += 1) {
+      wordTrigrams.clear();
+      addTextTrigrams(words[wordId], wordTrigrams);
+      for (const trigram of wordTrigrams) {
+        let wordIds = wordTrigramLists.get(trigram);
+        if (!wordIds) {
+          wordIds = [];
+          wordTrigramLists.set(trigram, wordIds);
+        }
+        wordIds.push(wordId);
+      }
+    }
+    if (end < words.length) await yieldTextIndexBuild();
+    if (!isCurrent()) return undefined;
+  }
+
+  const wordPostings: Uint32Array[] = new Array(words.length);
+  for (let wordId = 0; wordId < wordPostingLists.length; wordId += 1) {
+    const posting = wordPostingLists[wordId]!;
+    wordPostings[wordId] =
+      typeof posting === 'number' ? Uint32Array.of(posting) : Uint32Array.from(posting);
+  }
+  const wordTrigramPostings = new Map<number, Uint32Array>();
+  for (const [trigram, wordIds] of wordTrigramLists) {
+    wordTrigramPostings.set(trigram, Uint32Array.from(wordIds));
   }
   const tablePostings = new Map<string, Uint32Array>();
-  for (const [table, count] of tableCounts) {
-    tablePostings.set(table, new Uint32Array(count.count));
-    tableCursors.set(table, 0);
+  for (const [table, posting] of tablePostingLists) {
+    tablePostings.set(table, Uint32Array.from(posting));
   }
 
-  for (let start = 0; start < entries.length; start += TEXT_INDEX_BUILD_BATCH_ENTRIES) {
-    const end = Math.min(entries.length, start + TEXT_INDEX_BUILD_BATCH_ENTRIES);
-    for (let entryIndex = start; entryIndex < end; entryIndex += 1) {
-      const entry = entries[entryIndex]!;
-      trigrams.clear();
-      collectEntryTrigrams(entry, trigrams);
-      for (const trigram of trigrams) {
-        const posting = postings.get(trigram)!;
-        const cursor = cursors.get(trigram)!;
-        posting[cursor] = entryIndex;
-        cursors.set(trigram, cursor + 1);
-      }
-      const table = cachedTableKey(entry.table);
-      const tablePosting = tablePostings.get(table)!;
-      const tableCursor = tableCursors.get(table)!;
-      tablePosting[tableCursor] = entryIndex;
-      tableCursors.set(table, tableCursor + 1);
-      if (entry.isArtifactPerk === true) {
-        const artifactPosting = tablePostings.get(ARTIFACT_PERKS_KEY)!;
-        const artifactCursor = tableCursors.get(ARTIFACT_PERKS_KEY)!;
-        artifactPosting[artifactCursor] = entryIndex;
-        tableCursors.set(ARTIFACT_PERKS_KEY, artifactCursor + 1);
-      }
-    }
-    if (end < entries.length) await yieldTextIndexBuild();
-    if (!isCurrent()) return undefined;
-  }
-
-  // Release the temporary count and cursor maps; retained postings are packed
-  // 32-bit arrays rather than per-entry JavaScript number arrays.
-  counts.clear();
-  cursors.clear();
-  tableCursors.clear();
-  return { entryCount: entries.length, postings, tablePostings, tableCounts, unnamedCount };
+  // The retained index uses packed integer postings; construction maps/lists
+  // are local and become collectible as soon as this function returns.
+  wordsById.clear();
+  wordTrigramLists.clear();
+  tablePostingLists.clear();
+  return {
+    entryCount: entries.length,
+    words,
+    wordPostings,
+    wordTrigramPostings,
+    tablePostings,
+    tableCounts,
+    unnamedCount,
+  };
 }
 
 /** Invalidate the lazy text index when worker enrichment changes searchable text. */
@@ -1798,7 +1875,7 @@ export function prepareTextSearchIndex(entries: SearchIndexEntry[]): Promise<voi
 
 export function hasIndexableTextSearchTerms(parsed: ParsedQuery): boolean {
   const required = requiredTextTokens(parsed.ast ?? null);
-  return required.length > 0 && required.every((token) => token.length >= 3);
+  return required.some(isIndexableSearchWord);
 }
 
 /**
@@ -1841,6 +1918,61 @@ interface TextSearchCandidates {
   tableUnnamedCount?: number;
 }
 
+function isIndexableSearchWord(token: string): boolean {
+  if (token.length < 3) return false;
+  let hasLetter = false;
+  for (let index = 0; index < token.length; index += 1) {
+    const code = token.charCodeAt(index);
+    if (!isWordCharCode(code)) return false;
+    if (code >= 97 && code <= 122) hasLetter = true;
+  }
+  return hasLetter;
+}
+
+function appendUniqueWordPosting(
+  target: number[],
+  seen: Uint8Array,
+  posting: Uint32Array,
+): void {
+  for (let index = 0; index < posting.length; index += 1) {
+    const entryIndex = posting[index]!;
+    if (seen[entryIndex] !== 0) continue;
+    seen[entryIndex] = 1;
+    target.push(entryIndex);
+  }
+}
+
+function entriesForWordTerm(
+  index: TextSearchIndex,
+  term: string,
+  candidateWordIds: Uint32Array,
+): Uint32Array {
+  let firstPosting: Uint32Array | undefined;
+  let seen: Uint8Array | undefined;
+  let candidates: number[] | undefined;
+
+  for (let wordIndex = 0; wordIndex < candidateWordIds.length; wordIndex += 1) {
+    const wordId = candidateWordIds[wordIndex]!;
+    if (!index.words[wordId]!.includes(term)) continue;
+    const posting = index.wordPostings[wordId]!;
+    if (firstPosting === undefined) {
+      firstPosting = posting;
+      continue;
+    }
+    if (!seen) {
+      seen = new Uint8Array(index.entryCount);
+      candidates = [];
+      appendUniqueWordPosting(candidates, seen, firstPosting);
+    }
+    appendUniqueWordPosting(candidates!, seen, posting);
+  }
+
+  if (firstPosting === undefined) return new Uint32Array(0);
+  if (!candidates) return firstPosting;
+  candidates.sort((a, b) => a - b);
+  return Uint32Array.from(candidates);
+}
+
 function findTextSearchCandidates(
   entries: SearchIndexEntry[],
   ast: QueryNode | null,
@@ -1850,10 +1982,10 @@ function findTextSearchCandidates(
 ): TextSearchCandidates | undefined {
   if (!enabled) return undefined;
   const required = requiredTextTokens(ast);
+  const indexableTerms =
+    context?.fuzzy?.enabled === true ? [] : required.filter(isIndexableSearchWord);
   const canUseTextPostings =
-    context?.fuzzy?.enabled !== true &&
-    required.length > 0 &&
-    required.every((token) => token.length >= 3);
+    indexableTerms.length > 0;
   if (!canUseTextPostings && uiTableKey === undefined) return undefined;
   const index = textSearchIndexes.get(entries);
   if (!index) return undefined;
@@ -1864,16 +1996,20 @@ function findTextSearchCandidates(
 
   let selectedPosting: Uint32Array | undefined;
   if (canUseTextPostings) {
-    // Any exact text match must contain every trigram of each guaranteed text
-    // atom. One rare posting is a sufficient candidate superset; the AST
-    // evaluator verifies the exact substring and all remaining predicates.
-    for (const term of required) {
-      const termTrigrams = new Set<string>();
+    // A query word can match as a substring of any indexed word. One rare
+    // trigram-to-word posting is a safe word superset; the exact scorer verifies
+    // the original query against each candidate.
+    let selectedWordIds: Uint32Array | undefined;
+    let selectedTerm: string | undefined;
+    let selectedWordCost = Number.POSITIVE_INFINITY;
+    for (const term of indexableTerms) {
+      const termTrigrams = new Set<number>();
       for (let offset = 0; offset <= term.length - 3; offset += 1) {
-        termTrigrams.add(term.slice(offset, offset + 3));
+        termTrigrams.add(numericTrigramAt(term, offset));
       }
+      let termWordIds: Uint32Array | undefined;
       for (const trigram of termTrigrams) {
-        const posting = index.postings.get(trigram);
+        const posting = index.wordTrigramPostings.get(trigram);
         if (!posting) {
           return {
             indices: new Uint32Array(0),
@@ -1883,11 +2019,41 @@ function findTextSearchCandidates(
               : {
                   tableCount: index.tableCounts.get(uiTableKey)?.count ?? 0,
                   tableUnnamedCount: index.tableCounts.get(uiTableKey)?.unnamedCount ?? 0,
-                }),
+            }),
           };
         }
-        if (!selectedPosting || posting.length < selectedPosting.length) selectedPosting = posting;
+        if (!termWordIds || posting.length < termWordIds.length) termWordIds = posting;
       }
+      const matchingWordIds: number[] = [];
+      let wordCost = 0;
+      if (termWordIds) {
+        for (let wordIndex = 0; wordIndex < termWordIds.length; wordIndex += 1) {
+          const wordId = termWordIds[wordIndex]!;
+          if (!index.words[wordId]!.includes(term)) continue;
+          matchingWordIds.push(wordId);
+          wordCost += index.wordPostings[wordId]!.length;
+        }
+      }
+      if (matchingWordIds.length === 0) {
+        return {
+          indices: new Uint32Array(0),
+          unnamedCount: index.unnamedCount,
+          ...(uiTableKey === undefined
+            ? {}
+            : {
+                tableCount: index.tableCounts.get(uiTableKey)?.count ?? 0,
+                tableUnnamedCount: index.tableCounts.get(uiTableKey)?.unnamedCount ?? 0,
+              }),
+        };
+      }
+      if (!selectedWordIds || wordCost < selectedWordCost) {
+        selectedWordIds = Uint32Array.from(matchingWordIds);
+        selectedTerm = term;
+        selectedWordCost = wordCost;
+      }
+    }
+    if (selectedWordIds && selectedTerm) {
+      selectedPosting = entriesForWordTerm(index, selectedTerm, selectedWordIds);
     }
   }
 

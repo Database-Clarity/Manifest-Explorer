@@ -89,12 +89,21 @@
 .syntaxViewport {
   min-width: 0;
   max-width: 100%;
-  overflow: auto;
-  overscroll-behavior: contain;
+  overflow: visible;
+  overscroll-behavior-y: auto;
+}
+
+.splitLayout .diffViewport,
+.unwrapped .diffViewport {
+  overflow-x: auto;
+  overflow-y: visible;
+  overscroll-behavior-y: auto;
+  touch-action: pan-x pan-y;
 }
 
 .codeRows {
-  min-width: max-content;
+  width: 100%;
+  min-width: 0;
   padding: 0.25rem 0;
   font-family: var(--code-font-family);
   font-size: var(--code-font-size);
@@ -105,6 +114,7 @@
 
 .splitRows {
   min-width: 56rem;
+  width: max-content;
   padding: 0.25rem 0;
   font-family: var(--code-font-family);
   font-size: var(--code-font-size);
@@ -152,7 +162,7 @@
 
 .splitCell {
   display: grid;
-  grid-template-columns: 3.25rem max-content;
+  grid-template-columns: 3.25rem minmax(0, 1fr);
   min-width: 0;
   min-height: 1.55em;
   color: var(--editor-text);
@@ -202,7 +212,7 @@
 .removedLine,
 .contextLine {
   display: grid;
-  grid-template-columns: 3.25rem 3.25rem 1.25rem max-content;
+  grid-template-columns: 3.25rem 3.25rem 1.25rem minmax(0, 1fr);
   min-height: 1.55em;
   color: var(--editor-text);
 }
@@ -222,6 +232,7 @@
 
 .oldLineNumber,
 .newLineNumber,
+.mobileLineNumber,
 .signGutter,
 .syntaxLineNumber {
   user-select: none;
@@ -240,6 +251,10 @@
   color: var(--editor-text2);
 }
 
+.mobileLineNumber {
+  display: none;
+}
+
 .addedLine .signGutter {
   color: var(--ins);
 }
@@ -250,17 +265,44 @@
 
 .codeLine {
   display: block;
-  min-width: max-content;
-  padding-right: 1rem;
+  min-width: 0;
+  padding-right: 0.5rem;
   color: var(--editor-text);
   font: inherit;
-  white-space: pre;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .syntaxRow {
   display: grid;
-  grid-template-columns: 3.25rem max-content;
+  grid-template-columns: 3rem minmax(0, 1fr);
   min-height: 1.55em;
+}
+
+.unwrapped {
+  .codeRows {
+    width: max-content;
+    min-width: max-content;
+  }
+
+  .addedLine,
+  .removedLine,
+  .contextLine {
+    grid-template-columns: 3.25rem 3.25rem 1.25rem max-content;
+  }
+
+  .splitCell {
+    grid-template-columns: 3.25rem max-content;
+  }
+
+  .codeLine {
+    min-width: max-content;
+    padding-right: 1rem;
+    white-space: pre;
+    overflow-wrap: normal;
+    word-break: normal;
+  }
 }
 
 .syntaxLineNumber {
@@ -388,18 +430,39 @@
     padding: 0.25rem 0.375rem;
   }
 
+  .splitCell {
+    grid-template-columns: 2.5rem minmax(0, 1fr);
+  }
+
+  .unwrapped .splitCell {
+    grid-template-columns: 2.5rem max-content;
+  }
+
+  .oldLineNumber,
+  .newLineNumber {
+    display: none;
+  }
+
   .addedLine,
   .removedLine,
   .contextLine {
-    grid-template-columns: 2.5rem 2.5rem 1rem max-content;
+    grid-template-columns: 2.25rem 0.875rem minmax(0, 1fr);
+  }
+
+  .unwrapped .addedLine,
+  .unwrapped .removedLine,
+  .unwrapped .contextLine {
+    grid-template-columns: 2.25rem 0.875rem max-content;
+  }
+
+  .mobileLineNumber {
+    display: block;
+    padding: 0 0.375rem;
+    color: var(--editor-text2);
   }
 
   .syntaxRow {
-    grid-template-columns: 2.5rem max-content;
-  }
-
-  .splitCell {
-    grid-template-columns: 2.5rem max-content;
+    grid-template-columns: 2.25rem minmax(0, 1fr);
   }
 
   .oldLineNumber,

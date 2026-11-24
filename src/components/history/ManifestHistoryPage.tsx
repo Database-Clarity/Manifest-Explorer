@@ -3,7 +3,9 @@ import {
   useCallback,
   useDeferredValue,
   useEffect,
+  useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
@@ -378,10 +380,14 @@ const EntryCard = memo(function EntryCard({
 const ReleaseOverview = memo(function ReleaseOverview({
   release,
   onOpenEntry,
+  isActive,
 }: {
   release: ManifestReleaseSummary;
   onOpenEntry: (entry: ChangedEntry, focus?: boolean) => void;
+  isActive: boolean;
 }): ReactNode {
+  const overviewScrollRef = useRef<HTMLDivElement | null>(null);
+  const overviewScrollTopRef = useRef(0);
   const [kindFilter, setKindFilter] = useState<ChangeKind | 'all'>('all');
   const [search, setSearch] = useState('');
   // Typing must stay instant on releases with 61k entries: the cheap input
@@ -520,8 +526,33 @@ const ReleaseOverview = memo(function ReleaseOverview({
     [groups, isSearching, release.v, searchKey],
   );
 
+  const handleOverviewScroll = useCallback(() => {
+    if (isActive && overviewScrollRef.current) {
+      overviewScrollTopRef.current = overviewScrollRef.current.scrollTop;
+    }
+  }, [isActive]);
+  const handleOpenEntry = useCallback(
+    (entry: ChangedEntry, focus?: boolean) => {
+      if (overviewScrollRef.current) {
+        overviewScrollTopRef.current = overviewScrollRef.current.scrollTop;
+      }
+      onOpenEntry(entry, focus);
+    },
+    [onOpenEntry],
+  );
+
+  useLayoutEffect(() => {
+    if (isActive && overviewScrollRef.current) {
+      overviewScrollRef.current.scrollTop = overviewScrollTopRef.current;
+    }
+  }, [isActive]);
+
   return (
-    <div className={styles.overviewScroll}>
+    <div
+      ref={overviewScrollRef}
+      className={styles.overviewScroll}
+      onScroll={handleOverviewScroll}
+    >
       <header className={styles.releaseHeader}>
         <div>
           <span className={styles.eyebrow}>Manifest release</span>
@@ -661,7 +692,7 @@ const ReleaseOverview = memo(function ReleaseOverview({
                     <>
                       <div className={styles.entryGrid}>
                         {shown.map((entry) => (
-                          <EntryCard entry={entry} onOpen={onOpenEntry} key={entry.key} />
+                          <EntryCard entry={entry} onOpen={handleOpenEntry} key={entry.key} />
                         ))}
                       </div>
                       {group.count > shown.length && (
@@ -1125,7 +1156,11 @@ export const ManifestHistoryPage = memo(function ManifestHistoryPage({
                 <span>{releaseError}</span>
               </div>
             ) : release ? (
-              <ReleaseOverview release={release} onOpenEntry={openEntry} />
+              <ReleaseOverview
+                release={release}
+                onOpenEntry={openEntry}
+                isActive={tabState.activeKey === null}
+              />
             ) : (
               <div className={styles.pageState}>Choose a manifest version to explore.</div>
             )}

@@ -2,6 +2,7 @@ import {
   memo,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -62,6 +63,12 @@ const MOBILE_QUERY = '(max-width: 700px)';
 const COARSE_QUERY = '(max-width: 700px), (pointer: coarse)';
 /** Below this scroller width the table column is replaced by an inline badge. */
 const NARROW_TABLE_BADGE_PX = 560;
+
+let savedResultsScroll: { scopeKey: string; top: number } | null = null;
+
+export function resetSavedResultsScroll(): void {
+  savedResultsScroll = null;
+}
 
 const SORT_OPTIONS: ReadonlyArray<{ value: SortMode; label: string }> = [
   { value: 'relevance', label: 'Relevance' },
@@ -516,7 +523,11 @@ export const ResultsPane = memo(function ResultsPane({
   const [isNarrowPhone, setIsNarrowPhone] = useState(() => mediaMatches(MOBILE_QUERY));
   const [isCoarse, setIsCoarse] = useState(() => mediaMatches(COARSE_QUERY));
   const [narrowViewChoice, setNarrowViewChoice] = useState<ViewMode | null>(null);
-  const [scrollTop, setScrollTop] = useState(0);
+  const viewMode: ViewMode = isNarrowPhone ? (narrowViewChoice ?? 'list') : storedViewMode;
+  const scrollScopeKey = JSON.stringify([query, deepSearch, sortMode, viewMode, filters]);
+  const [scrollTop, setScrollTop] = useState(
+    () => (savedResultsScroll?.scopeKey === scrollScopeKey ? savedResultsScroll.top : 0),
+  );
   const [viewportWidth, setViewportWidth] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
   const [footerHeight, setFooterHeight] = useState(LOAD_MORE_FOOTER_FALLBACK_HEIGHT);
@@ -524,6 +535,12 @@ export const ResultsPane = memo(function ResultsPane({
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const loadMoreFooterRef = useRef<HTMLDivElement | null>(null);
   const scrollFrameRef = useRef<number | null>(null);
+  const scopeKeyRef = useRef(scrollScopeKey);
+  scopeKeyRef.current = scrollScopeKey;
+  const prevScopeKeyRef = useRef(scrollScopeKey);
+  const pendingScrollRestoreRef = useRef(
+    savedResultsScroll?.scopeKey === scrollScopeKey && savedResultsScroll.top > 0,
+  );
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
@@ -581,6 +598,11 @@ export const ResultsPane = memo(function ResultsPane({
     if (typeof window === 'undefined' || typeof window.requestAnimationFrame !== 'function') {
       const element = scrollRef.current;
       if (element) {
+        pendingScrollRestoreRef.current = false;
+        savedResultsScroll = {
+          scopeKey: scopeKeyRef.current,
+          top: element.scrollTop,
+        };
         setScrollTop(element.scrollTop);
       }
       return;
@@ -594,13 +616,34 @@ export const ResultsPane = memo(function ResultsPane({
       scrollFrameRef.current = null;
       const element = scrollRef.current;
       if (element) {
+        pendingScrollRestoreRef.current = false;
+        savedResultsScroll = {
+          scopeKey: scopeKeyRef.current,
+          top: element.scrollTop,
+        };
         setScrollTop(element.scrollTop);
       }
     });
   }, []);
 
-  useEffect(
+  useLayoutEffect(
     () => () => {
+      const element = scrollRef.current;
+      // During cold hydration the browser can clamp a cached offset to zero
+      // while there are no result rows. Preserve that cache until restoration
+      // has a scrollable result surface to work with.
+      if (
+        element &&
+        !(
+          pendingScrollRestoreRef.current &&
+          savedResultsScroll?.scopeKey === scopeKeyRef.current
+        )
+      ) {
+        savedResultsScroll = {
+          scopeKey: scopeKeyRef.current,
+          top: element.scrollTop,
+        };
+      }
       if (scrollFrameRef.current !== null && typeof window !== 'undefined') {
         window.cancelAnimationFrame(scrollFrameRef.current);
         scrollFrameRef.current = null;
@@ -617,7 +660,6 @@ export const ResultsPane = memo(function ResultsPane({
     return keys;
   }, [collectedItems]);
 
-  const viewMode: ViewMode = isNarrowPhone ? (narrowViewChoice ?? 'list') : storedViewMode;
   const hasDeepMatches = results.length > 0 && results[0]?.deepMatch !== undefined;
   const gridSidePad = remPx * GRID_SIDE_PAD_REM;
   const gridGutter = remPx * GRID_GUTTER_REM;
@@ -758,6 +800,43 @@ export const ResultsPane = memo(function ResultsPane({
     ? footerHeight || LOAD_MORE_FOOTER_FALLBACK_HEIGHT
     : 0;
   const virtualHeight = virtualRowsHeight + effectiveFooterHeight;
+
+  useLayoutEffect(() => {
+    if (prevScopeKeyRef.current === scrollScopeKey) {
+      return;
+    }
+
+    prevScopeKeyRef.current = scrollScopeKey;
+    pendingScrollRestoreRef.current = false;
+    savedResultsScroll = { scopeKey: scrollScopeKey, top: 0 };
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = 0;
+    }
+    setScrollTop(0);
+  }, [scrollScopeKey]);
+
+  useLayoutEffect(() => {
+    const saved = savedResultsScroll;
+    const element = scrollRef.current;
+    if (
+      !pendingScrollRestoreRef.current ||
+      !element ||
+      !saved ||
+      saved.scopeKey !== scrollScopeKey ||
+      saved.top <= 0 ||
+      results.length === 0 ||
+      virtualRowsHeight <= 0
+    ) {
+      return;
+    }
+
+    // Resolve the pending restore before writing scrollTop, so any resulting
+    // scroll event cannot be mistaken for a user scroll before hydration.
+    pendingScrollRestoreRef.current = false;
+    element.scrollTop = saved.top;
+    setScrollTop(element.scrollTop);
+  }, [results.length, scrollScopeKey, virtualRowsHeight]);
+
   const maxPhysicalScroll = Math.max(0, virtualHeight - viewportHeight);
   const maxLogicalScroll = Math.max(0, rawRowsHeight + effectiveFooterHeight - viewportHeight);
   const logicalScrollTop = isVirtualHeightCompressed
@@ -827,6 +906,14 @@ export const ResultsPane = memo(function ResultsPane({
 
   const handleActivate = useCallback(
     (item: SearchResultItem, index: number) => {
+      const element = scrollRef.current;
+      if (element) {
+        pendingScrollRestoreRef.current = false;
+        savedResultsScroll = {
+          scopeKey: scopeKeyRef.current,
+          top: element.scrollTop,
+        };
+      }
       setSelectedResultIndex(index);
       onOpenItem(item);
     },

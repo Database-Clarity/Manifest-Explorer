@@ -225,7 +225,13 @@ else:
 `;
 
 function parseArgs(argv) {
-  const result = { extraDirs: [], help: false, smokeOnly: false, probeOnly: false };
+  const result = {
+    extraDirs: [],
+    help: false,
+    smokeOnly: false,
+    probeOnly: false,
+    cacheOnly: false,
+  };
   const takeValue = (flag, index) => {
     const value = argv[index + 1];
     if (!value || value.startsWith('--')) throw new Error(`Missing value for ${flag}`);
@@ -236,6 +242,7 @@ function parseArgs(argv) {
     if (arg === '--help' || arg === '-h') result.help = true;
     else if (arg === '--smoke-only') result.smokeOnly = true;
     else if (arg === '--probe-only') result.probeOnly = true;
+    else if (arg === '--cache-only') result.cacheOnly = true;
     else if (arg === '--extra-zips') result.extraDirs.push(path.resolve(takeValue(arg, i++)));
     else if (arg === '--downloads-dir') result.downloadsDir = path.resolve(takeValue(arg, i++));
     else if (arg === '--scratch-dir') result.scratchDir = path.resolve(takeValue(arg, i++));
@@ -255,6 +262,8 @@ Usage:
   node scripts/history/build-history.mjs --s3-secret-file <file>
     [--downloads-dir <dir>] [--scratch-dir <dir>] [--output-dir <dir>]
     [--extra-zips <dir>]... [--concurrency 8] [--s3-region us-east-1]
+  node scripts/history/build-history.mjs --cache-only
+    [--downloads-dir <dir>] [--scratch-dir <dir>] [--output-dir <dir>]
   node scripts/history/build-history.mjs --smoke-only [--downloads-dir <dir>] [--scratch-dir <dir>]
   node scripts/history/build-history.mjs --probe-only --s3-secret-file <file>
 
@@ -394,6 +403,10 @@ function normalizedLocalVersion(candidate) {
     sourceArchive: candidate.sourceArchive,
     candidate,
   };
+}
+
+function modernVersionDate(version) {
+  return version.DiscoverDate_UTC || version.ManifestDate_UTC;
 }
 
 function selectUniqueLocalCandidates(candidates) {
@@ -899,7 +912,7 @@ function versionGapBefore(previous, current) {
   const from = previousDate.toISOString().slice(0, 10);
   const to = currentDate.toISOString().slice(0, 10);
   return (from === '2018-11-27' && to >= '2019-01-20' && to <= '2019-01-21') ||
-    (from >= '2020-02-11' && from <= '2020-02-13' && to === '2020-06-16');
+    (from >= '2020-02-11' && from <= '2020-02-13' && to >= '2020-06-16' && to <= '2020-07-08');
 }
 
 async function mapLimit(items, concurrency, worker, progressLabel) {
@@ -929,6 +942,9 @@ async function mapLimit(items, concurrency, worker, progressLabel) {
 async function downloadCached(key, relativePath, config) {
   const destination = path.join(config.cacheDir, relativePath);
   if (existsSync(destination) && statSync(destination).size > 0) return destination;
+  if (config.cacheOnly) {
+    throw new Error(`Missing required cached archive file for ${key}: ${destination}`);
+  }
   mkdirp(path.dirname(destination));
   const temporary = `${destination}.part`;
   try {
@@ -947,6 +963,9 @@ async function downloadCached(key, relativePath, config) {
 async function downloadModernInputs(list, config) {
   const listPath = path.join(config.cacheDir, 'list.json');
   if (!existsSync(listPath) || statSync(listPath).size === 0 || config.refresh) {
+    if (config.cacheOnly) {
+      throw new Error(`Missing required cached archive file list.json: ${listPath}`);
+    }
     const bytes = await s3Get('list.json', config.secret, config.region);
     writeFileSync(listPath, bytes);
     console.log(`Cached modern version list: ${listPath}`);
@@ -957,7 +976,7 @@ async function downloadModernInputs(list, config) {
   if (!Array.isArray(versions) || versions.length === 0) throw new Error('Archive list.json is empty or invalid');
 
   const sorted = [...versions].sort(
-    (a, b) => new Date(a.ManifestDate_UTC) - new Date(b.ManifestDate_UTC),
+    (a, b) => new Date(modernVersionDate(a)) - new Date(modernVersionDate(b)),
   );
   const first = sorted[0];
   const latest = sorted.at(-1);
@@ -1232,7 +1251,9 @@ function roundBytes(bytes) {
 }
 
 async function build(options) {
-  if (!options.secretFile) throw new Error('Full builds require --s3-secret-file <file>');
+  if (!options.cacheOnly && !options.secretFile) {
+    throw new Error('Full builds require --s3-secret-file <file> unless --cache-only is used');
+  }
   const scratchDir = options.scratchDir ?? DEFAULT_SCRATCH;
   const downloadsDir = options.downloadsDir ?? DEFAULT_DOWNLOADS;
   const outputDir = options.outputDir ?? path.join(scratchDir, 'v1');
@@ -1249,11 +1270,12 @@ async function build(options) {
   }
   const cacheDir = path.join(scratchDir, 'cache');
   const tmpDir = path.join(scratchDir, 'tmp');
-  const secret = readFileSync(options.secretFile, 'utf8').trim();
-  if (!secret) throw new Error('S3 secret file is empty');
+  const secret = options.cacheOnly ? null : readFileSync(options.secretFile, 'utf8').trim();
+  if (!options.cacheOnly && !secret) throw new Error('S3 secret file is empty');
   const config = {
     cacheDir,
     secret,
+    cacheOnly: options.cacheOnly,
     region: options.s3Region ?? 'us-east-1',
     concurrency: Number.isInteger(options.concurrency) && options.concurrency > 0 ? options.concurrency : 8,
   };
@@ -1322,7 +1344,7 @@ async function build(options) {
     {
       id: firstModern.VersionId,
       version: firstModern.Version,
-      date: new Date(firstModern.ManifestDate_UTC).toISOString(),
+      date: new Date(modernVersionDate(firstModern)).toISOString(),
     },
     firstRemoteDb,
   );
@@ -1331,7 +1353,7 @@ async function build(options) {
       i: index,
       id: remoteVersion.VersionId,
       version: remoteVersion.Version,
-      date: new Date(remoteVersion.ManifestDate_UTC).toISOString(),
+      date: new Date(modernVersionDate(remoteVersion)).toISOString(),
       source: 'diff',
       added: 0,
       modified: 0,
@@ -1446,7 +1468,7 @@ async function probeArchive(options) {
     throw new Error('Signed archive list request returned invalid data');
   }
   const sorted = [...versions].sort(
-    (a, b) => new Date(a.ManifestDate_UTC) - new Date(b.ManifestDate_UTC),
+    (a, b) => new Date(modernVersionDate(a)) - new Date(modernVersionDate(b)),
   );
   const contentFiles = [];
   for (const version of [sorted[0], sorted.at(-1)]) {
@@ -1476,7 +1498,7 @@ async function probeArchive(options) {
   if (!firstSunshot) throw new Error('Sunshot missing from the first modern SQLite bridge snapshot');
   console.log(
     `Signed archive probe OK: ${sorted.length} versions, ` +
-      `${sorted[0].ManifestDate_UTC} → ${sorted.at(-1).ManifestDate_UTC}; ` +
+      `${modernVersionDate(sorted[0])} → ${modernVersionDate(sorted.at(-1))}; ` +
       `bridge/latest SQLite extracted; Sunshot present; ${latestTables} latest tables.`,
   );
 }

@@ -421,7 +421,7 @@ async function serveBucket(
   const version =
     requestedVersion && CACHE_BUSTER_RE.test(requestedVersion) ? requestedVersion : null;
   const cacheControl = version ? IMMUTABLE_CACHE_CONTROL : HISTORY_CACHE_CONTROL;
-  const cacheSearch = version ? `?v=${version}&format=json-v2` : '?format=json-v2';
+  const cacheSearch = version ? `?v=${version}&format=json-v3` : '?format=json-v3';
   const isHead = request.method === 'HEAD';
   const ifNoneMatch = request.headers.get('If-None-Match');
   const deterministicEtag = `"${canonicalTable}:${bucket}:${version ?? 'latest'}"`;
@@ -531,7 +531,7 @@ async function serveRelease(
   const version =
     requestedVersion && CACHE_BUSTER_RE.test(requestedVersion) ? requestedVersion : null;
   const cacheControl = version ? IMMUTABLE_CACHE_CONTROL : HISTORY_CACHE_CONTROL;
-  const cacheSearch = version ? `?v=${version}&format=json-v2` : '?format=json-v2';
+  const cacheSearch = version ? `?v=${version}&format=json-v3` : '?format=json-v3';
   const isHead = request.method === 'HEAD';
   const ifNoneMatch = request.headers.get('If-None-Match');
   const deterministicEtag = `"release:${versionIndex}:${version ?? 'latest'}"`;

@@ -28,6 +28,7 @@ import { useExplorerStore } from '../stores/explorer';
 import { useSettingsStore } from '../stores/settings';
 import { countQueryFilterTokens } from '../utils/queryTokens';
 import {
+  ArrowLeftIcon,
   BookmarkIcon,
   ClarityWordmark,
   CloseIcon,
@@ -419,6 +420,16 @@ export const Header = memo(function Header({
             <span className={styles.brandText}>Manifest Explorer</span>
           </button>
 
+          <a
+            className={styles.clarityAttribution}
+            href="https://d2clarity.com"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="A Clarity project — visit d2clarity.com"
+          >
+            by <ClarityWordmark height={15} aria-label="Clarity" />
+          </a>
+
           {isHistoryMobile && (
             <button
               type="button"
@@ -429,7 +440,8 @@ export const Header = memo(function Header({
               }}
               aria-label="Back to Explorer"
             >
-              ← Explorer
+              <ArrowLeftIcon size={14} />
+              <span>Explorer</span>
             </button>
           )}
 
@@ -457,16 +469,6 @@ export const Header = memo(function Header({
               History
             </button>
           </nav>
-
-          <a
-            className={styles.clarityAttribution}
-            href="https://d2clarity.com"
-            target="_blank"
-            rel="noopener noreferrer"
-            title="A Clarity project — visit d2clarity.com"
-          >
-            by <ClarityWordmark height={15} aria-label="Clarity" />
-          </a>
 
           <div className={styles.searchCluster}>
             <div className={styles.searchField}>

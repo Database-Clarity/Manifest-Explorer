@@ -4,6 +4,7 @@ import {
   groupJsonDiffLines,
   type JsonDiffLine,
 } from '../../manifest/lineDiff';
+import { ArrowDownIcon, ArrowUpIcon } from '../../ui/Icons';
 import styles from './JsonDiffView.module.scss';
 
 export interface JsonDiffViewProps {
@@ -331,8 +332,13 @@ function DiffControls({
     const revealStart = Math.max(start, end - 20);
     return (
       <div className={className}>
-        <button type="button" onClick={() => onReveal(revealStart, end)}>
-          ↑ Expand {end - revealStart} above
+        <button
+          type="button"
+          className={styles.directionalButton}
+          onClick={() => onReveal(revealStart, end)}
+        >
+          <ArrowUpIcon size={13} />
+          Expand {end - revealStart} above
         </button>
         <button type="button" onClick={() => onReveal(0, total)}>
           Expand all ({count} lines)
@@ -344,8 +350,13 @@ function DiffControls({
     const revealEnd = Math.min(end, start + 20);
     return (
       <div className={className}>
-        <button type="button" onClick={() => onReveal(start, revealEnd)}>
-          ↓ Expand {revealEnd - start} below
+        <button
+          type="button"
+          className={styles.directionalButton}
+          onClick={() => onReveal(start, revealEnd)}
+        >
+          <ArrowDownIcon size={13} />
+          Expand {revealEnd - start} below
         </button>
         <button type="button" onClick={() => onReveal(0, total)}>
           Expand all ({count} lines)
@@ -366,12 +377,22 @@ function DiffControls({
   const lowerStart = Math.max(start, end - 20);
   return (
     <div className={className}>
-      <button type="button" onClick={() => onReveal(start, upperEnd)}>
-        ↑ 20 above
+      <button
+        type="button"
+        className={styles.directionalButton}
+        onClick={() => onReveal(start, upperEnd)}
+      >
+        <ArrowUpIcon size={13} />
+        20 above
       </button>
       <span>{count} hidden lines</span>
-      <button type="button" onClick={() => onReveal(lowerStart, end)}>
-        ↓ 20 below
+      <button
+        type="button"
+        className={styles.directionalButton}
+        onClick={() => onReveal(lowerStart, end)}
+      >
+        <ArrowDownIcon size={13} />
+        20 below
       </button>
       <button type="button" onClick={() => onReveal(start, end)}>
         Expand all

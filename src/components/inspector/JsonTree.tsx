@@ -28,6 +28,9 @@ import {
 } from '../../manifest/hash';
 import { getShortTableName } from '../../manifest/tables';
 import {
+  ArrowDownIcon,
+  ArrowRightIcon,
+  ArrowUpIcon,
   ChevronDownIcon,
   ChevronRightIcon,
   CloseIcon,
@@ -39,6 +42,10 @@ import {
   activateOnMiddleClick,
   preventMiddleClickAutoScroll,
 } from '../middleClick';
+import {
+  selectFilteredChildren,
+  type FilterChildCandidate,
+} from './jsonTreeFilter';
 import styles from './JsonTree.module.scss';
 
 const LazyColorSwatchWidget = lazy(() =>
@@ -747,6 +754,50 @@ interface NodeProps {
   onOpenLightbox: (url: string, path: string) => void;
   imageScaling: ImageScalingMode;
   isArrayItem?: boolean;
+  isContextSibling?: boolean;
+  onViewInFind: (path: string) => void;
+}
+
+type JsonTreeRenderSegment =
+  | {
+      type: 'child';
+      entry: readonly [string, unknown];
+      isContextSibling: boolean;
+    }
+  | {
+      type: 'omitted';
+      hiddenCount: number;
+      jumpPath: string;
+    };
+
+function FilterContextLimit({
+  hiddenCount,
+  isArray,
+  jumpPath,
+  onViewInFind,
+}: {
+  hiddenCount: number;
+  isArray: boolean;
+  jumpPath: string;
+  onViewInFind: (path: string) => void;
+}): ReactNode {
+  const unit = isArray ? 'item' : 'field';
+  return (
+    <div className={styles.filterContextLimit} role="note">
+      <span>
+        … {hiddenCount} more {unit}
+        {hiddenCount === 1 ? '' : 's'} hidden
+      </span>
+      <button
+        type="button"
+        className={styles.filterContextFind}
+        onClick={() => onViewInFind(jumpPath)}
+        title="Switch to Find mode at this match"
+      >
+        View in Find
+      </button>
+    </div>
+  );
 }
 
 function PreviousScalarValue({
@@ -819,7 +870,9 @@ function PreviousScalarValue({
           </span>
         ) : null}
       </span>
-      <span className={styles.diffArrow} aria-hidden="true">→</span>
+      <span className={styles.diffArrow} aria-hidden="true">
+        <ArrowRightIcon size={13} />
+      </span>
     </>
   );
 }
@@ -850,6 +903,8 @@ const JsonNode = memo(function JsonNode({
   onOpenLightbox,
   imageScaling,
   isArrayItem = false,
+  isContextSibling = false,
+  onViewInFind,
 }: NodeProps): ReactNode {
   const manualOpen = useSyncExternalStore(
     expansionStore.subscribe,
@@ -869,6 +924,7 @@ const JsonNode = memo(function JsonNode({
   const diffKind = diffNode?.kind;
   const diffHasChanges = diffNode?.hasChanges ?? false;
   const defaultExpanded =
+    !isContextSibling &&
     depth === 0 &&
     (nodeKey === 'displayProperties' || nodeKey === 'inventory' || nodeKey === 'equippingBlock');
 
@@ -891,14 +947,16 @@ const JsonNode = memo(function JsonNode({
     );
   const isAutoExpandedForSearch =
     searchMode === 'filter'
-      ? filterLower.length > 0 && (selfMatches || hasDescendantMatch)
+      ? filterLower.length > 0 &&
+        !isContextSibling &&
+        (selfMatches || hasDescendantMatch)
       : searchMode === 'find' && expandedByFind.has(path);
   const isExpanded =
     manualOpen !== undefined
       ? manualOpen
       : isAutoExpandedForSearch
         ? true
-        : diffMode && diffHasChanges
+        : diffMode && diffHasChanges && !isContextSibling
           ? true
           : expandGeneration.mode === 'expand'
             ? depth < 6
@@ -922,16 +980,25 @@ const JsonNode = memo(function JsonNode({
     };
     const filterActive = searchMode === 'filter' && filterLower.length > 0;
     const chunkChildren = isExpanded && count > CHILDREN_CHUNK_SIZE && !filterActive;
-    let visibleEntries: Array<readonly [string, unknown]> | null = null;
+    let renderSegments: JsonTreeRenderSegment[] | null = null;
     let remainingChildren = 0;
     if (isExpanded) {
-      visibleEntries = [];
+      renderSegments = [];
       if (filterActive && !preserveSubtree) {
+        const candidates: FilterChildCandidate<readonly [string, unknown]>[] = [];
         for (let index = 0; index < count; index += 1) {
           const entry = readChild(index);
           const childPath = treeChildPath(path, entry[0], isArray);
-          if (
-            (!diffMode || (diffNodes?.get(childPath)?.hasChanges ?? false)) &&
+          if (diffMode && !diffNodes?.get(childPath)?.hasChanges) continue;
+          const isDirectMatch = matchesNodeSelf(
+            entry[0],
+            nodeKey,
+            entry[1],
+            filterLower,
+            resolvedRefs,
+          );
+          const isAncestorPath =
+            !isDirectMatch &&
             matchesFilter(
               entry[0],
               entry[1],
@@ -940,27 +1007,54 @@ const JsonNode = memo(function JsonNode({
               filterCache,
               nodeKey,
               resolvedRefs,
-            )
-          ) {
-            visibleEntries.push(entry);
-          }
+            );
+          candidates.push({
+            key: entry[0],
+            path: childPath,
+            value: entry,
+            isDirectMatch,
+            isAncestorPath,
+          });
         }
+        renderSegments = selectFilteredChildren(
+          candidates,
+          candidates.length,
+          false,
+        ).map((segment) =>
+          segment.type === 'omitted'
+            ? segment
+            : {
+                type: 'child' as const,
+                entry: segment.entry.value,
+                isContextSibling: segment.isContextSibling,
+              },
+        );
       } else if (diffMode) {
         let changedCount = 0;
         for (let index = 0; index < count; index += 1) {
           const entry = readChild(index);
           const childPath = treeChildPath(path, entry[0], isArray);
           if (diffNodes?.get(childPath)?.hasChanges) {
-            if (changedCount < childLimit) visibleEntries.push(entry);
+            if (changedCount < childLimit) {
+              renderSegments.push({
+                type: 'child',
+                entry,
+                isContextSibling: false,
+              });
+            }
             changedCount += 1;
           }
         }
-        remainingChildren = Math.max(0, changedCount - visibleEntries.length);
+        remainingChildren = Math.max(0, changedCount - renderSegments.length);
       } else if (chunkChildren) {
         const revealFindMatches = searchMode === 'find' && filterLower.length > 0;
         if (!revealFindMatches) {
           for (let index = 0; index < Math.min(childLimit, count); index += 1) {
-            visibleEntries.push(readChild(index));
+            renderSegments.push({
+              type: 'child',
+              entry: readChild(index),
+              isContextSibling: false,
+            });
           }
         } else {
           for (let index = 0; index < count; index += 1) {
@@ -972,14 +1066,22 @@ const JsonNode = memo(function JsonNode({
               index < childLimit ||
               expandedByFind.has(childPath)
             ) {
-              visibleEntries.push(readChild(index));
+              renderSegments.push({
+                type: 'child',
+                entry: readChild(index),
+                isContextSibling: false,
+              });
             }
           }
         }
-        remainingChildren = count - visibleEntries.length;
+        remainingChildren = count - renderSegments.length;
       } else {
         for (let index = 0; index < count; index += 1) {
-          visibleEntries.push(readChild(index));
+          renderSegments.push({
+            type: 'child',
+            entry: readChild(index),
+            isContextSibling: false,
+          });
         }
       }
     }
@@ -1003,6 +1105,7 @@ const JsonNode = memo(function JsonNode({
     const summary = isArray ? `[${count}]` : `{${count}}`;
     const rowClassNames = [
       styles.row,
+      isContextSibling ? styles.contextSibling : '',
       isActiveMatch ? styles.rowActiveMatch : '',
       diffKind === 'added' ? styles.diffAddedRow : '',
       diffKind === 'removed' ? styles.diffRemovedRow : '',
@@ -1179,9 +1282,21 @@ const JsonNode = memo(function JsonNode({
           </div>
         )}
 
-        {isExpanded && visibleEntries !== null && visibleEntries.length > 0 && (
+        {isExpanded && renderSegments !== null && renderSegments.length > 0 && (
           <div className={styles.children}>
-            {visibleEntries.map(([childKey, childValue]) => {
+            {renderSegments.map((segment, segmentIndex) => {
+              if (segment.type === 'omitted') {
+                return (
+                  <FilterContextLimit
+                    key={`omitted:${segment.jumpPath}:${segmentIndex}`}
+                    hiddenCount={segment.hiddenCount}
+                    isArray={isArray}
+                    jumpPath={segment.jumpPath}
+                    onViewInFind={onViewInFind}
+                  />
+                );
+              }
+              const [childKey, childValue] = segment.entry;
               const childPath = treeChildPath(path, childKey, isArray);
               return (
                 <JsonNode
@@ -1193,7 +1308,7 @@ const JsonNode = memo(function JsonNode({
                   depth={depth + 1}
                   filterLower={filterLower}
                   searchMode={searchMode}
-                  ancestorMatched={preserveSubtree}
+                  ancestorMatched={preserveSubtree || segment.isContextSibling}
                   activeMatchPath={activeMatchPath}
                   expandedByFind={expandedByFind}
                   expandGeneration={expandGeneration}
@@ -1211,6 +1326,8 @@ const JsonNode = memo(function JsonNode({
                   onOpenLightbox={onOpenLightbox}
                   imageScaling={imageScaling}
                   isArrayItem={isArray}
+                  isContextSibling={segment.isContextSibling}
+                  onViewInFind={onViewInFind}
                 />
               );
             })}
@@ -1311,6 +1428,7 @@ const JsonNode = memo(function JsonNode({
       <div
         className={[
           styles.row,
+          isContextSibling ? styles.contextSibling : '',
           isActiveMatch ? styles.rowActiveMatch : '',
           diffKind === 'added' ? styles.diffAddedRow : '',
           diffKind === 'removed' ? styles.diffRemovedRow : '',
@@ -1778,6 +1896,20 @@ export const JsonTree = memo(function JsonTree({
   );
   const findMatches = findMatchesResult.matches;
   const findMatchesTruncated = findMatchesResult.truncated;
+  const handleViewInFind = useCallback(
+    (jumpPath: string): void => {
+      const matches = collectFindMatches(
+        viewData,
+        filter.trim().toLowerCase(),
+        resolvedRefs,
+      ).matches;
+      const matchIndex = matches.findIndex((match) => match.path === jumpPath);
+      flushFilterPersist();
+      setActiveMatchIndex(matchIndex >= 0 ? matchIndex : 0);
+      setSearchMode('find');
+    },
+    [filter, flushFilterPersist, resolvedRefs, viewData],
+  );
   const clampedActiveMatchIndex =
     findMatches.length === 0
       ? 0
@@ -1809,21 +1941,55 @@ export const JsonTree = memo(function JsonTree({
     activeRow?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
   }, [activeMatchPath, searchMode]);
 
-  const rootEntries = useMemo(() => {
-    const all = Object.entries(viewData);
-    return all.filter(([key, value]) => {
-      if (diffMode && !diffNodes?.get(key)?.hasChanges) return false;
-      if (searchMode === 'find' || !deferredFilterLower) return true;
-      return matchesFilter(
-        key,
-        value,
-        deferredFilterLower,
-        0,
-        filterCache,
-        undefined,
-        resolvedRefs,
-      );
-    });
+  const rootSegments = useMemo<JsonTreeRenderSegment[]>(() => {
+    const entries = Object.entries(viewData).filter(
+      ([key]) => !diffMode || (diffNodes?.get(key)?.hasChanges ?? false),
+    );
+    if (searchMode !== 'filter' || !deferredFilterLower) {
+      return entries.map((entry) => ({
+        type: 'child',
+        entry,
+        isContextSibling: false,
+      }));
+    }
+
+    const candidates: FilterChildCandidate<readonly [string, unknown]>[] =
+      entries.map((entry) => {
+        const [key, value] = entry;
+        const isDirectMatch = matchesNodeSelf(
+          key,
+          undefined,
+          value,
+          deferredFilterLower,
+          resolvedRefs,
+        );
+        return {
+          key,
+          path: key,
+          value: entry,
+          isDirectMatch,
+          isAncestorPath:
+            !isDirectMatch &&
+            matchesFilter(
+              key,
+              value,
+              deferredFilterLower,
+              0,
+              filterCache,
+              undefined,
+              resolvedRefs,
+            ),
+        };
+      });
+    return selectFilteredChildren(candidates, candidates.length, true).map((segment) =>
+      segment.type === 'omitted'
+        ? segment
+        : {
+            type: 'child' as const,
+            entry: segment.entry.value,
+            isContextSibling: segment.isContextSibling,
+          },
+    );
   }, [
     deferredFilterLower,
     diffMode,
@@ -1833,6 +1999,10 @@ export const JsonTree = memo(function JsonTree({
     searchMode,
     viewData,
   ]);
+  const rootVisibleCount = rootSegments.reduce(
+    (total, segment) => total + (segment.type === 'child' ? 1 : 0),
+    0,
+  );
 
   const stepMatch = useCallback(
     (direction: -1 | 1) => {
@@ -1954,7 +2124,7 @@ export const JsonTree = memo(function JsonTree({
               title="Previous match (Shift+Enter / Shift+Tab)"
               aria-label="Previous match"
             >
-              ↑
+              <ArrowUpIcon size={14} />
             </button>
             <span className={styles.matchCount} aria-live="polite">
               {findMatches.length === 0
@@ -1969,7 +2139,7 @@ export const JsonTree = memo(function JsonTree({
               title="Next match (Enter / Tab)"
               aria-label="Next match"
             >
-              ↓
+              <ArrowDownIcon size={14} />
             </button>
           </div>
         )}
@@ -1996,40 +2166,57 @@ export const JsonTree = memo(function JsonTree({
         role="tree"
         aria-label="Definition JSON"
       >
-        {searchMode === 'filter' && deferredFilterLower && rootEntries.length === 0 ? (
+        {searchMode === 'filter' && deferredFilterLower && rootVisibleCount === 0 ? (
           <div className={styles.empty}>No fields match &quot;{filter}&quot;.</div>
-        ) : rootEntries.length === 0 ? (
+        ) : rootVisibleCount === 0 ? (
           <div className={styles.empty}>
             {diffMode ? 'No changes to show.' : 'No fields in this snapshot.'}
           </div>
         ) : (
-          rootEntries.map(([key, val]) => (
-            <JsonNode
-              key={key}
-              nodeKey={key}
-              path={key}
-              value={val}
-              depth={0}
-              filterLower={deferredFilterLower}
-              searchMode={searchMode}
-              activeMatchPath={activeMatchPath}
-              expandedByFind={expandedByFind}
-              expandGeneration={expandGeneration}
-              filterCache={filterCache}
-              diffMode={diffMode}
-              diffNodes={diffNodes}
-              expansionStore={expansionStore}
-              onTogglePath={handleTogglePath}
-              selectedActionPath={selectedActionPath}
-              onRowClick={handleRowClick}
-              onDismissRowActions={dismissRowActions}
-              resolvedRefs={resolvedRefs}
-              onNavigateRef={handleNavigateRef}
-              onCopy={handleCopy}
-              onOpenLightbox={handleOpenLightbox}
-              imageScaling={imageScaling}
-            />
-          ))
+          rootSegments.map((segment, segmentIndex) => {
+            if (segment.type === 'omitted') {
+              return (
+                <FilterContextLimit
+                  key={`omitted:${segment.jumpPath}:${segmentIndex}`}
+                  hiddenCount={segment.hiddenCount}
+                  isArray={false}
+                  jumpPath={segment.jumpPath}
+                  onViewInFind={handleViewInFind}
+                />
+              );
+            }
+            const [key, val] = segment.entry;
+            return (
+              <JsonNode
+                key={key}
+                nodeKey={key}
+                path={key}
+                value={val}
+                depth={0}
+                filterLower={deferredFilterLower}
+                searchMode={searchMode}
+                ancestorMatched={segment.isContextSibling}
+                activeMatchPath={activeMatchPath}
+                expandedByFind={expandedByFind}
+                expandGeneration={expandGeneration}
+                filterCache={filterCache}
+                diffMode={diffMode}
+                diffNodes={diffNodes}
+                expansionStore={expansionStore}
+                onTogglePath={handleTogglePath}
+                selectedActionPath={selectedActionPath}
+                onRowClick={handleRowClick}
+                onDismissRowActions={dismissRowActions}
+                resolvedRefs={resolvedRefs}
+                onNavigateRef={handleNavigateRef}
+                onCopy={handleCopy}
+                onOpenLightbox={handleOpenLightbox}
+                imageScaling={imageScaling}
+                isContextSibling={segment.isContextSibling}
+                onViewInFind={handleViewInFind}
+              />
+            );
+          })
         )}
       </div>
 

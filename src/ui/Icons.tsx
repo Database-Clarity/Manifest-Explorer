@@ -106,6 +106,22 @@ export function ArrowRightIcon(props: IconProps): ReactNode {
   );
 }
 
+export function ArrowUpIcon(props: IconProps): ReactNode {
+  return (
+    <IconFrame {...props}>
+      <path d="M8 12.5v-9M3.5 7 8 3l4.5 4" />
+    </IconFrame>
+  );
+}
+
+export function ArrowDownIcon(props: IconProps): ReactNode {
+  return (
+    <IconFrame {...props}>
+      <path d="M8 3.5v9M3.5 9 8 13l4.5-4" />
+    </IconFrame>
+  );
+}
+
 export function CopyIcon(props: IconProps): ReactNode {
   return (
     <IconFrame {...props}>

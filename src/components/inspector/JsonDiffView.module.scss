@@ -436,6 +436,12 @@
   grid-column: 1 / -1;
 }
 
+.directionalButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
 .renderMore {
   display: flex;
   align-items: center;

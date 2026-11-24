@@ -169,6 +169,15 @@ export function GridIcon(props: IconProps): ReactNode {
   );
 }
 
+export function LayersIcon(props: IconProps): ReactNode {
+  return (
+    <IconFrame {...props}>
+      <path d="m8 2.5 5.5 3L8 8.5l-5.5-3 5.5-3Z" />
+      <path d="m2.5 8 5.5 3 5.5-3M2.5 10.5l5.5 3 5.5-3" />
+    </IconFrame>
+  );
+}
+
 export function PanelLeftIcon(props: IconProps): ReactNode {
   return (
     <IconFrame {...props}>

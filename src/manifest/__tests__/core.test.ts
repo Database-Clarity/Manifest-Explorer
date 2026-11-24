@@ -29,14 +29,18 @@ import {
   parseSearchQuery,
   prepareTextSearchIndex,
   scoreAndFilterEntries,
+  groupSearchResults,
+  sortUsesDates,
   type SearchContext,
 } from '../query';
+import type { SearchResultItem } from '../../types/manifest';
 import { SEASON_ALIASES, formatShortSeasonName, getD2aiMappings, normalizeSourceLookup } from '../d2ai';
 import { normalizeSourceLookup as normalizeSourceLookupPure } from '../sourceLookup';
 import {
   ARTIFACT_PERKS_TABLE,
   CORE_BOOT_TABLES,
   extractTableEntrySummary,
+  canonicalTableName,
   getFriendlyTableName,
   getShortTableName,
   getTableGroup,
@@ -93,7 +97,7 @@ function rank(
   entries: SearchIndexEntry[],
   options: {
     filters?: Partial<SearchFilters>;
-    sort?: 'relevance' | 'name-asc' | 'name-desc' | 'hash-asc' | 'hash-desc' | 'index-desc';
+    sort?: SortMode;
     categories?: Map<number, string>;
     maxResults?: number;
     context?: SearchContext;
@@ -951,6 +955,81 @@ describe('ranking and filtering', () => {
     ]);
   });
 
+  it('sorts by release and update dates with inferred, index-zero and missing records', () => {
+    const alpha = makeEntry({ hash: 10, name: 'Alpha' });
+    const beta = makeEntry({ hash: 20, name: 'Beta' });
+    const echoHighHash = makeEntry({ hash: 8, name: 'Echo' });
+    const echoLowHash = makeEntry({ hash: 3, name: 'Echo' });
+    const unarchived = makeEntry({ hash: 1, name: 'Unarchived' });
+    const entryDates = new Map([
+      [alpha, { firstVersionIndex: 0, lastVersionIndex: 0, firstInferred: true }],
+      [beta, { firstVersionIndex: 1, lastVersionIndex: 4, firstInferred: false }],
+      [echoHighHash, { firstVersionIndex: 2, lastVersionIndex: 4, firstInferred: false }],
+      [echoLowHash, { firstVersionIndex: 2, lastVersionIndex: 4, firstInferred: true }],
+    ]);
+    const context: SearchContext = { entryDates };
+    const entries = [alpha, beta, echoHighHash, echoLowHash, unarchived];
+
+    expect(sortUsesDates('release-desc')).toBe(true);
+    expect(sortUsesDates('release-asc')).toBe(true);
+    expect(sortUsesDates('update-desc')).toBe(true);
+    expect(sortUsesDates('update-asc')).toBe(true);
+    expect(sortUsesDates('relevance')).toBe(false);
+
+    expect(rank('', entries, { sort: 'release-desc', context }).items.map((item) => item.name)).toEqual([
+      'Echo',
+      'Echo',
+      'Beta',
+      'Alpha',
+      'Unarchived',
+    ]);
+    expect(rank('', entries, { sort: 'release-asc', context }).items.map((item) => item.name)).toEqual([
+      'Alpha',
+      'Beta',
+      'Echo',
+      'Echo',
+      'Unarchived',
+    ]);
+    expect(rank('', entries, { sort: 'update-desc', context }).items.map((item) => item.name)).toEqual([
+      'Beta',
+      'Echo',
+      'Echo',
+      'Alpha',
+      'Unarchived',
+    ]);
+    expect(rank('', entries, { sort: 'update-asc', context }).items.map((item) => item.name)).toEqual([
+      'Alpha',
+      'Beta',
+      'Echo',
+      'Echo',
+      'Unarchived',
+    ]);
+
+    const released = rank('', entries, { sort: 'release-asc', context }).items;
+    expect(released[0]).toMatchObject({
+      hash: 10,
+      firstVersionIndex: 0,
+      lastVersionIndex: 0,
+      firstDateInferred: true,
+    });
+    expect(released.at(-1)).toMatchObject({
+      firstVersionIndex: -1,
+      lastVersionIndex: -1,
+      firstDateInferred: false,
+    });
+    expect(released[2]?.hash).toBe(3);
+    expect(released[3]?.hash).toBe(8);
+    expect(rank('', [unarchived, alpha], { sort: 'release-desc' }).items.map((item) => item.name)).toEqual([
+      'Alpha',
+      'Unarchived',
+    ]);
+    expect(
+      rank('alpha', [makeEntry({ hash: 1, name: '0 Alpha' }), alpha], {
+        sort: 'release-desc',
+      }).items.map((item) => item.name),
+    ).toEqual(['Alpha', '0 Alpha']);
+  });
+
   it('keeps the ASCII name-sort fast path aligned with localeCompare', () => {
     const entries = [
       makeEntry({ hash: 1, name: 'Solar Rifle 12' }),
@@ -976,6 +1055,70 @@ describe('ranking and filtering', () => {
     expect(result.items).toHaveLength(10);
     expect(result.totalMatches).toBe(25);
     expect(result.durationMs).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe('table-grouped search result pages', () => {
+  const result = (table: string, hash: number, name: string): SearchResultItem => ({
+    table,
+    hash,
+    name,
+    subtitle: '',
+  });
+
+  it('merges Lite items, follows metadata rank, preserves group order, and redistributes quotas', () => {
+    const items = [
+      result(ITEM_TABLE, 900, 'Inventory first'),
+      result('DestinySandboxPerkDefinition', 500, 'Perk first'),
+      result('ZUnknownDefinition', 800, 'Z unknown first'),
+      result('DestinyRecordDefinition', 600, 'Record first'),
+      result(LITE_TABLE, 100, 'Inventory second'),
+      result('AUnknownDefinition', 700, 'A unknown first'),
+      ...Array.from({ length: 9 }, (_, index) =>
+        result('DestinySandboxPerkDefinition', 501 + index, `Perk ${index}`),
+      ),
+      ...Array.from({ length: 9 }, (_, index) =>
+        result('DestinyRecordDefinition', 601 + index, `Record ${index}`),
+      ),
+      ...Array.from({ length: 9 }, (_, index) =>
+        result('AUnknownDefinition', 701 + index, `A unknown ${index}`),
+      ),
+      ...Array.from({ length: 9 }, (_, index) =>
+        result('ZUnknownDefinition', 801 + index, `Z unknown ${index}`),
+      ),
+    ];
+    const paged = groupSearchResults(items, 15);
+
+    expect(paged.groups.map((group) => group.key)).toEqual([
+      ITEM_TABLE,
+      'DestinySandboxPerkDefinition',
+      'DestinyRecordDefinition',
+      'AUnknownDefinition',
+      'ZUnknownDefinition',
+    ]);
+    expect(canonicalTableName(LITE_TABLE)).toBe(ITEM_TABLE);
+    expect(paged.groups.map(({ count, loaded }) => [count, loaded])).toEqual([
+      [2, 2],
+      [10, 4],
+      [10, 3],
+      [10, 3],
+      [10, 3],
+    ]);
+    expect(paged.items.slice(0, 2).map((item) => item.name)).toEqual([
+      'Inventory first',
+      'Inventory second',
+    ]);
+    expect(paged.items.slice(2, 6).map((item) => item.name)).toEqual([
+      'Perk first',
+      'Perk 0',
+      'Perk 1',
+      'Perk 2',
+    ]);
+    expect(paged.items).toHaveLength(15);
+
+    const all = groupSearchResults(items);
+    expect(all.items).toHaveLength(items.length);
+    expect(all.groups.every((group) => group.count === group.loaded)).toBe(true);
   });
 });
 
@@ -1064,6 +1207,10 @@ describe('top-K selection equivalence', () => {
     'hash-asc',
     'hash-desc',
     'index-desc',
+    'release-desc',
+    'release-asc',
+    'update-desc',
+    'update-asc',
   ];
 
   const key = (item: { hash: number; table: string; name: string; index?: number }): string =>

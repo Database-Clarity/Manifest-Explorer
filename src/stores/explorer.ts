@@ -6,6 +6,7 @@ import type {
   ManifestStatus,
   ResolvedSummaryEntry,
   SearchFilters,
+  SearchResultGroup,
   SearchResultItem,
   TableStatus,
   UnnamedMode,
@@ -62,6 +63,9 @@ export interface ExplorerState {
   searchDurationMs: number;
   scopeEntryCount: number;
   hiddenUnnamedCount: number;
+  resultGroups: SearchResultGroup[];
+  versionDates: number[];
+  entryDatesStatus: 'idle' | 'loading' | 'ready' | 'unavailable';
   searching: boolean;
   selectedResultIndex: number;
 
@@ -90,6 +94,9 @@ export interface ExplorerState {
     preserveCursor?: boolean,
     hiddenUnnamedCount?: number,
     scopeEntryCount?: number,
+    resultGroups?: SearchResultGroup[],
+    versionDates?: number[],
+    entryDatesStatus?: 'idle' | 'loading' | 'ready' | 'unavailable',
   ) => void;
   setSearching: (searching: boolean) => void;
   setManifestStatus: (status: Partial<ManifestStatus>) => void;
@@ -371,6 +378,9 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
   searchDurationMs: 0,
   scopeEntryCount: 0,
   hiddenUnnamedCount: 0,
+  resultGroups: [],
+  versionDates: [],
+  entryDatesStatus: 'idle',
   searching: false,
   selectedResultIndex: 0,
 
@@ -435,6 +445,9 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
     preserveCursor = false,
     hiddenUnnamedCount = 0,
     scopeEntryCount = 0,
+    resultGroups = [],
+    versionDates = [],
+    entryDatesStatus = 'idle',
   ) =>
     set((state) => ({
       results: items,
@@ -442,6 +455,9 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
       searchDurationMs: Math.max(0, durationMs),
       hiddenUnnamedCount: Math.max(0, hiddenUnnamedCount),
       scopeEntryCount: Math.max(0, scopeEntryCount),
+      resultGroups,
+      versionDates,
+      entryDatesStatus,
       searching: false,
       selectedResultIndex: preserveCursor
         ? Math.min(state.selectedResultIndex, Math.max(0, items.length - 1))

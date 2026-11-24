@@ -40,7 +40,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { createGzip, gunzipSync } from 'node:zlib';
+import { createGzip, gzipSync, gunzipSync } from 'node:zlib';
+import { decodeEntryDates, encodeEntryDates } from './entry-dates-codec.mjs';
 
 const MANIFEST_INDEX_URL = 'https://www.bungie.net/Platform/Destiny2/Manifest/';
 const BUNGIE_ORIGIN = 'https://www.bungie.net';
@@ -51,6 +52,7 @@ const DEFAULT_ACCOUNT_ID = 'c5ec2772673dc72f5e58587ef4c80ff8';
 
 const HISTORY_PREFIX = 'v1';
 const VERSIONS_KEY = `${HISTORY_PREFIX}/versions.json`;
+const ENTRY_DATES_KEY = `${HISTORY_PREFIX}/entry-dates.bin.gz`;
 const SNAPSHOT_PREFIX = `${HISTORY_PREFIX}/latest-snapshot`;
 const BUCKET_PREFIX = `${HISTORY_PREFIX}/buckets`;
 const RELEASE_PREFIX = `${HISTORY_PREFIX}/releases`;
@@ -247,7 +249,11 @@ function r2Get(key, { optional = false } = {}) {
   }
 }
 
-function r2PutFile(key, file, { gzip = false } = {}) {
+function r2PutFile(
+  key,
+  file,
+  { gzip = false, contentType = 'application/json; charset=utf-8' } = {},
+) {
   const args = [
     'r2',
     'object',
@@ -257,7 +263,7 @@ function r2PutFile(key, file, { gzip = false } = {}) {
     file,
     '--remote',
     '--content-type',
-    'application/json; charset=utf-8',
+    contentType,
     '--cache-control',
     'public, max-age=300',
   ];
@@ -674,6 +680,7 @@ async function updateTable({
   index,
   dryRun,
   pendingSnapshots,
+  entryDateTables,
 }) {
   const tableUrl = toBungieUrl(manifestPath);
   log(`Downloading ${table}...`);
@@ -760,6 +767,50 @@ async function updateTable({
       );
       history.push(revision);
       bucket[hash] = history;
+      let tableDates = entryDateTables.get(table);
+      if (!tableDates) {
+        tableDates = new Map();
+        entryDateTables.set(table, tableDates);
+      }
+      if (revision.k === 'r') {
+        tableDates.delete(Number(hash) >>> 0);
+      } else {
+        const existingDate = tableDates.get(Number(hash) >>> 0);
+        const validHistory = history.filter(
+          (entry) => isRecord(entry) && Number.isInteger(entry.v) && entry.v >= 0,
+        );
+        const firstAdded = validHistory
+          .filter((entry) => entry.k === 'a')
+          .reduce((first, entry) => Math.min(first, entry.v), Number.POSITIVE_INFINITY);
+        const firstAny = validHistory.reduce(
+          (first, entry) => Math.min(first, entry.v),
+          Number.POSITIVE_INFINITY,
+        );
+        const lastAny = validHistory.reduce(
+          (last, entry) => Math.max(last, entry.v),
+          Number.NEGATIVE_INFINITY,
+        );
+        tableDates.set(Number(hash) >>> 0, {
+          firstVersionIndex:
+            revision.k === 'm' && existingDate
+              ? existingDate.firstVersionIndex
+              : Number.isFinite(firstAdded)
+                ? firstAdded
+                : Number.isFinite(firstAny)
+                  ? firstAny
+                  : -1,
+          lastVersionIndex:
+            revision.k === 'm' && existingDate
+              ? versionIndex
+              : Number.isFinite(lastAny)
+                ? lastAny
+                : -1,
+          firstInferred:
+            revision.k === 'm' && existingDate
+              ? existingDate.firstInferred
+              : !Number.isFinite(firstAdded) && Number.isFinite(firstAny),
+        });
+      }
     }
     if (!dryRun) {
       await r2PutValue(key, bucket, { gzip: true });
@@ -819,6 +870,32 @@ async function update(options) {
   const versionIndex = previous.i + 1;
   log(`Recording ${manifest.version} as history index ${versionIndex}.`);
 
+  const entryDatesBytes = r2Get(ENTRY_DATES_KEY, { optional: true });
+  if (!entryDatesBytes) {
+    throw new Error(
+      `${ENTRY_DATES_KEY} is missing. Rebuild and upload the complete history artifacts before running the live updater.`,
+    );
+  }
+  let entryDates;
+  try {
+    const isGzip = entryDatesBytes[0] === 0x1f && entryDatesBytes[1] === 0x8b;
+    entryDates = decodeEntryDates(isGzip ? gunzipSync(entryDatesBytes) : entryDatesBytes);
+  } catch (error) {
+    throw new Error(`Failed to decode ${ENTRY_DATES_KEY}: ${errorMessage(error)}`);
+  }
+  if (entryDates.versionDates.length !== index.versions.length) {
+    throw new Error(
+      `${ENTRY_DATES_KEY} has ${entryDates.versionDates.length} versions, but ` +
+        `${VERSIONS_KEY} has ${index.versions.length}`,
+    );
+  }
+  for (let version = 0; version < index.versions.length; version += 1) {
+    const expectedSeconds = Math.floor(Date.parse(index.versions[version].date) / 1000);
+    if (entryDates.versionDates[version] / 1000 !== expectedSeconds) {
+      throw new Error(`${ENTRY_DATES_KEY} timestamp mismatch at version index ${version}`);
+    }
+  }
+
   const pendingSnapshots = [];
   const totals = { added: 0, modified: 0, removed: 0, bucketWrites: 0 };
   const releaseTables = {};
@@ -835,6 +912,7 @@ async function update(options) {
         index,
         dryRun: options.dryRun,
         pendingSnapshots,
+        entryDateTables: entryDates.tables,
       });
     } catch (error) {
       throw new Error(`Updating ${table} failed: ${errorMessage(error)}`, {
@@ -867,6 +945,10 @@ async function update(options) {
   }
 
   const date = new Date().toISOString();
+  entryDates.versionDates.push(Date.parse(date));
+  if (entryDates.versionDates.length !== versionIndex + 1) {
+    throw new Error('Entry-date version timestamps are not contiguous with versions.json');
+  }
   const releaseTotals = { a: 0, m: 0, r: 0, u: 0, c: 0 };
   for (const changes of Object.values(releaseTables)) {
     for (const kind of RELEASE_KINDS) {
@@ -911,7 +993,7 @@ async function update(options) {
     log(
       `Dry run complete: would write ${totals.bucketWrites} bucket objects, ` +
         `${manifest.tables.length} snapshots, and ` +
-        `${RELEASE_PREFIX}/${versionIndex}.json.gz ` +
+        `${RELEASE_PREFIX}/${versionIndex}.json.gz and ${ENTRY_DATES_KEY} ` +
         `(${releaseTotals.a + releaseTotals.m + releaseTotals.r} entries), ` +
         `then commit ${VERSIONS_KEY}; no R2 writes were made. ${summary}`,
     );
@@ -937,8 +1019,21 @@ async function update(options) {
   await r2PutValue(releaseKey, release, { gzip: true });
   log(`Uploaded ${releaseKey} (${releaseTotals.a + releaseTotals.m + releaseTotals.r} entries).`);
 
+  const entryDatesFile = path.join(TMP_DIR, 'uploads', `${sha256(ENTRY_DATES_KEY)}.bin.gz`);
+  try {
+    mkdirSync(path.dirname(entryDatesFile), { recursive: true });
+    writeFileSync(entryDatesFile, gzipSync(encodeEntryDates(entryDates), { level: 9 }));
+    r2PutFile(ENTRY_DATES_KEY, entryDatesFile, {
+      gzip: true,
+      contentType: 'application/octet-stream',
+    });
+    log(`Uploaded ${ENTRY_DATES_KEY} (${entryDates.tables.size} tables).`);
+  } finally {
+    rmSync(entryDatesFile, { force: true });
+  }
+
   // Commit last: readers keep seeing the previous version until every table,
-  // bucket, snapshot, and release index for this version is durable.
+  // bucket, snapshot, release index, and entry-date index are durable.
   index.schema = 1;
   index.generatedAt = date;
   index.versions.push(meta);

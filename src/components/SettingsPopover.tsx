@@ -16,15 +16,12 @@ import {
   useSettingsStore,
 } from '../stores/settings';
 import { useExplorerStore } from '../stores/explorer';
-import { useCollectorStore } from '../stores/collector';
 import {
   ChevronDownIcon,
   ChevronRightIcon,
-  ClarityWordmark,
-  HeartFilledIcon,
-  KofiIcon,
 } from '../ui/Icons';
 import { Popover } from '../ui/Popover';
+import { Select } from '../ui/Select';
 import styles from './SettingsPopover.module.scss';
 
 export interface SettingsPopoverProps {
@@ -35,12 +32,6 @@ export interface SettingsPopoverProps {
   onClearCache: () => void;
   onLoadAllTables: () => void;
   onLocaleChange: (locale: BungieLocale) => void;
-  onOpenChangelog?: () => void;
-  onOpenHelp: () => void;
-  onOpenCollector: () => void;
-  hasUnseenChangelog?: boolean;
-  activePage?: 'explorer' | 'history';
-  onNavigatePage?: (path: '/' | '/history') => void;
 }
 
 const THEME_OPTIONS: ReadonlyArray<readonly [ThemeMode, string]> = [
@@ -131,12 +122,6 @@ function SettingsPopoverBody({
   onClearCache,
   onLoadAllTables,
   onLocaleChange,
-  onOpenChangelog,
-  onOpenHelp,
-  onOpenCollector,
-  hasUnseenChangelog = false,
-  activePage = 'explorer',
-  onNavigatePage,
 }: SettingsPopoverProps): ReactNode {
   const [confirmClear, setConfirmClear] = useState(false);
   const [keyOpen, setKeyOpen] = useState(false);
@@ -169,9 +154,6 @@ function SettingsPopoverBody({
   const resetSettings = useSettingsStore((state) => state.resetSettings);
 
   const manifestStatus = useExplorerStore((state) => state.manifestStatus);
-  const collectedCount = useCollectorStore((state) => state.items.length);
-  const collectMode = useCollectorStore((state) => state.collectMode);
-
   const tableTotal = manifestStatus.totalTableCount > 0 ? manifestStatus.totalTableCount : 98;
   const fuzzinessPercent = Math.round(fuzziness * 100);
   const fuzzinessTier = fuzzinessLevel(fuzziness);
@@ -191,81 +173,6 @@ function SettingsPopoverBody({
       width="20rem"
     >
       <div className={styles.body}>
-        <section className={styles.section}>
-          <h2 className={styles.sectionTitle}>About &amp; tools</h2>
-          <div className={styles.aboutActions}>
-            {onNavigatePage && (
-              <button
-                type="button"
-                className={`${styles.aboutBtn} ${styles.pageNavAction}`}
-                onClick={() => {
-                  onClose();
-                  onNavigatePage(activePage === 'history' ? '/' : '/history');
-                }}
-              >
-                <span>{activePage === 'history' ? 'Manifest Explorer' : 'Manifest History'}</span>
-              </button>
-            )}
-            <button
-              type="button"
-              className={styles.aboutBtn}
-              onClick={() => {
-                if (!onOpenChangelog) return;
-                onClose();
-                onOpenChangelog();
-              }}
-              disabled={!onOpenChangelog}
-            >
-              <span>What’s new</span>
-              {hasUnseenChangelog && <span className={styles.aboutBadge}>New</span>}
-            </button>
-            <button
-              type="button"
-              className={styles.aboutBtn}
-              onClick={() => {
-                onClose();
-                onOpenHelp();
-              }}
-            >
-              <span>Search help &amp; shortcuts</span>
-            </button>
-            <button type="button" className={styles.aboutBtn} onClick={onOpenCollector}>
-              <span>Collector</span>
-              {(collectedCount > 0 || collectMode) && (
-                <span className={styles.aboutBadge}>
-                  {collectedCount > 0 ? collectedCount : 'Active'}
-                </span>
-              )}
-            </button>
-          </div>
-          <div className={styles.aboutLinks}>
-            <div className={styles.creditLine}>
-              <span>Made with</span>
-              <HeartFilledIcon size={12} aria-label="love" />
-              <span>by</span>
-              <a
-                className={styles.creditLink}
-                href="https://d2clarity.com"
-                target="_blank"
-                rel="noopener noreferrer"
-                aria-label="Clarity"
-                title="Visit Clarity"
-              >
-                <ClarityWordmark height={16} aria-label="Clarity" />
-              </a>
-            </div>
-            <a
-              className={styles.kofiButton}
-              href="https://ko-fi.com/D2Clarity"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              <KofiIcon size={15} />
-              Support our work on Ko-Fi
-            </a>
-          </div>
-        </section>
-
         <section className={styles.section}>
           <h2 className={styles.sectionTitle}>Appearance</h2>
           <div className={styles.row}>
@@ -441,35 +348,30 @@ function SettingsPopoverBody({
             <label className={styles.rowLabel} htmlFor="settings-code-font">
               Font family
             </label>
-            <select
+            <Select<CodeFontFamily>
               id="settings-code-font"
               className={styles.select}
+              minPopupWidth="10rem"
               value={codeFontFamily}
-              onChange={(event) => setCodeFontFamily(event.target.value as CodeFontFamily)}
-            >
-              {CODE_FONT_OPTIONS.map(([value, label]) => (
-                <option key={value} value={value}>
-                  {label}
-                </option>
-              ))}
-            </select>
+              onChange={setCodeFontFamily}
+              options={CODE_FONT_OPTIONS.map(([value, label]) => ({ value, label }))}
+            />
           </div>
         </section>
 
         <section className={styles.section}>
           <h2 className={styles.sectionTitle}>Language</h2>
-          <select
+          <Select<BungieLocale>
             className={styles.selectWide}
+            minPopupWidth="13rem"
             value={locale}
-            onChange={(event) => onLocaleChange(event.target.value as BungieLocale)}
+            onChange={onLocaleChange}
+            options={BUNGIE_LOCALES.map((option) => ({
+              value: option.code,
+              label: option.label,
+            }))}
             aria-label="Manifest language"
-          >
-            {BUNGIE_LOCALES.map((option) => (
-              <option key={option.code} value={option.code}>
-                {option.label}
-              </option>
-            ))}
-          </select>
+          />
         </section>
 
         <section className={styles.section}>

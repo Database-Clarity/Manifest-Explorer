@@ -3,6 +3,7 @@ import { createJSONStorage, persist } from 'zustand/middleware';
 import {
   BUNGIE_LOCALES,
   type BungieLocale,
+  type GroupBy,
   type ImageScalingMode,
   type QueryPrecedence,
   type SortMode,
@@ -33,6 +34,7 @@ export interface SettingsValues {
   fuzzySearch: boolean;
   fuzziness: number;
   queryPrecedence: QueryPrecedence;
+  groupBy: GroupBy;
 }
 
 export interface SettingsActions {
@@ -53,6 +55,7 @@ export interface SettingsActions {
   setFuzzySearch: (enabled: boolean) => void;
   setFuzziness: (value: number) => void;
   setQueryPrecedence: (mode: QueryPrecedence) => void;
+  setGroupBy: (groupBy: GroupBy) => void;
   resetSettings: () => void;
 }
 
@@ -99,6 +102,7 @@ export const DEFAULT_SETTINGS: SettingsValues = {
   fuzzySearch: false,
   fuzziness: FUZZINESS_DEFAULT,
   queryPrecedence: 'dim',
+  groupBy: 'none',
 };
 
 export const UI_SCALE_MIN = 85;
@@ -217,7 +221,10 @@ export function applySettingsToDom(state: SettingsDomInput): void {
   root.style.setProperty('--code-font-family', CODE_FONT_STACKS[state.codeFontFamily]);
 }
 
-function mergePersistedSettings(persistedState: unknown, currentState: SettingsState): SettingsState {
+export function mergePersistedSettings(
+  persistedState: unknown,
+  currentState: SettingsState,
+): SettingsState {
   if (!isRecord(persistedState)) {
     return currentState;
   }
@@ -238,9 +245,21 @@ function mergePersistedSettings(persistedState: unknown, currentState: SettingsS
     viewMode: readEnum(persistedState.viewMode, ['list', 'grid'] as const, currentState.viewMode),
     sortMode: readEnum(
       persistedState.sortMode,
-      ['relevance', 'name-asc', 'name-desc', 'hash-asc', 'hash-desc', 'index-desc'] as const,
+      [
+        'relevance',
+        'name-asc',
+        'name-desc',
+        'hash-asc',
+        'hash-desc',
+        'index-desc',
+        'release-desc',
+        'release-asc',
+        'update-desc',
+        'update-asc',
+      ] as const,
       currentState.sortMode,
     ),
+    groupBy: readEnum(persistedState.groupBy, ['none', 'table'] as const, currentState.groupBy),
     imageScaling: readEnum(
       persistedState.imageScaling,
       IMAGE_SCALING_MODES,
@@ -289,6 +308,7 @@ export const useSettingsStore = create<SettingsState>()(
         setFuzzySearch: (fuzzySearch) => commit({ fuzzySearch }),
         setFuzziness: (fuzziness) => commit({ fuzziness: normalizeFuzziness(fuzziness) }),
         setQueryPrecedence: (queryPrecedence) => commit({ queryPrecedence }),
+        setGroupBy: (groupBy) => commit({ groupBy }),
         resetSettings: () => {
           set(DEFAULT_SETTINGS);
           applySettingsToDom(get());
@@ -317,6 +337,7 @@ export const useSettingsStore = create<SettingsState>()(
         fuzzySearch: state.fuzzySearch,
         fuzziness: state.fuzziness,
         queryPrecedence: state.queryPrecedence,
+        groupBy: state.groupBy,
       }),
       merge: mergePersistedSettings,
       onRehydrateStorage: () => (state) => {

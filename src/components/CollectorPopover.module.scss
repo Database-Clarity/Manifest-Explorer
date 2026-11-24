@@ -273,7 +273,6 @@
 }
 
 .exportSelect {
-  @include ctl.select-field;
   flex: 0 1 auto;
   min-width: 0;
   max-width: 11rem;

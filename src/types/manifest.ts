@@ -16,7 +16,26 @@ export const BUNGIE_LOCALES = [
 
 export type BungieLocale = (typeof BUNGIE_LOCALES)[number]['code'];
 
-export type SortMode = 'relevance' | 'name-asc' | 'name-desc' | 'hash-asc' | 'hash-desc' | 'index-desc';
+export type SortMode =
+  | 'relevance'
+  | 'name-asc'
+  | 'name-desc'
+  | 'hash-asc'
+  | 'hash-desc'
+  | 'index-desc'
+  | 'release-desc'
+  | 'release-asc'
+  | 'update-desc'
+  | 'update-asc';
+
+export type GroupBy = 'none' | 'table';
+
+export interface SearchResultGroup {
+  key: string;
+  label: string;
+  count: number;
+  loaded: number;
+}
 
 export type InspectorTab = 'pretty' | 'overview' | 'variants' | 'references' | 'raw' | 'diff';
 
@@ -114,6 +133,9 @@ export interface SearchResultItem {
   parentArtifactHash?: number;
   parentArtifactName?: string;
   parentArtifactIcon?: string;
+  firstVersionIndex?: number;
+  lastVersionIndex?: number;
+  firstDateInferred?: boolean;
 }
 
 export interface FuzzySearchOptions {
@@ -148,6 +170,10 @@ export interface SearchResponse {
   scopeEntryCount?: number;
   /** Unnamed entries hidden by the current unnamed mode. */
   hiddenUnnamedCount?: number;
+  groups?: SearchResultGroup[];
+  /** Epoch milliseconds indexed by version index. */
+  versionDates?: number[];
+  entryDatesStatus?: 'idle' | 'loading' | 'ready' | 'unavailable';
 }
 
 export interface TableStatus {

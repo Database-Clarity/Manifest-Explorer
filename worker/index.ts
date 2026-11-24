@@ -11,6 +11,7 @@
  *   v1/versions.json                             HistoryManifestIndex
  *   v1/releases/{versionIndex}.json.gz           Release summary for one history index
  *   v1/buckets/{table}/{bucketHex}.json.gz       { [hash]: ItemRevision[] }
+ *   v1/entry-dates.bin.gz                        Compact per-entry date index
  *
  * The hourly history updater runs in GitHub Actions; this Worker never writes
  * to R2 and never parses a manifest table.
@@ -55,6 +56,7 @@ export interface Env {
 // ---------------------------------------------------------------------------
 
 const VERSIONS_KEY = 'v1/versions.json';
+const ENTRY_DATES_KEY = 'v1/entry-dates.bin.gz';
 const BUCKET_PREFIX = 'v1/buckets';
 const RELEASE_PREFIX = 'v1/releases';
 
@@ -104,6 +106,13 @@ async function handleFetch(
       return jsonError(405, 'Method not allowed');
     }
     return serveVersions(request, url, env, ctx);
+  }
+
+  if (pathname === '/api/history/entry-dates' || pathname === '/api/history/entry-dates/') {
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      return jsonError(405, 'Method not allowed');
+    }
+    return serveEntryDates(request, url, env, ctx);
   }
 
   if (pathname.startsWith('/api/history/bucket/')) {
@@ -518,6 +527,72 @@ async function serveBucket(
         bucket,
         error: errorMessage(error),
       }),
+    );
+    return jsonError(503, 'History storage unavailable');
+  }
+}
+
+async function serveEntryDates(
+  request: Request,
+  url: URL,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<Response> {
+  const requestedVersion = url.searchParams.get('v');
+  const version =
+    requestedVersion && CACHE_BUSTER_RE.test(requestedVersion) ? requestedVersion : null;
+  const requestedRevision = url.searchParams.get('rev');
+  const revision =
+    requestedRevision && REVISION_RE.test(requestedRevision) ? requestedRevision : null;
+  const cacheControl =
+    version && revision ? IMMUTABLE_CACHE_CONTROL : HISTORY_CACHE_CONTROL;
+  const cacheSearch = `?${version ? `v=${version}&` : ''}format=bin-v1${
+    revision ? `&rev=${revision}` : ''
+  }`;
+  const isHead = request.method === 'HEAD';
+  const ifNoneMatch = request.headers.get('If-None-Match');
+  const deterministicEtag = `"entry-dates:${version ?? 'latest'}:${revision ?? 'latest'}"`;
+  const cacheKey = buildCacheKey(url, '/api/history/entry-dates', cacheSearch);
+  const cached = await matchEdgeCache(cacheKey);
+  if (cached) {
+    const cachedEtag = cached.headers.get('ETag');
+    if (cachedEtag) {
+      if (ifNoneMatchMatches(ifNoneMatch, cachedEtag)) {
+        return notModifiedResponse(cacheControl, cachedEtag);
+      }
+      const refreshed = withCacheControl(cached, cacheControl);
+      return isHead ? headOnlyResponse(refreshed) : refreshed;
+    }
+  }
+
+  try {
+    const object = await env.MANIFEST_HISTORY.get(ENTRY_DATES_KEY);
+    if (!object) return jsonError(404, 'Entry dates not found');
+    const etag = object.httpEtag || deterministicEtag;
+    const compressedBody = object.body ?? new Response(await object.arrayBuffer()).body;
+    const decompressor = new DecompressionStream('gzip') as unknown as ReadableWritablePair<
+      Uint8Array,
+      Uint8Array
+    >;
+    const body = compressedBody?.pipeThrough(decompressor);
+    if (!body) return jsonError(503, 'Entry dates body unavailable');
+    const response = new Response(body, {
+      status: 200,
+      headers: {
+        ...CORS_HEADERS,
+        'Content-Type': 'application/octet-stream',
+        'Cache-Control': cacheControl,
+        ETag: etag,
+      },
+    });
+    storeInEdgeCache(cacheKey, response, ctx);
+    if (ifNoneMatchMatches(ifNoneMatch, etag)) {
+      return notModifiedResponse(cacheControl, etag);
+    }
+    return isHead ? headOnlyResponse(response) : response;
+  } catch (error) {
+    console.error(
+      JSON.stringify({ event: 'history-entry-dates-error', error: errorMessage(error) }),
     );
     return jsonError(503, 'History storage unavailable');
   }

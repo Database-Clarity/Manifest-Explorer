@@ -32,6 +32,7 @@ import {
   BookmarkIcon,
   ClarityWordmark,
   CloseIcon,
+  ChevronDownIcon,
   FilterIcon,
   HelpIcon,
   ManifestMark,
@@ -44,11 +45,17 @@ import {
   buildSearchSuggestions,
   type SearchSuggestion,
 } from './SearchAutocomplete';
+import { Select } from '../ui/Select';
 import styles from './Header.module.scss';
 
 const LazyCollectorPopover = lazy(() =>
   import('./CollectorPopover').then((module) => ({
     default: module.CollectorPopover,
+  })),
+);
+const LazyBrandMenuPopover = lazy(() =>
+  import('./BrandMenuPopover').then((module) => ({
+    default: module.BrandMenuPopover,
   })),
 );
 const LazyFiltersPopover = lazy(() =>
@@ -75,8 +82,8 @@ export interface HeaderProps {
   onSelectTable: (table: string) => void;
 }
 
-type MenuName = 'filters' | 'collector' | 'settings';
-type MenuSource = 'desktop' | 'mobile' | 'settings';
+type MenuName = 'brand' | 'filters' | 'collector' | 'settings';
+type MenuSource = 'desktop' | 'mobile' | 'settings' | 'brand';
 
 interface MenuState {
   name: MenuName;
@@ -156,6 +163,7 @@ export const Header = memo(function Header({
   const [suggestionsDismissed, setSuggestionsDismissed] = useState(false);
   const suggestionListId = useId();
 
+  const brandRef = useRef<HTMLButtonElement>(null);
   const filtersDesktopRef = useRef<HTMLButtonElement>(null);
   const collectorDesktopRef = useRef<HTMLButtonElement>(null);
   const settingsRef = useRef<HTMLButtonElement>(null);
@@ -238,7 +246,13 @@ export const Header = memo(function Header({
   const filtersAnchorRef = filtersDesktopRef;
   const filtersAlign = 'end';
   const collectorAnchorRef =
-    menu?.name === 'collector' && menu.source === 'settings' ? settingsRef : collectorDesktopRef;
+    menu?.name === 'collector'
+      ? menu.source === 'settings'
+        ? settingsRef
+        : menu.source === 'brand'
+          ? brandRef
+          : collectorDesktopRef
+      : collectorDesktopRef;
 
   function toggleMenu(name: MenuName, source: MenuSource): void {
     setMenu((current) =>
@@ -393,6 +407,7 @@ export const Header = memo(function Header({
   }
 
   const filtersOpen = menu?.name === 'filters';
+  const brandOpen = menu?.name === 'brand';
   const collectorOpen = menu?.name === 'collector';
   const settingsOpen = menu?.name === 'settings';
   const isHistoryMobile = activePage === 'history' && isMobileViewport;
@@ -408,16 +423,27 @@ export const Header = memo(function Header({
           )}
         >
           <button
+            ref={brandRef}
             type="button"
             className={cx(styles.brand, isHistoryMobile && styles.brandHistory)}
-            onClick={handleBrandClick}
-            aria-label="Manifest Explorer home"
+            onClick={() =>
+              isMobileViewport ? toggleMenu('brand', 'mobile') : handleBrandClick()
+            }
+            aria-label={isMobileViewport ? 'Navigation and links' : 'Manifest Explorer home'}
+            aria-haspopup={isMobileViewport ? 'dialog' : undefined}
+            aria-expanded={isMobileViewport ? brandOpen : undefined}
             title="Manifest Explorer"
           >
             <span className={styles.brandMark}>
               <ManifestMark size={22} />
             </span>
             <span className={styles.brandText}>Manifest Explorer</span>
+            {isMobileViewport && (
+              <span className={styles.brandMenuAffordance} aria-hidden="true">
+                <ChevronDownIcon size={10} />
+                {hasUnseenChangelog && !brandOpen && <span className={styles.brandNewDot} />}
+              </span>
+            )}
           </button>
 
           <a
@@ -564,19 +590,19 @@ export const Header = memo(function Header({
             </div>
           </div>
 
-          <select
+          <Select<BungieLocale>
+            align="end"
             className={cx(styles.locale, styles.desktopOnly)}
+            minPopupWidth="10rem"
             value={locale}
-            onChange={(event) => onLocaleChange(event.target.value as BungieLocale)}
+            onChange={onLocaleChange}
+            options={BUNGIE_LOCALES.map((option) => ({
+              value: option.code,
+              label: option.label,
+            }))}
             aria-label="Manifest language"
             title="Manifest language"
-          >
-            {BUNGIE_LOCALES.map((option) => (
-              <option key={option.code} value={option.code}>
-                {option.label}
-              </option>
-            ))}
-          </select>
+          />
 
           <button
             ref={collectorDesktopRef}
@@ -627,6 +653,26 @@ export const Header = memo(function Header({
 
       </header>
 
+      {brandOpen && isMobileViewport && (
+        <Suspense fallback={null}>
+          <LazyBrandMenuPopover
+            open={brandOpen}
+            onClose={closeMenu}
+            anchorRef={brandRef}
+            activePage={activePage}
+            onNavigatePage={onNavigatePage}
+            onNavigateExplorer={() => {
+              setMobileInspectorOpen(false);
+              onNavigatePage?.('/');
+            }}
+            onOpenCollector={() => setMenu({ name: 'collector', source: 'brand' })}
+            onOpenHelp={onOpenHelp}
+            onOpenChangelog={onOpenChangelog}
+            hasUnseenChangelog={hasUnseenChangelog}
+          />
+        </Suspense>
+      )}
+
       {filtersOpen && (
         <Suspense fallback={null}>
           <LazyFiltersPopover
@@ -659,13 +705,7 @@ export const Header = memo(function Header({
             onCheckUpdates={onCheckUpdates}
             onClearCache={onClearCache}
             onLoadAllTables={onLoadAllTables}
-            onOpenChangelog={onOpenChangelog}
-            onOpenHelp={onOpenHelp}
-            onOpenCollector={() => setMenu({ name: 'collector', source: 'settings' })}
-            hasUnseenChangelog={hasUnseenChangelog}
             onLocaleChange={onLocaleChange}
-            activePage={activePage}
-            onNavigatePage={onNavigatePage}
           />
         </Suspense>
       )}

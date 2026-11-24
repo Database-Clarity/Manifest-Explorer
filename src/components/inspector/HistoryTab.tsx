@@ -17,6 +17,7 @@ import { JsonDiffView } from './JsonDiffView';
 import { JsonTree } from './JsonTree';
 import { Skeleton } from '../../ui/Skeleton';
 import { ClearSearchInput } from '../../ui/ClearSearchInput';
+import { Select } from '../../ui/Select';
 import styles from './InspectorTabs.module.scss';
 
 type HistoryView = 'updates' | 'compare';
@@ -377,6 +378,17 @@ export const HistoryTab = memo(function HistoryTab({
     () => [...(result?.versions ?? [])].sort((a, b) => b.i - a.i),
     [result],
   );
+  const compareOptions = useMemo(
+    () => [
+      { value: CURRENT_VERSION, label: 'Current live', keywords: 'current live' },
+      ...newestFirstVersions.map((version) => ({
+        value: String(version.i),
+        label: versionOptionLabel(version),
+        keywords: `${version.date} ${version.version ?? ''} ${version.id} ${version.i}`,
+      })),
+    ],
+    [newestFirstVersions],
+  );
 
   const compareSnapshots = useMemo(() => {
     if (!result?.available || !fromVersion) {
@@ -505,33 +517,25 @@ export const HistoryTab = memo(function HistoryTab({
           <div className={styles.historyCompareControls}>
             <label className={styles.historySelectLabel}>
               <span>From</span>
-              <select
+              <Select
                 className={styles.historySelect}
-                value={fromVersion}
-                onChange={(event) => setFromVersion(event.target.value)}
-              >
-                <option value={CURRENT_VERSION}>Current live</option>
-                {newestFirstVersions.map((version) => (
-                  <option key={version.i} value={version.i}>
-                    {versionOptionLabel(version)}
-                  </option>
-                ))}
-              </select>
+                value={fromVersion || CURRENT_VERSION}
+                onChange={setFromVersion}
+                options={compareOptions}
+                searchable
+                searchPlaceholder="Search versions..."
+              />
             </label>
             <label className={styles.historySelectLabel}>
               <span>To</span>
-              <select
+              <Select
                 className={styles.historySelect}
                 value={toVersion}
-                onChange={(event) => setToVersion(event.target.value)}
-              >
-                <option value={CURRENT_VERSION}>Current live</option>
-                {newestFirstVersions.map((version) => (
-                  <option key={version.i} value={version.i}>
-                    {versionOptionLabel(version)}
-                  </option>
-                ))}
-              </select>
+                onChange={setToVersion}
+                options={compareOptions}
+                searchable
+                searchPlaceholder="Search versions..."
+              />
             </label>
           </div>
           <div className={styles.historyCompareToolbar}>

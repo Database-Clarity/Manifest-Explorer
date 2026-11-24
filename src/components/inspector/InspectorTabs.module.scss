@@ -1119,10 +1119,9 @@
 }
 
 .historySelect {
-  @include ctl.select-field;
   width: 100%;
   min-width: 0;
-  text-overflow: ellipsis;
+  font-size: 0.75rem;
 }
 
 @include theme.mobile-or-coarse {
@@ -1151,7 +1150,6 @@
   }
 
   .historySelect {
-    padding-right: 1.25rem;
     font-size: 0.75rem;
   }
 }

@@ -148,6 +148,9 @@ function isTextInputTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
     return false;
   }
+  if (target.closest('[data-select-trigger], [data-select-popup], [role="combobox"]')) {
+    return true;
+  }
   const tag = target.tagName;
   if (tag === 'TEXTAREA' || target.isContentEditable) {
     return true;
@@ -286,6 +289,7 @@ export function App(): ReactNode {
   const bungieApiKey = useSettingsStore((s) => s.bungieApiKey);
   const showClarityDescriptions = useSettingsStore((s) => s.showClarityDescriptions);
   const sortMode = useSettingsStore((s) => s.sortMode);
+  const groupBy = useSettingsStore((s) => s.groupBy);
   const railCollapsed = useSettingsStore((s) => s.railCollapsed);
   const railWidth = useSettingsStore((s) => s.railWidth);
   const inspectorWidth = useSettingsStore((s) => s.inspectorWidth);
@@ -801,7 +805,7 @@ export function App(): ReactNode {
   // Run search whenever debouncedQuery, deepSearch, filters, sort, fuzzy
   // settings, query logic, or indexed entry count changes
   useEffect(() => {
-    const baseSearchKey = `${debouncedQuery}|${deepSearch ? '1' : '0'}|${sortMode}|${JSON.stringify(filters)}|${fuzzySearch ? '1' : '0'}|${queryPrecedence}`;
+    const baseSearchKey = `${debouncedQuery}|${deepSearch ? '1' : '0'}|${sortMode}|${groupBy}|${JSON.stringify(filters)}|${fuzzySearch ? '1' : '0'}|${queryPrecedence}`;
     const searchKey = `${baseSearchKey}|${fuzziness}`;
     const baseChanged = baseSearchKey !== lastBaseKeyRef.current;
     lastBaseKeyRef.current = baseSearchKey;
@@ -872,6 +876,7 @@ export function App(): ReactNode {
               activeLimit,
               fuzzySearch ? { enabled: true, threshold: fuzziness } : undefined,
               queryPrecedence,
+              groupBy,
             );
 
       void promise
@@ -886,6 +891,9 @@ export function App(): ReactNode {
             isBackgroundIndexRefresh || isLimitExpansion,
             res.hiddenUnnamedCount,
             res.scopeEntryCount,
+            res.groups,
+            res.versionDates,
+            res.entryDatesStatus,
           );
           setLoadingMore(false);
         })
@@ -903,6 +911,7 @@ export function App(): ReactNode {
     deepSearch,
     filters,
     sortMode,
+    groupBy,
     fuzzySearch,
     fuzziness,
     queryPrecedence,
@@ -1626,6 +1635,16 @@ export function App(): ReactNode {
   // Global keyboard shortcuts (capture phase so '/' reliably jumps to search without typing '/')
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape' && document.querySelector('[data-select-open]')) {
+        return;
+      }
+      if (
+        event.target instanceof HTMLElement &&
+        event.target.closest('[data-select-trigger], [data-select-popup], [role="combobox"]')
+      ) {
+        return;
+      }
+
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault();
         event.stopPropagation();

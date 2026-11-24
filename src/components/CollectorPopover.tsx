@@ -7,6 +7,7 @@ import { bungieAssetUrl } from '../manifest/hash';
 import { getShortTableName } from '../manifest/tables';
 import { BookmarkIcon, CheckIcon, CloseIcon, DownloadIcon, PlusIcon } from '../ui/Icons';
 import { Popover } from '../ui/Popover';
+import { Select } from '../ui/Select';
 import { activateOnMiddleClick, preventMiddleClickAutoScroll } from './middleClick';
 import styles from './CollectorPopover.module.scss';
 
@@ -258,18 +259,14 @@ function CollectorPopoverBody({ open, onClose, anchorRef }: CollectorPopoverProp
           <label className={styles.exportLabel} htmlFor="collector-export-format">
             Export format
           </label>
-          <select
+          <Select<CollectorExportFormat>
             id="collector-export-format"
             className={styles.exportSelect}
+            minPopupWidth="11rem"
             value={format}
-            onChange={(event) => setFormat(event.target.value as CollectorExportFormat)}
-          >
-            {EXPORT_OPTIONS.map(([value, label]) => (
-              <option key={value} value={value}>
-                {label}
-              </option>
-            ))}
-          </select>
+            onChange={setFormat}
+            options={EXPORT_OPTIONS.map(([value, label]) => ({ value, label }))}
+          />
         </div>
 
         <div className={styles.actions}>

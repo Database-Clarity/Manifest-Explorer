@@ -113,6 +113,7 @@ function artifactGroup(key) {
   if (key.startsWith('v1/buckets/')) return 'buckets';
   if (key.startsWith('v1/latest-snapshot/')) return 'snapshots';
   if (key.startsWith('v1/releases/')) return 'releases';
+  if (key === 'v1/entry-dates.bin.gz') return 'entry-dates';
   return 'other';
 }
 
@@ -208,6 +209,7 @@ function spawnWrangler(args, options, mode) {
 }
 
 async function uploadOne(file, key, options) {
+  const binaryGzip = key.endsWith('.bin.gz');
   const args = [
     'r2',
     'object',
@@ -217,9 +219,9 @@ async function uploadOne(file, key, options) {
     '--pipe',
     '--force',
     '--content-type',
-    'application/json',
+    binaryGzip ? 'application/octet-stream' : 'application/json',
   ];
-  if (key.endsWith('.json.gz')) args.push('--content-encoding', 'gzip');
+  if (key.endsWith('.json.gz') || binaryGzip) args.push('--content-encoding', 'gzip');
 
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     const { child, completed } = spawnWrangler(args, options, 'upload');
@@ -333,9 +335,10 @@ function verifyObjectInventory(localFiles, remoteObjects, bucket) {
     const object = actual.get(key);
     if (!object) continue;
     if (object.size !== size) sizeMismatches += 1;
-    const gzip = key.endsWith('.json.gz');
+    const gzip = key.endsWith('.json.gz') || key.endsWith('.bin.gz');
+    const contentType = key.endsWith('.bin.gz') ? 'application/octet-stream' : 'application/json';
     if (
-      object.http_metadata?.contentType !== 'application/json' ||
+      object.http_metadata?.contentType !== contentType ||
       (gzip
         ? object.http_metadata?.contentEncoding !== 'gzip'
         : Boolean(object.http_metadata?.contentEncoding))
@@ -468,6 +471,12 @@ async function main(options) {
   if (!existsSync(path.join(sourceDir, 'versions.json'))) {
     throw new Error(`Build output is missing: ${path.join(sourceDir, 'versions.json')}`);
   }
+  if (!existsSync(path.join(sourceDir, 'entry-dates.bin.gz'))) {
+    throw new Error(
+      `Build output is missing: ${path.join(sourceDir, 'entry-dates.bin.gz')}; ` +
+        'run build-entry-dates.mjs before uploading',
+    );
+  }
   const versions = JSON.parse(readFileSync(path.join(sourceDir, 'versions.json'), 'utf8'));
   if (versions.schema !== 1 || !Array.isArray(versions.versions)) {
     throw new Error('Build output has an unsupported versions.json schema');
@@ -486,8 +495,12 @@ async function main(options) {
   const allFiles = filesUnder(sourceDir).sort((a, b) => a.relative.localeCompare(b.relative));
   if (!allFiles.length) throw new Error(`No files found under ${sourceDir}`);
   for (const file of allFiles) {
-    if (!file.relative.endsWith('.json') && !file.relative.endsWith('.json.gz')) {
-      throw new Error(`Unexpected non-JSON artifact: ${file.relative}`);
+    if (
+      !file.relative.endsWith('.json') &&
+      !file.relative.endsWith('.json.gz') &&
+      file.relative !== 'entry-dates.bin.gz'
+    ) {
+      throw new Error(`Unexpected history artifact: ${file.relative}`);
     }
   }
 
@@ -496,10 +509,11 @@ async function main(options) {
 
   const checkpoint = loadCheckpoint(options.checkpointFile, options.bucket, options.accountId);
   const work = [];
-  const changedByGroup = { buckets: 0, snapshots: 0, releases: 0, versions: 0, other: 0 };
-  const unchangedByGroup = { buckets: 0, snapshots: 0, releases: 0, versions: 0, other: 0 };
-  const localByGroup = { buckets: 0, snapshots: 0, releases: 0, versions: 0, other: 0 };
-  const bytesByGroup = { buckets: 0, snapshots: 0, releases: 0, versions: 0, other: 0 };
+  const groups = ['buckets', 'snapshots', 'releases', 'entry-dates', 'versions', 'other'];
+  const changedByGroup = Object.fromEntries(groups.map((group) => [group, 0]));
+  const unchangedByGroup = Object.fromEntries(groups.map((group) => [group, 0]));
+  const localByGroup = Object.fromEntries(groups.map((group) => [group, 0]));
+  const bytesByGroup = Object.fromEntries(groups.map((group) => [group, 0]));
   let skipped = 0;
   let totalBytes = 0;
   let uploadedBytes = 0;
@@ -526,7 +540,7 @@ async function main(options) {
   }
 
   // Commit v1/versions.json last so the API only advertises a new version once
-  // every bucket and snapshot for it is already durable.
+  // every history artifact, including the entry date index, is durable.
   const ordered = [
     ...work.filter((file) => file.group !== 'versions'),
     ...work.filter((file) => file.group === 'versions'),
@@ -537,9 +551,10 @@ async function main(options) {
   );
   console.log(
     `Changed buckets: ${changedByGroup.buckets}, snapshots: ${changedByGroup.snapshots}, ` +
-      `releases: ${changedByGroup.releases}, versions: ${changedByGroup.versions}; ` +
+      `releases: ${changedByGroup.releases}, entry dates: ${changedByGroup['entry-dates']}, ` +
+      `versions: ${changedByGroup.versions}; ` +
       `unchanged buckets: ${unchangedByGroup.buckets}, snapshots: ${unchangedByGroup.snapshots}, ` +
-      `releases: ${unchangedByGroup.releases}.`,
+      `releases: ${unchangedByGroup.releases}, entry dates: ${unchangedByGroup['entry-dates']}.`,
   );
 
   let saveQueue = Promise.resolve();

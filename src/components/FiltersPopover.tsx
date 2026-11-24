@@ -270,7 +270,7 @@ function FiltersPopoverBody({
   const [categoryQuery, setCategoryQuery] = useState('');
   const [sourceQuery, setSourceQuery] = useState('');
   const [tableQuery, setTableQuery] = useState('');
-  const [tableDropdownOpen, setTableDropdownOpen] = useState(true);
+  const [tableDropdownOpen, setTableDropdownOpen] = useState(false);
   const [sourceDropdownOpen, setSourceDropdownOpen] = useState(true);
   const [categoryDropdownOpen, setCategoryDropdownOpen] = useState(true);
   const [collapsibleOpen, setCollapsibleOpen] = useState<Record<string, boolean>>({});
@@ -289,6 +289,8 @@ function FiltersPopoverBody({
 
   const fuzzySearch = useSettingsStore((state) => state.fuzzySearch);
   const fuzziness = useSettingsStore((state) => state.fuzziness);
+  const groupBy = useSettingsStore((state) => state.groupBy);
+  const setGroupBy = useSettingsStore((state) => state.setGroupBy);
   const setFuzzySearch = useSettingsStore((state) => state.setFuzzySearch);
   const setFuzziness = useSettingsStore((state) => state.setFuzziness);
 
@@ -584,6 +586,25 @@ function FiltersPopoverBody({
                 aria-label="Deep Search"
               />
               <span>Deep Search</span>
+            </label>
+            <label
+              className={styles.checkRow}
+              title={
+                tableScoped
+                  ? 'Group by table is available only when searching all tables.'
+                  : deepSearch
+                    ? 'Grouping is unavailable in Deep Search.'
+                    : 'Group results into manifest table sections'
+              }
+            >
+              <input
+                type="checkbox"
+                checked={groupBy === 'table'}
+                disabled={tableScoped || deepSearch}
+                onChange={(event) => setGroupBy(event.target.checked ? 'table' : 'none')}
+                aria-label="Group by table"
+              />
+              <span>Group by table</span>
             </label>
             {fuzzySearch && (
               <div className={styles.fuzzinessInline}>

@@ -12,6 +12,7 @@ import type {
   DefinitionDetailPayload,
   FilterCatalog,
   FuzzySearchOptions,
+  GroupBy,
   ManifestStatus,
   QueryPrecedence,
   ResolvedSummaryEntry,
@@ -138,6 +139,7 @@ export function search(
   maxResults?: number,
   fuzzy?: FuzzySearchOptions,
   precedence?: QueryPrecedence,
+  groupBy?: GroupBy,
 ): Promise<SearchResponse> {
   // Preserve undefined and large explicit limits verbatim: regular search
   // interprets an omitted limit as unbounded, and expansions may request the
@@ -151,6 +153,7 @@ export function search(
     maxResults,
     fuzzy,
     precedence,
+    groupBy,
   };
   return send<SearchRequest, SearchResponse>(request);
 }

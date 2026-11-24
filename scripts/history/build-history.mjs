@@ -18,6 +18,7 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { createGzip } from 'node:zlib';
 import { generateReleases } from './build-releases.mjs';
+import { writeEntryDates } from './build-entry-dates.mjs';
 
 const PROJECT_ROOT = path.resolve(import.meta.dirname, '../..');
 const DEFAULT_SCRATCH =
@@ -1397,6 +1398,7 @@ async function build(options) {
   // Releases are derived from the finished buckets + latest snapshots, so they
   // must run after both exist. This also adds exact `counts` to versions.json.
   const releases = await generateReleases({ sourceDir: outputDir, verify: true });
+  const entryDates = await writeEntryDates({ stage, outputDir, versions });
   stage.close();
 
   const fileStats = collectOutputStats(outputDir);
@@ -1419,6 +1421,7 @@ async function build(options) {
     releaseBytes: releases.releaseBytes,
     releaseCompressedMB: releases.releaseMB,
     releaseEntries: releases.entries,
+    entryDates,
     outputFiles: fileStats.files,
     compressedBytes: fileStats.bytes,
     compressedMB: roundBytes(fileStats.bytes),

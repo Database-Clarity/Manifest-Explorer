@@ -32,6 +32,7 @@ import { JsonDiffView } from '../inspector/JsonDiffView';
 import { JsonTree } from '../inspector/JsonTree';
 import { ChevronRightIcon, ExternalLinkIcon } from '../../ui/Icons';
 import { ClearSearchInput } from '../../ui/ClearSearchInput';
+import { Select } from '../../ui/Select';
 import { getTierColorVar } from '../../ui/rarity';
 import { activateOnMiddleClick, preventMiddleClickAutoScroll } from '../middleClick';
 import {
@@ -1097,15 +1098,15 @@ export const ManifestHistoryPage = memo(function ManifestHistoryPage({
     setTabState((current) => ({ ...current, activeKey: key }));
   }, []);
 
-  const mobileVersions = useMemo(() => {
-    const query = versionSearch.trim().toLowerCase();
-    if (!query) return versions;
-    return versions.filter((version) =>
-      `${version.date} ${version.version ?? ''} ${version.id}`
-        .toLowerCase()
-        .includes(query),
-    );
-  }, [versionSearch, versions]);
+  const versionOptions = useMemo(
+    () =>
+      versions.map((version) => ({
+        value: String(version.i),
+        label: versionLabel(version),
+        keywords: `${version.version ?? ''} ${version.id ?? ''} ${version.date} ${version.i}`,
+      })),
+    [versions],
+  );
 
   return (
     <section className={styles.historyPage} aria-label="Manifest history explorer">
@@ -1118,26 +1119,15 @@ export const ManifestHistoryPage = memo(function ManifestHistoryPage({
       />
 
       <div className={styles.mobilePicker}>
-        <ClearSearchInput
-          className={styles.versionSearch}
-          wrapperClassName={styles.versionSearchField}
-          value={versionSearch}
-          onValueChange={setVersionSearch}
-          placeholder="Search versions…"
-          aria-label="Search manifest versions"
-          clearLabel="Clear version search"
-        />
-        <select
-          value={activeVersionIndex ?? ''}
-          onChange={(event) => onSelectVersion(Number(event.target.value))}
+        <Select
+          className={styles.mobileVersionSelect}
+          value={String(activeVersionIndex ?? '')}
+          onChange={(value) => onSelectVersion(Number(value))}
+          options={versionOptions}
+          searchable
+          searchPlaceholder="Search versions..."
           aria-label="Select manifest version"
-        >
-          {mobileVersions.map((version) => (
-            <option key={version.i} value={version.i}>
-              {versionLabel(version)}
-            </option>
-          ))}
-        </select>
+        />
       </div>
 
       <main className={styles.historyWorkspace}>

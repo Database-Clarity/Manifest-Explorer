@@ -17,6 +17,7 @@ import type {
   FilterCatalog,
   FilterOption,
   FuzzySearchOptions,
+  GroupBy,
   ManifestStatus,
   OverviewLinkedEntity,
   OverviewLore,
@@ -59,7 +60,15 @@ import {
   parseSearchQuery,
   prepareTextSearchIndex,
   scoreAndFilterEntries,
+  groupSearchResults,
+  sortUsesDates,
 } from './query';
+import {
+  decodeEntryDates,
+  type DecodedEntryDates,
+  type EntryDateRecord,
+} from './entryDates';
+import { fetchHistoryVersionsIndex, getHistoryRevision } from './history';
 import { streamTopLevelJsonObject } from './streamJson';
 import {
   clearAllCache,
@@ -163,6 +172,7 @@ export interface SearchRequest {
   maxResults?: number;
   fuzzy?: FuzzySearchOptions;
   precedence?: QueryPrecedence;
+  groupBy?: GroupBy;
 }
 
 export interface DeepSearchRequest {
@@ -355,6 +365,13 @@ let clarityPromise: Promise<Map<number, ClarityDescriptionEntry>> | undefined;
 let indexGeneration = 0;
 let filterCatalogCache: { generation: number; tablesCount: number; catalog: FilterCatalog } | undefined;
 let searchPageCache: { key: string; response: SearchResponse } | undefined;
+let decodedEntryDates: DecodedEntryDates | undefined;
+let entryDatesPromise: Promise<DecodedEntryDates | undefined> | undefined;
+let entryDatesStatus: 'idle' | 'loading' | 'ready' | 'unavailable' = 'idle';
+let entryDatesLoadGeneration = 0;
+let entryDateLookupCache:
+  | { generation: number; decoded: DecodedEntryDates; entries: Map<SearchIndexEntry, EntryDateRecord> }
+  | undefined;
 let variantIndexGeneration = -1;
 const variantEntriesByName = new Map<string, number[]>();
 const reverseReferenceCache = new Map<string, ReverseReferenceResponse>();
@@ -1425,6 +1442,11 @@ function getOrCreateTableStatus(table: string): TableStatus {
 }
 
 function resetEngineState(): void {
+  entryDatesLoadGeneration += 1;
+  decodedEntryDates = undefined;
+  entryDatesPromise = undefined;
+  entryDatesStatus = 'idle';
+  entryDateLookupCache = undefined;
   entries = [];
   indexedTables.clear();
   entriesByTableAndHash.clear();
@@ -1456,6 +1478,11 @@ function applyCachedState(
   meta: ManifestMeta,
   cached: SearchIndexCache,
 ): void {
+  entryDatesLoadGeneration += 1;
+  decodedEntryDates = undefined;
+  entryDatesPromise = undefined;
+  entryDatesStatus = 'idle';
+  entryDateLookupCache = undefined;
   state.version = meta.version;
   state.versionSignature = meta.versionSignature;
   state.componentPaths = meta.componentPaths;
@@ -2033,6 +2060,81 @@ function scheduleTextSearchIndexWarmup(): void {
   }
 }
 
+async function fetchEntryDates(): Promise<DecodedEntryDates | undefined> {
+  const generation = entryDatesLoadGeneration;
+  entryDatesStatus = 'loading';
+  try {
+    let url = '/api/history/entry-dates';
+    try {
+      const index = await fetchHistoryVersionsIndex();
+      const latestVersionIndex = index.versions.reduce(
+        (maximum, version) => Math.max(maximum, version.i),
+        0,
+      );
+      if (index.versions.length > 0) {
+        const revision = getHistoryRevision(index);
+        const params = new URLSearchParams({ v: String(latestVersionIndex) });
+        if (revision) params.set('rev', revision);
+        url = `${url}?${params.toString()}`;
+      }
+    } catch {
+      // Older deployments may publish entry dates without a versions index.
+      // Retry the unkeyed endpoint below rather than failing search.
+    }
+
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Entry dates request failed (${response.status})`);
+    }
+    const decoded = decodeEntryDates(await response.arrayBuffer());
+    if (generation !== entryDatesLoadGeneration) return undefined;
+    decodedEntryDates = decoded;
+    entryDateLookupCache = undefined;
+    entryDatesStatus = 'ready';
+    // A search may have been cached while this lazy load was in flight.
+    searchPageCache = undefined;
+    return decoded;
+  } catch {
+    if (generation === entryDatesLoadGeneration) {
+      entryDatesStatus = 'unavailable';
+    }
+    return undefined;
+  }
+}
+
+function loadEntryDates(): Promise<DecodedEntryDates | undefined> {
+  if (decodedEntryDates) return Promise.resolve(decodedEntryDates);
+  if (entryDatesStatus === 'unavailable') return Promise.resolve(undefined);
+  if (!entryDatesPromise) {
+    const request = fetchEntryDates();
+    entryDatesPromise = request;
+    void request.finally(() => {
+      if (entryDatesPromise === request) entryDatesPromise = undefined;
+    });
+  }
+  return entryDatesPromise;
+}
+
+function getEntryDateLookup(
+  decoded: DecodedEntryDates | undefined,
+): Map<SearchIndexEntry, EntryDateRecord> | undefined {
+  if (!decoded) return undefined;
+  if (
+    entryDateLookupCache?.generation === indexGeneration &&
+    entryDateLookupCache.decoded === decoded
+  ) {
+    return entryDateLookupCache.entries;
+  }
+  const lookup = new Map<SearchIndexEntry, EntryDateRecord>();
+  for (const entry of entries) {
+    const records = decoded.tables.get(canonicalTableName(entry.table));
+    const record = records?.get(entry.hash >>> 0);
+    if (record) lookup.set(entry, record);
+  }
+  entryDateLookupCache = { generation: indexGeneration, decoded, entries: lookup };
+  return lookup;
+}
+
 async function search(
   query: string,
   filters: SearchFilters,
@@ -2040,6 +2142,7 @@ async function search(
   maxResults?: number,
   fuzzy?: FuzzySearchOptions,
   precedence?: QueryPrecedence,
+  groupBy: GroupBy = 'none',
 ): Promise<SearchResponse> {
   const startedAt = Date.now();
   const cacheKey = JSON.stringify([
@@ -2048,6 +2151,7 @@ async function search(
     sort,
     fuzzy ?? null,
     precedence ?? null,
+    groupBy,
     indexGeneration,
   ]);
   const requestedLimit =
@@ -2056,12 +2160,20 @@ async function search(
       : Math.max(0, Math.trunc(maxResults));
   if (searchPageCache?.key === cacheKey) {
     const cached = searchPageCache.response;
+    const page =
+      cached.groups !== undefined
+        ? groupSearchResults(cached.items, requestedLimit)
+        : undefined;
     return {
       ...cached,
-      items:
-        requestedLimit === undefined
-          ? cached.items
-          : cached.items.slice(0, requestedLimit),
+      ...(page
+        ? { items: page.items, groups: page.groups }
+        : {
+            items:
+              requestedLimit === undefined
+                ? cached.items
+                : cached.items.slice(0, requestedLimit),
+          }),
       durationMs: Date.now() - startedAt,
     };
   }
@@ -2072,10 +2184,15 @@ async function search(
   const availableTables = [...Object.keys(state.componentPaths), ARTIFACT_PERKS_TABLE];
   const parsed = parseSearchQuery(query, availableTables, precedence);
   const d2ai = getD2aiMappings();
+  let dateData = decodedEntryDates;
+  if (sortUsesDates(sort) && !dateData && entryDatesStatus !== 'unavailable') {
+    dateData = (await loadEntryDates()) ?? undefined;
+  }
+  const entryDates = getEntryDateLookup(dateData);
   // Retain the complete sorted match list for subsequent Load More / Load All
   // requests. Those requests differ only in their limit and can then be served
   // as an O(1) slice without rescoring the manifest.
-  const response = scoreAndFilterEntries(
+  let response = scoreAndFilterEntries(
     entries,
     parsed,
     filters,
@@ -2088,8 +2205,24 @@ async function search(
       seasonAliases: SEASON_ALIASES,
       sourceAliasToKey: d2ai.sourceAliasToKey,
       fuzzy,
+      entryDates,
     },
   );
+  const shouldGroup =
+    groupBy === 'table' && filters.table === 'all' && parsed.tableFilter === undefined;
+  if (shouldGroup) {
+    const grouped = groupSearchResults(response.items);
+    response = {
+      ...response,
+      items: grouped.items,
+      groups: grouped.groups,
+    };
+  }
+  response = {
+    ...response,
+    ...(dateData ? { versionDates: dateData.versionDates } : {}),
+    entryDatesStatus,
+  };
   if (state.phase === 'ready' && !fuzzy?.enabled && hasIndexableTextSearchTerms(parsed)) {
     const generation = indexGeneration;
     // Return the first cold result immediately, then prepare the compact index
@@ -2101,6 +2234,14 @@ async function search(
   }
   searchPageCache = { key: cacheKey, response };
   if (requestedLimit === undefined) return response;
+  if (response.groups !== undefined) {
+    const page = groupSearchResults(response.items, requestedLimit);
+    return {
+      ...response,
+      items: page.items,
+      groups: page.groups,
+    };
+  }
   return {
     ...response,
     items: response.items.slice(0, requestedLimit),
@@ -3733,6 +3874,7 @@ async function dispatch(message: WorkerRequest): Promise<unknown> {
         message.maxResults,
         message.fuzzy,
         message.precedence,
+        message.groupBy,
       );
     case 'deepSearch':
       return deepSearch(message.query, message.filters, message.maxResults);

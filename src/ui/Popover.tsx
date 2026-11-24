@@ -134,6 +134,10 @@ export function Popover({
       if (!(target instanceof Node)) {
         return;
       }
+      const targetElement = target instanceof Element ? target : target.parentElement;
+      if (targetElement?.closest('[data-select-popup]')) {
+        return;
+      }
       if (panelRef.current?.contains(target)) {
         return;
       }
@@ -145,6 +149,9 @@ export function Popover({
 
     const handleKeyDown = (event: KeyboardEvent): void => {
       if (event.key !== 'Escape') {
+        return;
+      }
+      if (document.querySelector('[data-select-open]')) {
         return;
       }
       event.preventDefault();

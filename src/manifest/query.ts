@@ -4,9 +4,11 @@ import type {
   SearchFilters,
   SearchIndexEntry,
   SearchResponse,
+  SearchResultGroup,
   SearchResultItem,
   SortMode,
 } from '../types/manifest';
+import type { EntryDateRecord } from './entryDates';
 import {
   CLASS_FILTER_OPTIONS,
   DAMAGE_FILTER_OPTIONS,
@@ -14,7 +16,14 @@ import {
 } from './enums';
 import { parseHashInput } from './hash';
 import { normalizeSourceLookup } from './sourceLookup';
-import { ARTIFACT_PERKS_TABLE, TABLE_METADATA, getShortTableName, resolveTableAlias } from './tables';
+import {
+  ARTIFACT_PERKS_TABLE,
+  TABLE_METADATA,
+  canonicalTableName,
+  getFriendlyTableName,
+  getShortTableName,
+  resolveTableAlias,
+} from './tables';
 
 export interface SearchFlags {
   redacted?: boolean;
@@ -210,6 +219,8 @@ export interface SearchContext {
   sourceAliasToKey?: Map<string, string>;
   /** Optional fuzzy-match settings for sitewide typo-tolerant search. */
   fuzzy?: FuzzySearchOptions;
+  /** Loaded history dates keyed by the in-memory search-index entry. */
+  entryDates?: Map<SearchIndexEntry, EntryDateRecord>;
 }
 
 type FlagKey = keyof SearchFlags;
@@ -1303,13 +1314,22 @@ interface ScoredEntry {
 
 type ScoredComparator = (a: ScoredEntry, b: ScoredEntry) => number;
 
+export function sortUsesDates(sort: SortMode): boolean {
+  return (
+    sort === 'release-desc' ||
+    sort === 'release-asc' ||
+    sort === 'update-desc' ||
+    sort === 'update-asc'
+  );
+}
+
 /**
  * Build the ordering predicate for a sort mode once per search instead of
  * switching inside every comparison. The final `order` fallback reproduces
  * `Array.prototype.sort`'s stability, so bounded top-K selection returns the
  * exact same slice as a full sort.
  */
-function scoredComparator(sort: SortMode): ScoredComparator {
+function scoredComparator(sort: SortMode, entryDates?: Map<SearchIndexEntry, EntryDateRecord>): ScoredComparator {
   let base: ScoredComparator;
   switch (sort) {
     case 'name-asc':
@@ -1330,6 +1350,35 @@ function scoredComparator(sort: SortMode): ScoredComparator {
         return indexDelta || compareNames(a.entry, b.entry);
       };
       break;
+    case 'release-desc':
+    case 'release-asc':
+    case 'update-desc':
+    case 'update-asc': {
+      if (!entryDates) {
+        base = (a, b) =>
+          b.score - a.score || compareNames(a.entry, b.entry) || a.entry.hash - b.entry.hash;
+      } else {
+        const descending = sort.endsWith('desc');
+        const versionField = sort.startsWith('release')
+          ? 'firstVersionIndex'
+          : 'lastVersionIndex';
+        const missingRank = descending ? -1 : Number.MAX_SAFE_INTEGER;
+        base = (a, b) => {
+          const aRecord = entryDates.get(a.entry);
+          const bRecord = entryDates.get(b.entry);
+          const aVersion = aRecord?.[versionField] ?? -1;
+          const bVersion = bRecord?.[versionField] ?? -1;
+          const aRank = aVersion < 0 ? missingRank : aVersion;
+          const bRank = bVersion < 0 ? missingRank : bVersion;
+          return (
+            (descending ? bRank - aRank : aRank - bRank) ||
+            compareNames(a.entry, b.entry) ||
+            a.entry.hash - b.entry.hash
+          );
+        };
+      }
+      break;
+    }
     case 'relevance':
     default:
       base = (a, b) =>
@@ -2323,7 +2372,10 @@ function compareNames(a: SearchIndexEntry, b: SearchIndexEntry): number {
   return left.localeCompare(right);
 }
 
-function toResult(entry: SearchIndexEntry): SearchResultItem {
+function toResult(
+  entry: SearchIndexEntry,
+  entryDates?: Map<SearchIndexEntry, EntryDateRecord>,
+): SearchResultItem {
   const item: SearchResultItem = {
     hash: entry.hash,
     table: entry.table,
@@ -2342,7 +2394,90 @@ function toResult(entry: SearchIndexEntry): SearchResultItem {
   if (entry.parentArtifactHash !== undefined) item.parentArtifactHash = entry.parentArtifactHash;
   if (entry.parentArtifactName !== undefined) item.parentArtifactName = entry.parentArtifactName;
   if (entry.parentArtifactIcon !== undefined) item.parentArtifactIcon = entry.parentArtifactIcon;
+  if (entryDates) {
+    const date = entryDates.get(entry);
+    item.firstVersionIndex = date?.firstVersionIndex ?? -1;
+    item.lastVersionIndex = date?.lastVersionIndex ?? -1;
+    item.firstDateInferred = date?.firstInferred ?? false;
+  }
   return item;
+}
+
+/**
+ * Stable-partition a fully sorted result list by canonical table, then select
+ * the first page with a fair per-table quota. The page may exceed a very small
+ * requested limit when that is necessary to represent every non-empty table.
+ */
+export function groupSearchResults(
+  items: SearchResultItem[],
+  limit?: number,
+): { items: SearchResultItem[]; groups: SearchResultGroup[] } {
+  const rankByTable = new Map<string, number>();
+  Object.keys(TABLE_METADATA).forEach((table, index) => {
+    const canonical = canonicalTableName(table);
+    if (!rankByTable.has(canonical)) rankByTable.set(canonical, index);
+  });
+
+  const grouped = new Map<string, SearchResultItem[]>();
+  for (const item of items) {
+    const key = canonicalTableName(item.table);
+    const group = grouped.get(key);
+    if (group) group.push(item);
+    else grouped.set(key, [item]);
+  }
+
+  const keys = [...grouped.keys()].sort((a, b) => {
+    const aRank = rankByTable.get(a);
+    const bRank = rankByTable.get(b);
+    if (aRank !== undefined && bRank !== undefined) return aRank - bRank;
+    if (aRank !== undefined) return -1;
+    if (bRank !== undefined) return 1;
+    return a.localeCompare(b);
+  });
+
+  const total = items.length;
+  const pageLimit =
+    limit === undefined || !Number.isFinite(limit)
+      ? total
+      : Math.max(0, Math.trunc(limit));
+  const quotas = keys.map((key) => Math.min(grouped.get(key)!.length, pageLimit));
+  const allocated = (): number => quotas.reduce((sum, quota) => sum + quota, 0);
+
+  if (pageLimit < total && pageLimit > 0 && keys.length > 0) {
+    const baseQuota = Math.max(1, Math.floor(pageLimit / keys.length));
+    for (let index = 0; index < keys.length; index += 1) {
+      quotas[index] = Math.min(grouped.get(keys[index]!)!.length, baseQuota);
+    }
+
+    let loaded = allocated();
+    while (loaded < pageLimit) {
+      let added = false;
+      for (let index = 0; index < keys.length && loaded < pageLimit; index += 1) {
+        const key = keys[index]!;
+        const count = grouped.get(key)!.length;
+        if (quotas[index]! >= count) continue;
+        quotas[index] = quotas[index]! + 1;
+        loaded += 1;
+        added = true;
+      }
+      if (!added) break;
+    }
+  }
+
+  const groups: SearchResultGroup[] = [];
+  const pageItems: SearchResultItem[] = [];
+  keys.forEach((key, index) => {
+    const entries = grouped.get(key)!;
+    const loaded = Math.min(entries.length, quotas[index] ?? 0);
+    groups.push({
+      key,
+      label: getFriendlyTableName(key),
+      count: entries.length,
+      loaded,
+    });
+    pageItems.push(...entries.slice(0, loaded));
+  });
+  return { items: pageItems, groups };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -2655,7 +2790,7 @@ export function scoreAndFilterEntries(
 
   const selectedCategories = uiFilters.itemCategoryHashes.filter((hash) => hash !== 0);
 
-  const compare = scoredComparator(sort);
+  const compare = scoredComparator(sort, context?.entryDates);
   // `slice(0, maxResults)` truncates toward zero and clamps negatives to an
   // empty result, so mirror that exactly for the bounded selection.
   const limit =
@@ -2785,7 +2920,7 @@ export function scoreAndFilterEntries(
       : ordered;
 
   return {
-    items: selected.map(({ entry }) => toResult(entry)),
+    items: selected.map(({ entry }) => toResult(entry, context?.entryDates)),
     totalMatches,
     durationMs: Date.now() - startedAt,
     scopeEntryCount,

@@ -6,16 +6,18 @@ import {
   useMemo,
   useRef,
   useState,
-  type ChangeEvent,
+  type CSSProperties,
   type KeyboardEvent,
   type ReactNode,
 } from 'react';
 import type {
   SearchFilters,
+  SearchResultGroup,
   SearchResultItem,
   SortMode,
   ViewMode,
 } from '../types/manifest';
+import { hasPositiveTableScopeInQuery } from '../manifest/query';
 import {
   ARTIFACT_PERKS_TABLE,
   getFriendlyTableName,
@@ -24,9 +26,10 @@ import {
 import { useCollectorStore } from '../stores/collector';
 import { useExplorerStore } from '../stores/explorer';
 import { useSettingsStore } from '../stores/settings';
-import { CheckIcon, CloseIcon, GridIcon, ListIcon } from '../ui/Icons';
+import { CheckIcon, CloseIcon, GridIcon, LayersIcon, ListIcon } from '../ui/Icons';
 import { getTierColorVar } from '../ui/rarity';
 import { Skeleton } from '../ui/Skeleton';
+import { Select, type SelectSection } from '../ui/Select';
 import { BungieIcon } from './BungieIcon';
 import { activateOnMiddleClick, preventMiddleClickAutoScroll } from './middleClick';
 import styles from './ResultsPane.module.scss';
@@ -57,6 +60,8 @@ const GRID_MIN_CELL_PX = 210;
 const GRID_SIDE_PAD_REM = 0.5;
 const GRID_GUTTER_REM = 0.5;
 const GRID_TOP_PAD_REM = 0.5;
+const GROUP_HEADER_REM = 2;
+const GROUP_HEADER_COARSE_REM = 2.25;
 const MAX_VIRTUAL_HEIGHT = 10_000_000;
 const LOAD_MORE_FOOTER_FALLBACK_HEIGHT = 88;
 const MOBILE_QUERY = '(max-width: 700px)';
@@ -70,7 +75,7 @@ export function resetSavedResultsScroll(): void {
   savedResultsScroll = null;
 }
 
-const SORT_OPTIONS: ReadonlyArray<{ value: SortMode; label: string }> = [
+const GENERAL_SORT_OPTIONS: ReadonlyArray<{ value: SortMode; label: string }> = [
   { value: 'relevance', label: 'Relevance' },
   { value: 'name-asc', label: 'Name A–Z' },
   { value: 'name-desc', label: 'Name Z–A' },
@@ -79,7 +84,122 @@ const SORT_OPTIONS: ReadonlyArray<{ value: SortMode; label: string }> = [
   { value: 'index-desc', label: 'Index ↓' },
 ];
 
+const DATE_SORT_OPTIONS: ReadonlyArray<{ value: SortMode; label: string }> = [
+  { value: 'release-desc', label: 'Released ↓' },
+  { value: 'release-asc', label: 'Released ↑' },
+  { value: 'update-desc', label: 'Updated ↓' },
+  { value: 'update-asc', label: 'Updated ↑' },
+];
+
 const COUNT_FORMAT = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
+const UTC_MONTH_FORMAT = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+  year: 'numeric',
+  timeZone: 'UTC',
+});
+const UTC_MONTH_LABEL_CACHE = new Map<number, string>();
+
+interface ResultSection {
+  group: SearchResultGroup;
+  startIndex: number;
+  loaded: number;
+  itemRows: number;
+  top: number;
+  itemTop: number;
+  end: number;
+}
+
+interface ResultDateDisplay {
+  label: string;
+  dateTime?: string;
+  title: string;
+}
+
+function isDateSort(sortMode: SortMode): boolean {
+  return (
+    sortMode === 'release-desc' ||
+    sortMode === 'release-asc' ||
+    sortMode === 'update-desc' ||
+    sortMode === 'update-asc'
+  );
+}
+
+function formatUtcMonth(epochMs: number): string {
+  const cached = UTC_MONTH_LABEL_CACHE.get(epochMs);
+  if (cached !== undefined) return cached;
+  const label = UTC_MONTH_FORMAT.format(epochMs);
+  UTC_MONTH_LABEL_CACHE.set(epochMs, label);
+  return label;
+}
+
+function resultDateDisplay(
+  item: SearchResultItem,
+  sortMode: SortMode,
+  versionDates: readonly number[],
+): ResultDateDisplay | null {
+  if (!isDateSort(sortMode)) return null;
+  const isRelease = sortMode === 'release-desc' || sortMode === 'release-asc';
+  const versionIndex = isRelease ? item.firstVersionIndex : item.lastVersionIndex;
+  const timestamp =
+    versionIndex !== undefined && Number.isInteger(versionIndex) && versionIndex >= 0
+      ? versionDates[versionIndex]
+      : undefined;
+  const date = timestamp !== undefined ? new Date(timestamp) : null;
+
+  if (
+    timestamp === undefined ||
+    !Number.isFinite(timestamp) ||
+    !date ||
+    !Number.isFinite(date.getTime())
+  ) {
+    return {
+      label: '—',
+      title: 'Date not recorded in manifest archive',
+    };
+  }
+
+  const month = formatUtcMonth(timestamp);
+  const inferred = isRelease && item.firstDateInferred === true;
+  const label = `${inferred ? '≤ ' : ''}${month}`;
+  return {
+    label,
+    dateTime: date.toISOString(),
+    title: `${isRelease ? 'Released' : 'Updated'}${inferred ? ' on or before' : ''} ${month} (UTC)`,
+  };
+}
+
+function sectionIndexAt(sections: readonly ResultSection[], offset: number): number {
+  let low = 0;
+  let high = sections.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if ((sections[middle]?.top ?? Number.POSITIVE_INFINITY) <= offset) low = middle + 1;
+    else high = middle;
+  }
+  return Math.max(0, low - 1);
+}
+
+function sectionForResult(
+  sections: readonly ResultSection[],
+  resultIndex: number,
+): ResultSection | undefined {
+  let low = 0;
+  let high = sections.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    const section = sections[middle];
+    if (section && section.startIndex + section.loaded <= resultIndex) low = middle + 1;
+    else high = middle;
+  }
+  const section = sections[low];
+  return section && resultIndex >= section.startIndex ? section : undefined;
+}
+
+function sectionCountLabel(section: ResultSection): string {
+  return section.loaded < section.group.count
+    ? `${formatCount(section.loaded)} of ${formatCount(section.group.count)}`
+    : formatCount(section.group.count);
+}
 
 function joinClasses(...values: Array<string | false | null | undefined>): string {
   return values.filter((value): value is string => Boolean(value)).join(' ');
@@ -197,6 +317,8 @@ interface ResultRowProps {
   collectMode: boolean;
   showTableColumn: boolean;
   showInlineTable: boolean;
+  dateDisplay: ResultDateDisplay | null;
+  positionStyle?: CSSProperties;
   onActivate: (item: SearchResultItem, index: number) => void;
   onCopyHash: (hash: number) => void;
   artifactPerksCategory: boolean;
@@ -213,6 +335,8 @@ const ListRow = memo(function ListRow({
   collectMode,
   showTableColumn,
   showInlineTable,
+  dateDisplay,
+  positionStyle,
   artifactPerksCategory,
   onActivate,
   onCopyHash,
@@ -237,7 +361,7 @@ const ListRow = memo(function ListRow({
         cursor ? styles.isCursor : '',
         active ? styles.isActive : '',
       )}
-      style={{ height: rowHeight }}
+      style={{ ...positionStyle, height: rowHeight }}
       role="option"
       aria-selected={cursor}
       aria-posinset={index + 1}
@@ -327,6 +451,15 @@ const ListRow = memo(function ListRow({
       {showTableColumn && (
         <span className={styles.rowTable}>{tableBadgeLabel}</span>
       )}
+      {dateDisplay ? (
+        <time
+          className={styles.rowDate}
+          dateTime={dateDisplay.dateTime}
+          title={dateDisplay.title}
+        >
+          {dateDisplay.label}
+        </time>
+      ) : null}
       <button
         type="button"
         className={styles.rowHashBtn}
@@ -365,6 +498,7 @@ const GridCell = memo(function GridCell({
   collected,
   collectMode,
   showInlineTable,
+  dateDisplay,
   artifactPerksCategory,
   onActivate,
 }: ResultRowProps): ReactNode {
@@ -389,13 +523,11 @@ const GridCell = memo(function GridCell({
       aria-selected={cursor}
       aria-posinset={index + 1}
       aria-setsize={setSize}
-      title={
-        collectMode
+      title={`${collectMode
           ? collected
             ? 'Click to remove from collector'
             : 'Click to add to collector'
-          : 'Click to open in a new tab'
-      }
+          : 'Click to open in a new tab'} · Hash ${item.hash}`}
       onClick={() => onActivate(item, index)}
       onMouseDown={preventMiddleClickAutoScroll}
       onAuxClick={(event) => {
@@ -457,7 +589,18 @@ const GridCell = memo(function GridCell({
             {item.deepMatch.path}
           </span>
         ) : (
-          <span className={styles.gridHash}>{item.hash}</span>
+          <span className={styles.gridHash}>
+            {dateDisplay ? (
+              <time
+                dateTime={dateDisplay.dateTime}
+                title={dateDisplay.title}
+              >
+                {dateDisplay.label}
+              </time>
+            ) : (
+              item.hash
+            )}
+          </span>
         )}
       </span>
       {collectMode && collected ? <CollectedBadge /> : null}
@@ -493,6 +636,9 @@ export const ResultsPane = memo(function ResultsPane({
   const tables = useExplorerStore((state) => state.tables);
   const selectedResultIndex = useExplorerStore((state) => state.selectedResultIndex);
   const setSelectedResultIndex = useExplorerStore((state) => state.setSelectedResultIndex);
+  const resultGroups = useExplorerStore((state) => state.resultGroups);
+  const versionDates = useExplorerStore((state) => state.versionDates);
+  const entryDatesStatus = useExplorerStore((state) => state.entryDatesStatus);
   const setQuery = useExplorerStore((state) => state.setQuery);
   const setTableFilter = useExplorerStore((state) => state.setTableFilter);
   const setFilters = useExplorerStore((state) => state.setFilters);
@@ -512,6 +658,8 @@ export const ResultsPane = memo(function ResultsPane({
   const setSortMode = useSettingsStore((state) => state.setSortMode);
   const storedViewMode = useSettingsStore((state) => state.viewMode);
   const setStoredViewMode = useSettingsStore((state) => state.setViewMode);
+  const groupBy = useSettingsStore((state) => state.groupBy);
+  const setGroupBy = useSettingsStore((state) => state.setGroupBy);
   const uiScale = useSettingsStore((state) => state.uiScale);
   const touchSize = useSettingsStore((state) => state.touchSize);
 
@@ -524,7 +672,7 @@ export const ResultsPane = memo(function ResultsPane({
   const [isCoarse, setIsCoarse] = useState(() => mediaMatches(COARSE_QUERY));
   const [narrowViewChoice, setNarrowViewChoice] = useState<ViewMode | null>(null);
   const viewMode: ViewMode = isNarrowPhone ? (narrowViewChoice ?? 'list') : storedViewMode;
-  const scrollScopeKey = JSON.stringify([query, deepSearch, sortMode, viewMode, filters]);
+  const scrollScopeKey = JSON.stringify([query, deepSearch, sortMode, viewMode, groupBy, filters]);
   const [scrollTop, setScrollTop] = useState(
     () => (savedResultsScroll?.scopeKey === scrollScopeKey ? savedResultsScroll.top : 0),
   );
@@ -718,6 +866,9 @@ export const ResultsPane = memo(function ResultsPane({
   const hasResults = results.length > 0;
   const hasMoreResults = hasResults && results.length < totalMatches;
   const remaining = Math.max(0, totalMatches - results.length);
+  const groupingActive = groupBy === 'table' && resultGroups.length > 0 && !deepSearch;
+  const groupingBlocked =
+    hasTableFilter || hasPositiveTableScopeInQuery(query) || deepSearch;
   const showTableColumn =
     filters.table === 'all' && viewportWidth > NARROW_TABLE_BADGE_PX;
   const showInlineTable =
@@ -741,7 +892,7 @@ export const ResultsPane = memo(function ResultsPane({
             : 'Searching definitions…'
           : 'Preparing Destiny 2 manifest…';
 
-  const summaryText =
+  const baseSummaryText =
     searching && !hasResults
       ? deepSearch
         ? 'Scanning JSON…'
@@ -749,11 +900,38 @@ export const ResultsPane = memo(function ResultsPane({
       : hasActiveFilters
         ? `${formatCount(totalMatches)} matches · ${formatDuration(searchDurationMs)}`
         : `${formatCount(totalMatches)} results`;
+  const dateStatusNote =
+    isDateSort(sortMode) && entryDatesStatus === 'loading'
+      ? 'Loading dates…'
+      : isDateSort(sortMode) && entryDatesStatus === 'unavailable'
+        ? 'Dates unavailable'
+        : '';
+  const summaryText = dateStatusNote
+    ? `${baseSummaryText} · ${dateStatusNote}`
+    : baseSummaryText;
 
   // Mobile keeps the header on one row: the full matches · duration summary is
   // too wide, so show just the compact tabular count.
   const headerSummaryText =
-    isNarrowPhone && !(searching && !hasResults) ? formatCount(totalMatches) : summaryText;
+    isNarrowPhone && !(searching && !hasResults)
+      ? dateStatusNote
+        ? `${formatCount(totalMatches)} · ${dateStatusNote}`
+        : formatCount(totalMatches)
+      : summaryText;
+
+  const sortSections = useMemo<readonly SelectSection<SortMode>[]>(
+    () => [
+      { options: GENERAL_SORT_OPTIONS },
+      {
+        label: 'Dates',
+        options: DATE_SORT_OPTIONS.map((option) => ({
+          ...option,
+          disabled: deepSearch,
+        })),
+      },
+    ],
+    [deepSearch],
+  );
 
   const clampedSelectedIndex =
     results.length > 0
@@ -793,7 +971,47 @@ export const ResultsPane = memo(function ResultsPane({
 
   const totalRows = viewMode === 'grid' ? Math.ceil(results.length / columns) : results.length;
   const gridTopPad = viewMode === 'grid' ? remPx * GRID_TOP_PAD_REM : 0;
-  const rawRowsHeight = totalRows * rowHeight + gridTopPad;
+  const groupHeaderHeight = remPx * (isCoarse ? GROUP_HEADER_COARSE_REM : GROUP_HEADER_REM);
+  const groupSections = useMemo<ResultSection[]>(() => {
+    let startIndex = 0;
+    let top = gridTopPad;
+    return resultGroups.map((group) => {
+      const loaded = Math.min(
+        Math.max(0, Math.floor(group.loaded)),
+        Math.max(0, results.length - startIndex),
+      );
+      const itemRows = viewMode === 'grid' ? Math.ceil(loaded / columns) : loaded;
+      const itemTop = top + groupHeaderHeight;
+      const end = itemTop + itemRows * rowHeight;
+      const section: ResultSection = {
+        group,
+        startIndex,
+        loaded,
+        itemRows,
+        top,
+        itemTop,
+        end,
+      };
+      startIndex += loaded;
+      top = end;
+      return section;
+    });
+  }, [
+    columns,
+    gridTopPad,
+    groupHeaderHeight,
+    resultGroups,
+    results.length,
+    rowHeight,
+    viewMode,
+  ]);
+  const groupedRowsHeight =
+    groupSections.length > 0
+      ? (groupSections[groupSections.length - 1]?.end ?? gridTopPad)
+      : gridTopPad;
+  const rawRowsHeight = groupingActive
+    ? groupedRowsHeight
+    : totalRows * rowHeight + gridTopPad;
   const virtualRowsHeight = Math.min(rawRowsHeight, MAX_VIRTUAL_HEIGHT);
   const isVirtualHeightCompressed = rawRowsHeight > MAX_VIRTUAL_HEIGHT;
   const effectiveFooterHeight = hasMoreResults
@@ -857,6 +1075,26 @@ export const ResultsPane = memo(function ResultsPane({
   const offsetY = isVirtualHeightCompressed
     ? scrollTop - (logicalScrollTop - firstRow * rowHeight)
     : firstRow * rowHeight;
+  const groupWindowStart = Math.max(
+    0,
+    logicalScrollTop - OVERSCAN_ROWS * rowHeight - groupHeaderHeight,
+  );
+  const groupWindowEnd =
+    logicalScrollTop + viewportHeight + OVERSCAN_ROWS * rowHeight + groupHeaderHeight;
+  const firstGroupSectionIndex =
+    groupingActive && groupSections.length > 0
+      ? sectionIndexAt(groupSections, groupWindowStart)
+      : 0;
+  const lastGroupSectionIndex =
+    groupingActive && groupSections.length > 0
+      ? Math.min(
+          groupSections.length - 1,
+          sectionIndexAt(groupSections, groupWindowEnd),
+        )
+      : -1;
+  const groupOffsetY = isVirtualHeightCompressed
+    ? scrollTop - (logicalScrollTop - groupWindowStart)
+    : groupWindowStart;
   const footerTopY = isVirtualHeightCompressed
     ? scrollTop + (rawRowsHeight - logicalScrollTop)
     : virtualRowsHeight;
@@ -878,11 +1116,31 @@ export const ResultsPane = memo(function ResultsPane({
     viewMode === 'grid'
       ? Math.floor(clampedSelectedIndex / columns)
       : clampedSelectedIndex;
-  const selectedRendered =
-    hasResults && selectedRow >= firstRow && selectedRow < windowEnd;
+  const selectedSection = groupingActive
+    ? sectionForResult(groupSections, clampedSelectedIndex)
+    : undefined;
+  const selectedGroupedTop = selectedSection
+    ? selectedSection.itemTop +
+      Math.floor((clampedSelectedIndex - selectedSection.startIndex) / columns) * rowHeight
+    : 0;
+  const selectedRendered = hasResults
+    ? groupingActive
+      ? selectedSection !== undefined &&
+        selectedGroupedTop >= groupWindowStart &&
+        selectedGroupedTop < groupWindowEnd
+      : selectedRow >= firstRow && selectedRow < windowEnd
+    : false;
   const activeDescendant = selectedRendered
     ? `results-option-${clampedSelectedIndex}`
     : undefined;
+  const activeGroupSection =
+    groupingActive && groupSections.length > 0 && logicalScrollTop > 0
+      ? groupSections[sectionIndexAt(groupSections, logicalScrollTop)]
+      : undefined;
+  const stickyGroupSection =
+    activeGroupSection && activeGroupSection.itemTop <= logicalScrollTop
+      ? activeGroupSection
+      : undefined;
 
   const handleViewModeChange = useCallback(
     (mode: ViewMode) => {
@@ -894,15 +1152,9 @@ export const ResultsPane = memo(function ResultsPane({
     [isNarrowPhone, setStoredViewMode],
   );
 
-  const handleSortChange = useCallback(
-    (event: ChangeEvent<HTMLSelectElement>) => {
-      const next = SORT_OPTIONS.find((option) => option.value === event.target.value);
-      if (next) {
-        setSortMode(next.value);
-      }
-    },
-    [setSortMode],
-  );
+  const toggleGroupByTable = useCallback(() => {
+    setGroupBy(groupBy === 'table' ? 'none' : 'table');
+  }, [groupBy, setGroupBy]);
 
   const handleActivate = useCallback(
     (item: SearchResultItem, index: number) => {
@@ -958,6 +1210,8 @@ export const ResultsPane = memo(function ResultsPane({
     columns,
     viewMode,
     gridTopPad,
+    groupingActive,
+    groupSections,
     mapLogicalToPhysical,
   });
   scrollMappingRef.current = {
@@ -969,6 +1223,8 @@ export const ResultsPane = memo(function ResultsPane({
     columns,
     viewMode,
     gridTopPad,
+    groupingActive,
+    groupSections,
     mapLogicalToPhysical,
   };
 
@@ -988,6 +1244,8 @@ export const ResultsPane = memo(function ResultsPane({
       columns: cols,
       viewMode: mode,
       gridTopPad: topPad,
+      groupingActive: grouped,
+      groupSections: sections,
       mapLogicalToPhysical: toPhysical,
     } = scrollMappingRef.current;
 
@@ -995,9 +1253,16 @@ export const ResultsPane = memo(function ResultsPane({
       return;
     }
 
+    const selectedSection = grouped
+      ? sectionForResult(sections, clampedSelectedIndex)
+      : undefined;
+    if (grouped && !selectedSection) return;
     const rowIndex =
       mode === 'grid' ? Math.floor(clampedSelectedIndex / cols) : clampedSelectedIndex;
-    const rowTop = (mode === 'grid' ? topPad : 0) + rowIndex * rH;
+    const rowTop = selectedSection
+      ? selectedSection.itemTop +
+        Math.floor((clampedSelectedIndex - selectedSection.startIndex) / cols) * rH
+      : (mode === 'grid' ? topPad : 0) + rowIndex * rH;
     const rowBottom = rowTop + rH;
     const physTop = element.scrollTop;
     const currentTop = compressed
@@ -1012,7 +1277,7 @@ export const ResultsPane = memo(function ResultsPane({
     } else if (rowBottom > currentBottom) {
       scrollElementTo(element, rowBottom - vpH, toPhysical);
     }
-  }, [clampedSelectedIndex, results.length]);
+  }, [clampedSelectedIndex, groupSections, groupingActive, results.length]);
 
   const artifactPerksCategory = filters.table === ARTIFACT_PERKS_TABLE;
 
@@ -1025,6 +1290,144 @@ export const ResultsPane = memo(function ResultsPane({
     const nextRows: ReactNode[] = [];
 
     if (!hasResults) {
+      return nextRows;
+    }
+
+    if (groupingActive) {
+      for (
+        let sectionIndex = firstGroupSectionIndex;
+        sectionIndex <= lastGroupSectionIndex;
+        sectionIndex += 1
+      ) {
+        const section = groupSections[sectionIndex];
+        if (!section) continue;
+
+        if (
+          section.top + groupHeaderHeight > groupWindowStart &&
+          section.top < groupWindowEnd
+        ) {
+          nextRows.push(
+            <div
+              key={`group-header-${section.group.key}`}
+              className={styles.groupHeader}
+              data-group-header=""
+              data-group-key={section.group.key}
+              role="presentation"
+              style={{
+                position: 'absolute',
+                top: section.top - groupWindowStart,
+                height: groupHeaderHeight,
+              }}
+            >
+              <span className={styles.groupLabel}>{section.group.label}</span>
+              <span className={styles.groupCount}>{sectionCountLabel(section)}</span>
+            </div>,
+          );
+        }
+
+        const firstItemRow = Math.max(
+          0,
+          Math.floor((groupWindowStart - section.itemTop) / rowHeight),
+        );
+        const lastItemRow = Math.max(
+          0,
+          Math.min(
+            section.itemRows,
+            Math.ceil((groupWindowEnd - section.itemTop) / rowHeight),
+          ),
+        );
+
+        if (viewMode === 'list') {
+          for (let rowIndex = firstItemRow; rowIndex < lastItemRow; rowIndex += 1) {
+            const index = section.startIndex + rowIndex;
+            const item = results[index];
+            if (!item) continue;
+            const itemKey = resultKey(item);
+            nextRows.push(
+              <ListRow
+                key={itemKey}
+                item={item}
+                index={index}
+                setSize={results.length}
+                rowHeight={rowHeight}
+                active={itemKey === activeEntryKey}
+                cursor={index === clampedSelectedIndex}
+                collected={collectedKeys.has(itemKey)}
+                collectMode={collectMode}
+                showTableColumn={false}
+                showInlineTable={false}
+                dateDisplay={resultDateDisplay(item, sortMode, versionDates)}
+                positionStyle={{
+                  position: 'absolute',
+                  top: section.itemTop + rowIndex * rowHeight - groupWindowStart,
+                  right: 0,
+                  left: 0,
+                }}
+                artifactPerksCategory={artifactPerksCategory}
+                onActivate={handleActivate}
+                onCopyHash={handleCopyHash}
+              />,
+            );
+          }
+          continue;
+        }
+
+        for (let rowIndex = firstItemRow; rowIndex < lastItemRow; rowIndex += 1) {
+          const start = section.startIndex + rowIndex * columns;
+          const cells: ReactNode[] = [];
+          const sectionEnd = section.startIndex + section.loaded;
+          for (let column = 0; column < columns; column += 1) {
+            const index = start + column;
+            if (index >= sectionEnd) break;
+            const item = results[index];
+            if (!item) break;
+            const itemKey = resultKey(item);
+            cells.push(
+              <GridCell
+                key={itemKey}
+                item={item}
+                index={index}
+                setSize={results.length}
+                rowHeight={rowHeight}
+                active={itemKey === activeEntryKey}
+                cursor={index === clampedSelectedIndex}
+                collected={collectedKeys.has(itemKey)}
+                collectMode={collectMode}
+                showTableColumn={false}
+                showInlineTable={false}
+                dateDisplay={resultDateDisplay(item, sortMode, versionDates)}
+                artifactPerksCategory={artifactPerksCategory}
+                onActivate={handleActivate}
+                onCopyHash={handleCopyHash}
+              />,
+            );
+          }
+
+          if (cells.length === 0) continue;
+          const logicalTop = section.itemTop + rowIndex * rowHeight;
+          nextRows.push(
+            <div
+              key={`grid-group-row-${section.group.key}-${rowIndex}`}
+              className={joinClasses(
+                styles.gridRow,
+                rowIndex === section.itemRows - 1 ? styles.gridRowEnd : '',
+              )}
+              data-group-row={section.group.key}
+              style={{
+                position: 'absolute',
+                top: logicalTop - groupWindowStart,
+                right: 0,
+                left: 0,
+                height: rowHeight,
+                gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
+              }}
+              role="presentation"
+            >
+              {cells}
+            </div>,
+          );
+        }
+      }
       return nextRows;
     }
 
@@ -1046,6 +1449,7 @@ export const ResultsPane = memo(function ResultsPane({
             collectMode={collectMode}
             showTableColumn={showTableColumn}
             showInlineTable={showInlineTable}
+            dateDisplay={resultDateDisplay(item, sortMode, versionDates)}
             artifactPerksCategory={artifactPerksCategory}
             onActivate={handleActivate}
             onCopyHash={handleCopyHash}
@@ -1077,6 +1481,7 @@ export const ResultsPane = memo(function ResultsPane({
             collectMode={collectMode}
             showTableColumn={false}
             showInlineTable={showInlineTable}
+            dateDisplay={resultDateDisplay(item, sortMode, versionDates)}
             artifactPerksCategory={artifactPerksCategory}
             onActivate={handleActivate}
             onCopyHash={handleCopyHash}
@@ -1112,15 +1517,24 @@ export const ResultsPane = memo(function ResultsPane({
     collectMode,
     collectedKeys,
     columns,
+    firstGroupSectionIndex,
     firstRow,
+    groupHeaderHeight,
+    groupSections,
+    groupWindowEnd,
+    groupWindowStart,
+    groupingActive,
     handleActivate,
     handleCopyHash,
     hasResults,
+    lastGroupSectionIndex,
     results,
     rowHeight,
+    sortMode,
     showInlineTable,
     showTableColumn,
     totalRows,
+    versionDates,
     viewMode,
     windowEnd,
   ]);
@@ -1244,20 +1658,42 @@ export const ResultsPane = memo(function ResultsPane({
             </button>
           ) : null}
 
-          <select
+          <Select
             className={styles.sort}
             value={sortMode}
+            sections={sortSections}
             aria-label="Sort results"
             title="Sort results"
-            onChange={handleSortChange}
-            onKeyDown={stopActivationKeys}
-          >
-            {SORT_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
+            align="end"
+            minPopupWidth={176}
+            onChange={setSortMode}
+            onTriggerKeyDown={stopActivationKeys}
+          />
+
+          {!isNarrowPhone && viewportWidth >= 520 ? (
+            <button
+              type="button"
+              className={joinClasses(
+                styles.groupToggle,
+                groupBy === 'table' ? styles.groupToggleActive : '',
+              )}
+              aria-pressed={groupBy === 'table'}
+              aria-label="Group by table"
+              title={
+                groupingBlocked
+                  ? deepSearch
+                    ? 'Grouping is unavailable in Deep Search.'
+                    : 'Grouping is available only when searching all tables.'
+                  : 'Group results by table'
+              }
+              disabled={groupingBlocked}
+              onClick={toggleGroupByTable}
+              onKeyDown={stopActivationKeys}
+            >
+              <LayersIcon size={13} />
+              <span>Group</span>
+            </button>
+          ) : null}
 
           <div className={styles.segmented} role="group" aria-label="Result view">
             <button
@@ -1430,71 +1866,95 @@ export const ResultsPane = memo(function ResultsPane({
               )}
             </div>
           ) : (
-            <div
-              className={styles.virtualSpace}
-              style={{ height: virtualHeight }}
-              role="presentation"
-            >
+            <>
+              {groupingActive ? (
+                <div
+                  className={joinClasses(
+                    styles.stickyGroupIndicator,
+                    stickyGroupSection ? styles.stickyGroupActive : '',
+                  )}
+                  aria-hidden="true"
+                  data-sticky-group-indicator=""
+                  style={{ height: groupHeaderHeight, marginBottom: -groupHeaderHeight }}
+                >
+                  {stickyGroupSection ? (
+                    <>
+                      <span className={styles.groupLabel}>{stickyGroupSection.group.label}</span>
+                      <span className={styles.groupCount}>
+                        {sectionCountLabel(stickyGroupSection)}
+                      </span>
+                    </>
+                  ) : null}
+                </div>
+              ) : null}
               <div
-                className={joinClasses(
-                  styles.virtualWindow,
-                  viewMode === 'grid' ? styles.gridVirtualWindow : '',
-                )}
-                style={{ transform: `translateY(${offsetY}px)` }}
+                className={styles.virtualSpace}
+                style={{ height: virtualHeight }}
                 role="presentation"
               >
-                {rows}
-              </div>
-              {hasMoreResults ? (
                 <div
-                  ref={loadMoreFooterRef}
-                  className={styles.loadMoreBar}
-                  style={{ top: footerTopY }}
-                  role="group"
-                  aria-label="Load more results"
+                  className={joinClasses(
+                    styles.virtualWindow,
+                    viewMode === 'grid' && !groupingActive ? styles.gridVirtualWindow : '',
+                  )}
+                  style={{
+                    transform: `translateY(${groupingActive ? groupOffsetY : offsetY}px)`,
+                  }}
+                  role="presentation"
                 >
-                  <span className={styles.loadMoreProgress}>
-                    Showing {formatCount(results.length)} of {formatCount(totalMatches)} results
-                  </span>
-                  <div className={styles.loadMoreActions}>
-                    {remaining <= loadMoreStep ? (
-                      <button
-                        type="button"
-                        className={styles.loadMoreButton}
-                        onClick={onLoadMore}
-                        disabled={loadingMore || searching}
-                      >
-                        {`Load remaining ${formatCount(remaining)}`}
-                      </button>
-                    ) : (
-                      <>
+                  {rows}
+                </div>
+                {hasMoreResults ? (
+                  <div
+                    ref={loadMoreFooterRef}
+                    className={styles.loadMoreBar}
+                    style={{ top: footerTopY }}
+                    role="group"
+                    aria-label="Load more results"
+                  >
+                    <span className={styles.loadMoreProgress}>
+                      Showing {formatCount(results.length)} of {formatCount(totalMatches)} results
+                    </span>
+                    <div className={styles.loadMoreActions}>
+                      {remaining <= loadMoreStep ? (
                         <button
                           type="button"
                           className={styles.loadMoreButton}
                           onClick={onLoadMore}
                           disabled={loadingMore || searching}
                         >
-                          {`Load ${formatCount(loadMoreStep)} more`}
+                          {`Load remaining ${formatCount(remaining)}`}
                         </button>
-                        <button
-                          type="button"
-                          className={styles.loadMoreButton}
-                          onClick={onLoadAll}
-                          disabled={loadingMore || searching}
-                        >
-                          {`Load all (${formatCount(totalMatches)})`}
-                        </button>
-                      </>
-                    )}
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            className={styles.loadMoreButton}
+                            onClick={onLoadMore}
+                            disabled={loadingMore || searching}
+                          >
+                            {`Load ${formatCount(loadMoreStep)} more`}
+                          </button>
+                          <button
+                            type="button"
+                            className={styles.loadMoreButton}
+                            onClick={onLoadAll}
+                            disabled={loadingMore || searching}
+                          >
+                            {`Load all (${formatCount(totalMatches)})`}
+                          </button>
+                        </>
+                      )}
+                    </div>
+                    {loadingMore ? (
+                      <span className={styles.loadMoreStatus} role="status" aria-live="polite">
+                        Loading…
+                      </span>
+                    ) : null}
                   </div>
-                  {loadingMore ? (
-                    <span className={styles.loadMoreStatus} role="status" aria-live="polite">
-                      Loading…
-                    </span>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
+                ) : null}
+              </div>
+            </>
           )}
         </div>
       </div>

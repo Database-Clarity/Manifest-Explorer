@@ -201,6 +201,31 @@ function splitDiffRows(lines: readonly JsonDiffLine[]): SplitDiffRow[] {
   return rows;
 }
 
+const splitDiffRowsCache = new WeakMap<
+  readonly JsonDiffLine[],
+  Map<string, SplitDiffRow[]>
+>();
+
+function getSplitDiffRows(
+  lines: readonly JsonDiffLine[],
+  start: number,
+  end: number,
+): SplitDiffRow[] {
+  let bySegment = splitDiffRowsCache.get(lines);
+  if (!bySegment) {
+    bySegment = new Map();
+    splitDiffRowsCache.set(lines, bySegment);
+  }
+
+  const key = `${start}:${end}`;
+  const cached = bySegment.get(key);
+  if (cached) return cached;
+
+  const rows = splitDiffRows(lines.slice(start, end));
+  bySegment.set(key, rows);
+  return rows;
+}
+
 function SplitCell({
   line,
   side,
@@ -237,6 +262,30 @@ function SplitCell({
         {lineNumber ?? ''}
       </span>
       <code className={styles.codeLine}>{syntaxDiffLine(line, filter)}</code>
+    </div>
+  );
+}
+
+function MoreDiffLines({
+  remaining,
+  onShowMore,
+  onShowAll,
+}: {
+  remaining: number;
+  onShowMore: () => void;
+  onShowAll: () => void;
+}): ReactNode {
+  if (remaining <= 0) return null;
+  const amount = Math.min(400, remaining);
+  return (
+    <div className={styles.renderMore} role="group" aria-label="More diff lines">
+      <button type="button" onClick={onShowMore}>
+        Show {amount.toLocaleString()} more {amount === 1 ? 'line' : 'lines'} (
+        {remaining.toLocaleString()} remaining)
+      </button>
+      <button type="button" onClick={onShowAll}>
+        Show all
+      </button>
     </div>
   );
 }
@@ -360,12 +409,48 @@ export const JsonDiffView = memo(function JsonDiffView({
   );
   const [expandedLines, setExpandedLines] = useState<ReadonlySet<number>>(() => new Set());
   const [expandAll, setExpandAll] = useState(false);
+  const [lineLimitState, setLineLimitState] = useState<{
+    lines: readonly JsonDiffLine[];
+    limit: number;
+  } | null>(null);
   const diff = useMemo(() => createJsonLineDiff(before, after), [after, before]);
   const segments = useMemo(
     () => groupJsonDiffLines(diff.lines, 3, expandedLines, expandAll),
     [diff.lines, expandedLines, expandAll],
   );
+  const visibleLineLimit =
+    lineLimitState?.lines === diff.lines ? lineLimitState.limit : 400;
+  const totalExpandedLines = useMemo(
+    () =>
+      segments.reduce(
+        (total, segment) =>
+          segment.type === 'visible' ? total + segment.end - segment.start : total,
+        0,
+      ),
+    [segments],
+  );
+  const renderSegments = useMemo(() => {
+    let remaining = visibleLineLimit;
+    return segments.flatMap((segment) => {
+      if (segment.type === 'collapsed') return [segment];
+      if (remaining <= 0) return [];
+      const end = Math.min(segment.end, segment.start + remaining);
+      remaining -= end - segment.start;
+      return [end === segment.end ? segment : { ...segment, end }];
+    });
+  }, [segments, visibleLineLimit]);
+  const remainingVisibleLines = Math.max(0, totalExpandedLines - visibleLineLimit);
   const query = filter.trim();
+
+  const showMoreLines = (): void => {
+    setLineLimitState({
+      lines: diff.lines,
+      limit: Math.min(totalExpandedLines, visibleLineLimit + 400),
+    });
+  };
+  const showAllLines = (): void => {
+    setLineLimitState({ lines: diff.lines, limit: totalExpandedLines });
+  };
 
   useEffect(() => {
     onStats?.({ added: diff.added, removed: diff.removed });
@@ -439,6 +524,7 @@ export const JsonDiffView = memo(function JsonDiffView({
             onClick={() => {
               setExpandedLines(new Set());
               setExpandAll((expanded) => !expanded);
+              setLineLimitState({ lines: diff.lines, limit: 400 });
             }}
           >
             {expandAll ? 'Collapse unchanged' : 'Expand all'}
@@ -453,7 +539,7 @@ export const JsonDiffView = memo(function JsonDiffView({
       {layout === 'inline' ? (
         <div className={styles.diffViewport} role="region" aria-label="Inline JSON diff">
           <div className={styles.codeRows}>
-            {segments.map((segment) => {
+            {renderSegments.map((segment) => {
               if (segment.type === 'visible') {
                 return (
                   <div key={`visible-${segment.start}-${segment.end}`}>
@@ -506,6 +592,11 @@ export const JsonDiffView = memo(function JsonDiffView({
                 />
               );
             })}
+            <MoreDiffLines
+              remaining={remainingVisibleLines}
+              onShowMore={showMoreLines}
+              onShowAll={showAllLines}
+            />
           </div>
         </div>
       ) : (
@@ -515,7 +606,7 @@ export const JsonDiffView = memo(function JsonDiffView({
               <span>Before</span>
               <span>After</span>
             </div>
-            {segments.map((segment) => {
+            {renderSegments.map((segment) => {
               if (segment.type === 'visible') {
                 return (
                   <div
@@ -532,7 +623,7 @@ export const JsonDiffView = memo(function JsonDiffView({
                         ))}
                       </div>
                     )}
-                    {splitDiffRows(diff.lines.slice(segment.start, segment.end)).map(
+                    {getSplitDiffRows(diff.lines, segment.start, segment.end).map(
                       (row, index) => (
                         <div className={styles.splitRow} key={`${segment.start}-${index}`}>
                           <SplitCell line={row.before} side="before" filter={query} />
@@ -561,6 +652,11 @@ export const JsonDiffView = memo(function JsonDiffView({
                 />
               );
             })}
+            <MoreDiffLines
+              remaining={remainingVisibleLines}
+              onShowMore={showMoreLines}
+              onShowAll={showAllLines}
+            />
           </div>
         </div>
       )}

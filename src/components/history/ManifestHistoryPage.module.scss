@@ -86,6 +86,12 @@
 }
 
 .versionRow {
+  // The archive index has 321 rows; skip layout/paint for offscreen rows while
+  // keeping find-in-page and accessibility intact. The contained intrinsic
+  // size is the content box, so subtract vertical padding from the 3.375rem
+  // outer min-height to keep the skipped and rendered rows the same height.
+  content-visibility: auto;
+  contain-intrinsic-size: auto 2.5rem;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -511,6 +517,11 @@
 }
 
 .entryCard {
+  // Release overviews can mount hundreds of cards at once; let the browser
+  // skip layout and paint for the offscreen ones. `auto` keeps the last known
+  // size, and the fallback matches the 3.25rem min-height (no scroll jump).
+  content-visibility: auto;
+  contain-intrinsic-size: auto 3.25rem;
   display: flex;
   align-items: center;
   gap: 0.5rem;

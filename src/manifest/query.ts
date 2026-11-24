@@ -1406,16 +1406,19 @@ class ScoredEntryTopK {
   }
 }
 
-const WORD_CHAR_RE = /[a-z0-9]/;
+function isWordCharCode(code: number): boolean {
+  return (
+    (code >= 48 && code <= 57) ||
+    (code >= 97 && code <= 122)
+  );
+}
 
 function hasWordBoundary(haystack: string, needle: string): boolean {
   let index = haystack.indexOf(needle);
   while (index !== -1) {
-    const before = index === 0 ? '' : haystack.charAt(index - 1);
     const afterIndex = index + needle.length;
-    const after = afterIndex >= haystack.length ? '' : haystack.charAt(afterIndex);
-    const beforeOk = before === '' || !WORD_CHAR_RE.test(before);
-    const afterOk = after === '' || !WORD_CHAR_RE.test(after);
+    const beforeOk = index === 0 || !isWordCharCode(haystack.charCodeAt(index - 1));
+    const afterOk = afterIndex >= haystack.length || !isWordCharCode(haystack.charCodeAt(afterIndex));
     if (beforeOk && afterOk) return true;
     index = haystack.indexOf(needle, index + 1);
   }
@@ -1625,14 +1628,294 @@ function scoreToken(entry: SearchIndexEntry, token: string, context?: SearchCont
   return 0;
 }
 
-function textMatches(entry: SearchIndexEntry, token: string): boolean {
-  return (
-    entry.nameLower.includes(token) ||
-    entry.subtitleLower.includes(token) ||
-    entry.descLower.includes(token) ||
-    (entry.parentArtifactName !== undefined &&
-      parentArtifactNameLower(entry.parentArtifactName).includes(token))
-  );
+interface TextSearchIndex {
+  entryCount: number;
+  postings: Map<string, Uint32Array>;
+  tablePostings: Map<string, Uint32Array>;
+  tableCounts: Map<string, { count: number; unnamedCount: number }>;
+  unnamedCount: number;
+}
+
+/**
+ * The index is tied to the entries array and is only created for substantial
+ * indexes, after the first eligible search. Worker mutations explicitly
+ * invalidate it; the length check also handles arrays that grow in place.
+ */
+const textSearchIndexes = new WeakMap<SearchIndexEntry[], TextSearchIndex>();
+const textSearchBuilds = new WeakMap<SearchIndexEntry[], Promise<void>>();
+const textSearchVersions = new WeakMap<SearchIndexEntry[], number>();
+const MIN_TEXT_INDEX_ENTRIES = 128;
+const TEXT_INDEX_BUILD_BATCH_ENTRIES = 2048;
+
+function yieldTextIndexBuild(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function collectEntryTrigrams(entry: SearchIndexEntry, trigrams: Set<string>): void {
+  const add = (text: string | undefined): void => {
+    if (!text || text.length < 3) return;
+    for (let index = 0; index <= text.length - 3; index += 1) {
+      trigrams.add(text.slice(index, index + 3));
+    }
+  };
+
+  add(entry.nameLower);
+  add(entry.subtitleLower);
+  add(entry.descLower);
+  if (entry.parentArtifactName) add(parentArtifactNameLower(entry.parentArtifactName));
+}
+
+async function buildTextSearchIndex(
+  entries: SearchIndexEntry[],
+  isCurrent: () => boolean,
+): Promise<TextSearchIndex | undefined> {
+  const counts = new Map<string, number>();
+  const tableCounts = new Map<string, { count: number; unnamedCount: number }>();
+  const trigrams = new Set<string>();
+  let unnamedCount = 0;
+
+  for (let start = 0; start < entries.length; start += TEXT_INDEX_BUILD_BATCH_ENTRIES) {
+    const end = Math.min(entries.length, start + TEXT_INDEX_BUILD_BATCH_ENTRIES);
+    for (let entryIndex = start; entryIndex < end; entryIndex += 1) {
+      const entry = entries[entryIndex]!;
+      if (!entry.name) unnamedCount += 1;
+      const table = cachedTableKey(entry.table);
+      let tableCount = tableCounts.get(table);
+      if (!tableCount) {
+        tableCount = { count: 0, unnamedCount: 0 };
+        tableCounts.set(table, tableCount);
+      }
+      tableCount.count += 1;
+      if (!entry.name) tableCount.unnamedCount += 1;
+      if (entry.isArtifactPerk === true) {
+        let artifactCount = tableCounts.get(ARTIFACT_PERKS_KEY);
+        if (!artifactCount) {
+          artifactCount = { count: 0, unnamedCount: 0 };
+          tableCounts.set(ARTIFACT_PERKS_KEY, artifactCount);
+        }
+        artifactCount.count += 1;
+        if (!entry.name) artifactCount.unnamedCount += 1;
+      }
+      trigrams.clear();
+      collectEntryTrigrams(entry, trigrams);
+      for (const trigram of trigrams) counts.set(trigram, (counts.get(trigram) ?? 0) + 1);
+    }
+    if (end < entries.length) await yieldTextIndexBuild();
+    if (!isCurrent()) return undefined;
+  }
+
+  const postings = new Map<string, Uint32Array>();
+  const cursors = new Map<string, number>();
+  const tableCursors = new Map<string, number>();
+  for (const [trigram, count] of counts) {
+    postings.set(trigram, new Uint32Array(count));
+    cursors.set(trigram, 0);
+  }
+  const tablePostings = new Map<string, Uint32Array>();
+  for (const [table, count] of tableCounts) {
+    tablePostings.set(table, new Uint32Array(count.count));
+    tableCursors.set(table, 0);
+  }
+
+  for (let start = 0; start < entries.length; start += TEXT_INDEX_BUILD_BATCH_ENTRIES) {
+    const end = Math.min(entries.length, start + TEXT_INDEX_BUILD_BATCH_ENTRIES);
+    for (let entryIndex = start; entryIndex < end; entryIndex += 1) {
+      const entry = entries[entryIndex]!;
+      trigrams.clear();
+      collectEntryTrigrams(entry, trigrams);
+      for (const trigram of trigrams) {
+        const posting = postings.get(trigram)!;
+        const cursor = cursors.get(trigram)!;
+        posting[cursor] = entryIndex;
+        cursors.set(trigram, cursor + 1);
+      }
+      const table = cachedTableKey(entry.table);
+      const tablePosting = tablePostings.get(table)!;
+      const tableCursor = tableCursors.get(table)!;
+      tablePosting[tableCursor] = entryIndex;
+      tableCursors.set(table, tableCursor + 1);
+      if (entry.isArtifactPerk === true) {
+        const artifactPosting = tablePostings.get(ARTIFACT_PERKS_KEY)!;
+        const artifactCursor = tableCursors.get(ARTIFACT_PERKS_KEY)!;
+        artifactPosting[artifactCursor] = entryIndex;
+        tableCursors.set(ARTIFACT_PERKS_KEY, artifactCursor + 1);
+      }
+    }
+    if (end < entries.length) await yieldTextIndexBuild();
+    if (!isCurrent()) return undefined;
+  }
+
+  // Release the temporary count and cursor maps; retained postings are packed
+  // 32-bit arrays rather than per-entry JavaScript number arrays.
+  counts.clear();
+  cursors.clear();
+  tableCursors.clear();
+  return { entryCount: entries.length, postings, tablePostings, tableCounts, unnamedCount };
+}
+
+/** Invalidate the lazy text index when worker enrichment changes searchable text. */
+export function invalidateTextSearchIndex(entries: SearchIndexEntry[]): void {
+  textSearchVersions.set(entries, (textSearchVersions.get(entries) ?? 0) + 1);
+  textSearchIndexes.delete(entries);
+  textSearchBuilds.delete(entries);
+}
+
+/**
+ * Build the worker's text index lazily in yielding batches. The first query
+ * uses the exact full scan; later searches use the finished postings without
+ * blocking worker startup or holding a long task on the UI thread.
+ */
+export function prepareTextSearchIndex(entries: SearchIndexEntry[]): Promise<void> {
+  if (entries.length < MIN_TEXT_INDEX_ENTRIES) return Promise.resolve();
+  const existing = textSearchIndexes.get(entries);
+  if (existing?.entryCount === entries.length) return Promise.resolve();
+  const inFlight = textSearchBuilds.get(entries);
+  if (inFlight) return inFlight;
+
+  const version = textSearchVersions.get(entries) ?? 0;
+  let buildPromise: Promise<void>;
+  buildPromise = buildTextSearchIndex(
+    entries,
+    () =>
+      (textSearchVersions.get(entries) ?? 0) === version &&
+      entries.length >= MIN_TEXT_INDEX_ENTRIES,
+  )
+    .then((index) => {
+      if (
+        index &&
+        (textSearchVersions.get(entries) ?? 0) === version &&
+        entries.length === index.entryCount
+      ) {
+        textSearchIndexes.set(entries, index);
+      }
+    })
+    .finally(() => {
+      if (textSearchBuilds.get(entries) === buildPromise) textSearchBuilds.delete(entries);
+    });
+  textSearchBuilds.set(entries, buildPromise);
+  return buildPromise;
+}
+
+export function hasIndexableTextSearchTerms(parsed: ParsedQuery): boolean {
+  const required = requiredTextTokens(parsed.ast ?? null);
+  return required.length > 0 && required.every((token) => token.length >= 3);
+}
+
+/**
+ * Text atoms guaranteed by the Boolean expression: AND unions requirements,
+ * OR intersects them, while NOT contributes no safe narrowing predicate.
+ */
+function requiredTextTokens(ast: QueryNode | null): string[] {
+  if (ast === null) return [];
+  switch (ast.type) {
+    case 'atom':
+      return ast.kind === 'text' ? [ast.value] : [];
+    case 'not':
+      return [];
+    case 'and': {
+      const tokens = new Set<string>();
+      for (const child of ast.children) {
+        for (const token of requiredTextTokens(child)) tokens.add(token);
+      }
+      return [...tokens];
+    }
+    case 'or': {
+      if (ast.children.length === 0) return [];
+      const common = new Set(requiredTextTokens(ast.children[0]!));
+      for (let childIndex = 1; childIndex < ast.children.length; childIndex += 1) {
+        const childTokens = new Set(requiredTextTokens(ast.children[childIndex]!));
+        for (const token of common) {
+          if (!childTokens.has(token)) common.delete(token);
+        }
+        if (common.size === 0) break;
+      }
+      return [...common];
+    }
+  }
+}
+
+interface TextSearchCandidates {
+  indices: Uint32Array;
+  unnamedCount: number;
+  tableCount?: number;
+  tableUnnamedCount?: number;
+}
+
+function findTextSearchCandidates(
+  entries: SearchIndexEntry[],
+  ast: QueryNode | null,
+  context: SearchContext | undefined,
+  enabled: boolean,
+  uiTableKey: string | undefined,
+): TextSearchCandidates | undefined {
+  if (!enabled) return undefined;
+  const required = requiredTextTokens(ast);
+  const canUseTextPostings =
+    context?.fuzzy?.enabled !== true &&
+    required.length > 0 &&
+    required.every((token) => token.length >= 3);
+  if (!canUseTextPostings && uiTableKey === undefined) return undefined;
+  const index = textSearchIndexes.get(entries);
+  if (!index) return undefined;
+  if (index.entryCount !== entries.length) {
+    void prepareTextSearchIndex(entries).catch(() => undefined);
+    return undefined;
+  }
+
+  let selectedPosting: Uint32Array | undefined;
+  if (canUseTextPostings) {
+    // Any exact text match must contain every trigram of each guaranteed text
+    // atom. One rare posting is a sufficient candidate superset; the AST
+    // evaluator verifies the exact substring and all remaining predicates.
+    for (const term of required) {
+      const termTrigrams = new Set<string>();
+      for (let offset = 0; offset <= term.length - 3; offset += 1) {
+        termTrigrams.add(term.slice(offset, offset + 3));
+      }
+      for (const trigram of termTrigrams) {
+        const posting = index.postings.get(trigram);
+        if (!posting) {
+          return {
+            indices: new Uint32Array(0),
+            unnamedCount: index.unnamedCount,
+            ...(uiTableKey === undefined
+              ? {}
+              : {
+                  tableCount: index.tableCounts.get(uiTableKey)?.count ?? 0,
+                  tableUnnamedCount: index.tableCounts.get(uiTableKey)?.unnamedCount ?? 0,
+                }),
+          };
+        }
+        if (!selectedPosting || posting.length < selectedPosting.length) selectedPosting = posting;
+      }
+    }
+  }
+
+  let tableCount: number | undefined;
+  let tableUnnamedCount: number | undefined;
+  if (uiTableKey !== undefined) {
+    const table = index.tablePostings.get(uiTableKey);
+    const counts = index.tableCounts.get(uiTableKey);
+    tableCount = counts?.count ?? 0;
+    tableUnnamedCount = counts?.unnamedCount ?? 0;
+    if (!table) {
+      return {
+        indices: new Uint32Array(0),
+        unnamedCount: index.unnamedCount,
+        tableCount,
+        tableUnnamedCount,
+      };
+    }
+    if (!selectedPosting || table.length < selectedPosting.length) selectedPosting = table;
+  }
+
+  if (!selectedPosting) return undefined;
+  return {
+    indices: selectedPosting,
+    unnamedCount: index.unnamedCount,
+    ...(tableCount === undefined ? {} : { tableCount }),
+    ...(tableUnnamedCount === undefined ? {} : { tableUnnamedCount }),
+  };
 }
 
 function entryFlag(entry: SearchIndexEntry, key: FlagKey): boolean {
@@ -1841,11 +2124,37 @@ function ensureCategoryLowerNames(evalCtx: EvalContext): Map<number, string> {
   return names;
 }
 
+const asciiSortableNameCache = new WeakMap<SearchIndexEntry, boolean>();
+
+function isAsciiSortableName(entry: SearchIndexEntry): boolean {
+  const cached = asciiSortableNameCache.get(entry);
+  if (cached !== undefined) return cached;
+  const name = entry.nameLower;
+  for (let index = 0; index < name.length; index += 1) {
+    const code = name.charCodeAt(index);
+    if (
+      code !== 32 &&
+      !(code >= 48 && code <= 57) &&
+      !(code >= 97 && code <= 122)
+    ) {
+      asciiSortableNameCache.set(entry, false);
+      return false;
+    }
+  }
+  asciiSortableNameCache.set(entry, true);
+  return true;
+}
+
 function compareNames(a: SearchIndexEntry, b: SearchIndexEntry): number {
   if (!a.name && !b.name) return a.hash - b.hash;
   if (!a.name) return 1;
   if (!b.name) return -1;
-  return a.nameLower.localeCompare(b.nameLower);
+  const left = a.nameLower;
+  const right = b.nameLower;
+  if (isAsciiSortableName(a) && isAsciiSortableName(b)) {
+    return left < right ? -1 : left > right ? 1 : 0;
+  }
+  return left.localeCompare(right);
 }
 
 function toResult(entry: SearchIndexEntry): SearchResultItem {
@@ -1887,6 +2196,8 @@ function matchesTableKey(entry: SearchIndexEntry, key: string): boolean {
 interface EvalContext {
   context: SearchContext | undefined;
   categoryNameMap: Map<number, string>;
+  /** Per-entry text scores shared by AST evaluation and relevance scoring. */
+  textScores: Map<string, number>;
   /** Lowercased category names, built once per search on first use. */
   categoryLowerNames: Map<number, string> | undefined;
   /** source token -> normalized lookup key, resolved once per search. */
@@ -1947,12 +2258,13 @@ function evaluateAtom(atom: QueryAtom, entry: SearchIndexEntry, evalCtx: EvalCon
       return entry.hash === atom.value;
     case 'never':
       return false;
-    case 'text':
-      if (textMatches(entry, atom.value)) return true;
-      if (evalCtx.context?.fuzzy?.enabled) {
-        return fuzzyMatchScore(entry, atom.value, evalCtx.context.fuzzy.threshold) > 0;
-      }
-      return false;
+    case 'text': {
+      const cachedScore = evalCtx.textScores.get(atom.value);
+      if (cachedScore !== undefined) return cachedScore > 0;
+      const score = scoreToken(entry, atom.value, evalCtx.context);
+      evalCtx.textScores.set(atom.value, score);
+      return score > 0;
+    }
   }
 }
 
@@ -2066,6 +2378,12 @@ function collectScoring(ast: QueryNode | null): ScoringInfo {
   return { textTokens, hashCount };
 }
 
+function isTextOnlyConjunction(node: QueryNode | null): boolean {
+  if (node === null) return false;
+  if (node.type === 'atom') return node.kind === 'text';
+  return node.type === 'and' && node.children.every(isTextOnlyConjunction);
+}
+
 function collectSeasonNumbers(
   ast: QueryNode | null,
   context: SearchContext | undefined,
@@ -2133,14 +2451,17 @@ export function scoreAndFilterEntries(
   categoryNameMap: Map<number, string>,
   maxResults?: number,
   context?: SearchContext,
+  useTextIndex = true,
 ): SearchResponse {
   const startedAt = Date.now();
 
   const ast = parsed.ast ?? null;
   const scoring = collectScoring(ast);
+  const textOnlyConjunction = isTextOnlyConjunction(ast);
   const evalCtx: EvalContext = {
     context,
     categoryNameMap,
+    textScores: new Map<string, number>(),
     categoryLowerNames: undefined,
     sourceNormTokens: new Map<string, string>(),
     seasonNumbers: collectSeasonNumbers(ast, context),
@@ -2157,6 +2478,14 @@ export function scoreAndFilterEntries(
     unnamedMode === 'always' ||
     (unnamedMode !== 'never' && (uiFilters.includeUnnamed || tableScoped));
   const queryHasTableAtom = hasTableAtom(ast);
+  const candidateSet = findTextSearchCandidates(
+    entries,
+    ast,
+    context,
+    useTextIndex,
+    uiTableKey,
+  );
+  const candidateIndices = candidateSet?.indices;
 
   const selectedCategories = uiFilters.itemCategoryHashes.filter((hash) => hash !== 0);
 
@@ -2170,22 +2499,52 @@ export function scoreAndFilterEntries(
   // `entries.length` is a cheap safe upper bound for the number of survivors:
   // if the requested limit covers it, no candidate can be discarded.
   const keepAll = limit === undefined || limit >= entries.length;
+  // Native sort is faster than maintaining a JS heap for a small indexed
+  // candidate set. Bound it so broad queries retain the O(limit) heap path.
+  const sortCandidateSet =
+    !keepAll &&
+    (limit ?? 0) > 0 &&
+    candidateIndices !== undefined &&
+    candidateIndices.length <= 30_000;
   const scored: ScoredEntry[] = [];
-  const topK = keepAll ? null : new ScoredEntryTopK(limit ?? 0, compare);
+  const topK = keepAll || sortCandidateSet ? null : new ScoredEntryTopK(limit ?? 0, compare);
   // One reusable candidate so rejected entries never allocate.
   const candidate: ScoredEntry = { entry: entries[0]!, score: 0, order: 0 };
   let totalMatches = 0;
   let scopeEntryCount = 0;
   let hiddenUnnamedCount = 0;
 
-  for (let order = 0; order < entries.length; order += 1) {
+  // Scope/unnamed diagnostics are query-independent. Count them in a compact
+  // pass, then score only indexed text candidates when a safe superset exists.
+  if (candidateSet !== undefined) {
+    if (queryHasTableAtom && ast !== null) {
+      for (const entry of entries) {
+        if (uiTableKey && !matchesTableKey(entry, uiTableKey)) continue;
+        if (!couldMatchQueryTableScope(ast, entry)) continue;
+        scopeEntryCount += 1;
+        if (!effectiveIncludeUnnamed && !entry.name) hiddenUnnamedCount += 1;
+      }
+    } else if (uiTableKey !== undefined) {
+      scopeEntryCount = candidateSet.tableCount ?? 0;
+      if (!effectiveIncludeUnnamed) {
+        hiddenUnnamedCount = candidateSet.tableUnnamedCount ?? 0;
+      }
+    } else {
+      scopeEntryCount = entries.length;
+      if (!effectiveIncludeUnnamed) hiddenUnnamedCount = candidateSet.unnamedCount;
+    }
+  }
+
+  const iterationCount = candidateIndices?.length ?? entries.length;
+  for (let candidateOrder = 0; candidateOrder < iterationCount; candidateOrder += 1) {
+    const order = candidateIndices?.[candidateOrder] ?? candidateOrder;
     const entry = entries[order]!;
     if (uiTableKey && !matchesTableKey(entry, uiTableKey)) continue;
     if (queryHasTableAtom && ast !== null && !couldMatchQueryTableScope(ast, entry)) continue;
 
-    scopeEntryCount += 1;
+    if (candidateIndices === undefined) scopeEntryCount += 1;
     if (!effectiveIncludeUnnamed && !entry.name) {
-      hiddenUnnamedCount += 1;
+      if (candidateIndices === undefined) hiddenUnnamedCount += 1;
       continue;
     }
 
@@ -2213,12 +2572,27 @@ export function scoreAndFilterEntries(
     }
     if (uiFilters.onlyRedacted && entry.isRedacted !== true) continue;
 
-    // The search box query AST is the single source of truth for query matching.
-    if (ast !== null && !evaluateNode(ast, entry, evalCtx)) continue;
-
     let score = 0;
-    for (const token of scoring.textTokens) {
-      score += scoreToken(entry, token, context);
+    if (textOnlyConjunction) {
+      let textMatches = true;
+      for (const token of scoring.textTokens) {
+        const tokenScore = scoreToken(entry, token, context);
+        if (tokenScore === 0) {
+          textMatches = false;
+          break;
+        }
+        score += tokenScore;
+      }
+      if (!textMatches) continue;
+    } else {
+      // The search box query AST is the single source of truth for every
+      // structured/Boolean query. Text scores observed by the AST are reused
+      // below instead of checking the same fields twice.
+      evalCtx.textScores.clear();
+      if (ast !== null && !evaluateNode(ast, entry, evalCtx)) continue;
+      for (const token of scoring.textTokens) {
+        score += evalCtx.textScores.get(token) ?? scoreToken(entry, token, context);
+      }
     }
     if (scoring.hashCount > 0) score += 1000;
     if (entry.name) score += 10;
@@ -2238,7 +2612,11 @@ export function scoreAndFilterEntries(
 
   // Only the retained <= limit winners are sorted; a full sort is kept when
   // the caller asked for everything (or the limit cannot exclude anything).
-  const selected = topK !== null ? topK.toSortedArray() : scored.sort(compare);
+  const ordered = topK !== null ? topK.toSortedArray() : scored.sort(compare);
+  const selected =
+    sortCandidateSet && limit !== undefined && ordered.length > limit
+      ? ordered.slice(0, limit)
+      : ordered;
 
   return {
     items: selected.map(({ entry }) => toResult(entry)),

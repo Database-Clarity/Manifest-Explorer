@@ -27,6 +27,7 @@ import {
   hasPositiveTableScopeInQuery,
   isUnnamedIncluded,
   parseSearchQuery,
+  prepareTextSearchIndex,
   scoreAndFilterEntries,
   type SearchContext,
 } from '../query';
@@ -600,6 +601,75 @@ describe('ranking and filtering', () => {
     expect(rank('solar auto -engram', entries).items.map((item) => item.hash)).toEqual([20]);
   });
 
+  it('keeps indexed text search identical to a full scan across fields and Boolean branches', async () => {
+    const entries = Array.from({ length: 320 }, (_, index) =>
+      makeEntry({
+        hash: 20_000 + index,
+        table: index % 4 === 0 ? 'DestinyRecordDefinition' : ITEM_TABLE,
+        name:
+          index === 3
+            ? 'Sunshot'
+            : index % 13 === 0
+              ? 'Solar Rifle'
+              : index % 7 === 0
+                ? 'Solar Sword'
+                : `Synthetic Item ${index}`,
+        subtitle: index % 5 === 0 ? 'Legendary Weapon' : 'Armor',
+        descLower: index === 11 ? 'descriptionneedle only lives here' : '',
+        parentArtifactName: index === 17 ? 'Solar Rifle Artifact' : undefined,
+      }),
+    );
+    const context: SearchContext = {};
+    await prepareTextSearchIndex(entries);
+    const queries = [
+      'solar rifle',
+      'solar rifle OR solar sword',
+      'solar OR arc',
+      'is:dummy OR solar rifle',
+      'descriptionneedle',
+      'solar artifact',
+      '-solar rifle',
+      '-solar',
+      'a',
+      'sunhsot',
+    ];
+
+    for (const query of queries) {
+      const searchContext: SearchContext =
+        query === 'sunhsot'
+          ? { fuzzy: { enabled: true, threshold: 0.35 } }
+          : context;
+      const parsed = parseSearchQuery(query, [
+        ITEM_TABLE,
+        'DestinyRecordDefinition',
+      ]);
+      const indexed = scoreAndFilterEntries(
+        entries,
+        parsed,
+        makeFilters({ table: ITEM_TABLE, includeUnnamed: false }),
+        'relevance',
+        new Map(),
+        40,
+        searchContext,
+      );
+      const fullScan = scoreAndFilterEntries(
+        entries,
+        parsed,
+        makeFilters({ table: ITEM_TABLE, includeUnnamed: false }),
+        'relevance',
+        new Map(),
+        40,
+        searchContext,
+        false,
+      );
+
+      expect(indexed.items).toEqual(fullScan.items);
+      expect(indexed.totalMatches).toBe(fullScan.totalMatches);
+      expect(indexed.scopeEntryCount).toBe(fullScan.scopeEntryCount);
+      expect(indexed.hiddenUnnamedCount).toBe(fullScan.hiddenUnnamedCount);
+    }
+  });
+
   it('returns only the requested hash and ranks it first', () => {
     const entries = [
       makeEntry({ hash: 1363886209, name: 'Gjallarhorn' }),
@@ -812,6 +882,23 @@ describe('ranking and filtering', () => {
     expect(rank('', entries, { sort: 'index-desc' }).items.map((item) => item.hash)).toEqual([
       62, 61, 60,
     ]);
+  });
+
+  it('keeps the ASCII name-sort fast path aligned with localeCompare', () => {
+    const entries = [
+      makeEntry({ hash: 1, name: 'Solar Rifle 12' }),
+      makeEntry({ hash: 2, name: 'Solar Rifle 2' }),
+      makeEntry({ hash: 3, name: 'Ace of Spades' }),
+      makeEntry({ hash: 4, name: "Izanagi's Burden" }),
+      makeEntry({ hash: 5, name: 'Axe' }),
+    ];
+    const expected = entries
+      .map((entry) => entry.name)
+      .sort((left, right) => left.toLowerCase().localeCompare(right.toLowerCase()));
+
+    expect(rank('', entries, { sort: 'name-asc' }).items.map((item) => item.name)).toEqual(
+      expected,
+    );
   });
 
   it('caps results while reporting the full match count', () => {

@@ -336,6 +336,11 @@
 
 .listRow {
   @include ctl.contain-focus-rings;
+  // Localize layout/paint per row so a fast 277k-item fling never invalidates
+  // the whole window. Safe with the active accent (a left border, painted by
+  // the row itself) and with every focus ring, which is inset via
+  // `contain-focus-rings` (`--focus-offset: -2px`).
+  contain: layout style paint;
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -551,6 +556,9 @@
 
 .gridCell {
   @include ctl.contain-focus-rings;
+  // Same paint/layout isolation as `.listRow`. The active accent is an inset
+  // box-shadow and focus rings are inset, so containment cannot clip either.
+  contain: layout style paint;
   display: flex;
   align-items: center;
   gap: 0.5rem;

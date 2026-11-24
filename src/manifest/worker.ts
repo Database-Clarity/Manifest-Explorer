@@ -53,7 +53,13 @@ import {
 import { bungieAssetUrl, getTargetTablesForField, getTargetTablesForObjectKey, toUnsignedHash } from './hash';
 import { SEASON_ALIASES, formatShortSeasonName, getD2aiMappings, refreshD2aiMappingsFromRemote } from './d2ai';
 import { annotateEnumField } from './enums';
-import { parseSearchQuery, scoreAndFilterEntries } from './query';
+import {
+  hasIndexableTextSearchTerms,
+  invalidateTextSearchIndex,
+  parseSearchQuery,
+  prepareTextSearchIndex,
+  scoreAndFilterEntries,
+} from './query';
 import { streamTopLevelJsonObject } from './streamJson';
 import {
   clearAllCache,
@@ -84,7 +90,7 @@ const FULL_ITEM_LRU_LIMIT = 256;
 const STREAM_FLUSH_ENTRIES = 2500;
 const STREAM_FLUSH_BYTES = 10_000_000;
 const RAW_TABLE_MEMORY_BUDGET_BYTES = 96 * 1024 * 1024;
-const REVERSE_REFERENCE_CACHE_LIMIT = 64;
+const REVERSE_REFERENCE_CACHE_LIMIT = 16;
 const fullItemWaiters = new Map<number, Array<(parsed: Record<string, unknown>) => void>>();
 const BUNGIE_MANIFEST_URL = 'https://www.bungie.net/Platform/Destiny2/Manifest/';
 const CLARITY_URL =
@@ -286,9 +292,10 @@ const state: EngineState = {
 
 let entries: SearchIndexEntry[] = [];
 const indexedTables = new Set<string>();
-const entriesByTableAndHash = new Map<string, SearchIndexEntry>();
+const entriesByTableAndHash = new Map<string, Map<number, SearchIndexEntry>>();
 const entryByHash = new Map<number, SearchIndexEntry>();
-const tablesByHash = new Map<number, Set<string>>();
+const firstTableByHash = new Map<number, string>();
+const coTablesByHash = new Map<number, Set<string>>();
 const tableStatuses = new Map<string, TableStatus>();
 const tableDataMap = new Map<string, Record<string, Record<string, unknown>>>();
 const tableDataBytes = new Map<string, number>();
@@ -307,6 +314,29 @@ const variantEntriesByName = new Map<string, number[]>();
 const reverseReferenceCache = new Map<string, ReverseReferenceResponse>();
 let artifactPerkHashSetGeneration = -1;
 const artifactPerkHashSet = new Set<number>();
+const subtitleStringPool = new Map<string, string>();
+const subtitleLowerStringPool = new Map<string, string>();
+const descriptionStringPool = new Map<string, string>();
+const sourceStringPool = new Map<string, string>();
+const INTERNED_STRING_LIMIT = 2048;
+
+function internString(pool: Map<string, string>, value: string | undefined): string | undefined {
+  if (value === undefined || value.length === 0) return value;
+  const existing = pool.get(value);
+  if (existing !== undefined) return existing;
+  if (pool.size < INTERNED_STRING_LIMIT) pool.set(value, value);
+  return value;
+}
+
+/** Share common summary strings without retaining an unbounded global pool. */
+function internEntryStrings(entry: SearchIndexEntry): void {
+  entry.subtitle = internString(subtitleStringPool, entry.subtitle)!;
+  entry.subtitleLower = internString(subtitleLowerStringPool, entry.subtitleLower)!;
+  entry.descLower = internString(descriptionStringPool, entry.descLower)!;
+  if (entry.sourceLower !== undefined) {
+    entry.sourceLower = internString(sourceStringPool, entry.sourceLower);
+  }
+}
 
 function estimateRawTableBytes(data: Record<string, Record<string, unknown>>): number {
   const visit = (value: unknown, addBytes: (bytes: number) => void): void => {
@@ -403,6 +433,7 @@ async function getRawTableFromCache(
 
 function invalidateIndexDerivedCaches(): void {
   indexGeneration += 1;
+  invalidateTextSearchIndex(entries);
   filterCatalogCache = undefined;
   searchPageCache = undefined;
   variantIndexGeneration = -1;
@@ -787,7 +818,8 @@ function emitCatalog(): void {
 function rebuildEntryLookups(): void {
   entriesByTableAndHash.clear();
   entryByHash.clear();
-  tablesByHash.clear();
+  firstTableByHash.clear();
+  coTablesByHash.clear();
   categoryNameMap.clear();
   for (const entry of entries) {
     indexOneEntry(entry);
@@ -795,7 +827,12 @@ function rebuildEntryLookups(): void {
 }
 
 function indexOneEntry(entry: SearchIndexEntry): void {
-  entriesByTableAndHash.set(`${entry.table}:${entry.hash}`, entry);
+  let tableEntries = entriesByTableAndHash.get(entry.table);
+  if (!tableEntries) {
+    tableEntries = new Map<number, SearchIndexEntry>();
+    entriesByTableAndHash.set(entry.table, tableEntries);
+  }
+  tableEntries.set(entry.hash, entry);
   const existing = entryByHash.get(entry.hash);
   if (
     !existing ||
@@ -803,15 +840,24 @@ function indexOneEntry(entry: SearchIndexEntry): void {
   ) {
     entryByHash.set(entry.hash, entry);
   }
-  let tables = tablesByHash.get(entry.hash);
-  if (!tables) {
-    tables = new Set<string>();
-    tablesByHash.set(entry.hash, tables);
+  const firstTable = firstTableByHash.get(entry.hash);
+  if (firstTable === undefined) {
+    firstTableByHash.set(entry.hash, entry.table);
+  } else if (firstTable !== entry.table) {
+    let tables = coTablesByHash.get(entry.hash);
+    if (!tables) {
+      tables = new Set<string>([firstTable]);
+      coTablesByHash.set(entry.hash, tables);
+    }
+    tables.add(entry.table);
   }
-  tables.add(entry.table);
   if (entry.table === CATEGORY_TABLE && entry.name) {
     categoryNameMap.set(entry.hash, entry.name);
   }
+}
+
+function getIndexedEntry(table: string, hash: number): SearchIndexEntry | undefined {
+  return entriesByTableAndHash.get(table)?.get(hash);
 }
 
 function appendEntries(newEntries: SearchIndexEntry[]): void {
@@ -843,7 +889,7 @@ function seasonNumberFromTraits(traitIds: readonly string[] | undefined): number
 function lookupArtifactIdentity(
   artifactItemHash: number,
 ): { hash: number; name: string; icon?: string } | undefined {
-  const indexed = entriesByTableAndHash.get(`${INVENTORY_ITEM_TABLE}:${artifactItemHash}`);
+  const indexed = getIndexedEntry(INVENTORY_ITEM_TABLE, artifactItemHash);
   if (indexed?.name) {
     return {
       hash: artifactItemHash,
@@ -1289,7 +1335,8 @@ function resetEngineState(): void {
   indexedTables.clear();
   entriesByTableAndHash.clear();
   entryByHash.clear();
-  tablesByHash.clear();
+  firstTableByHash.clear();
+  coTablesByHash.clear();
   tableStatuses.clear();
   tableDataMap.clear();
   tableDataBytes.clear();
@@ -1297,6 +1344,10 @@ function resetEngineState(): void {
   retainedRawTableBytes = 0;
   fullItemLru.clear();
   categoryNameMap.clear();
+  subtitleStringPool.clear();
+  subtitleLowerStringPool.clear();
+  descriptionStringPool.clear();
+  sourceStringPool.clear();
   loadingPromises.clear();
   fullItemCount = 0;
   fullEnrichmentPending = true;
@@ -1316,6 +1367,7 @@ function applyCachedState(
   state.fromCache = true;
   state.initialized = true;
   entries = cached.entries;
+  for (const entry of entries) internEntryStrings(entry);
   invalidateIndexDerivedCaches();
   indexedTables.clear();
   for (const table of cached.indexedTables) indexedTables.add(table);
@@ -1699,7 +1751,11 @@ async function doLoadTable(table: string, explicit: boolean): Promise<void> {
     retainRawTable(table, data, persisted);
     status.loaded = true;
     status.hasFullData = true;
-    status.count = Object.keys(data).length;
+    let entryCount = 0;
+    for (const hashKey in data) {
+      if (Object.prototype.hasOwnProperty.call(data, hashKey)) entryCount += 1;
+    }
+    status.count = entryCount;
     state.currentTable = undefined;
 
     const enrichmentDependency = isEnrichmentDependencyTable(table);
@@ -1747,8 +1803,12 @@ function buildEntries(
   data: Record<string, Record<string, unknown>>,
 ): SearchIndexEntry[] {
   const out: SearchIndexEntry[] = [];
-  for (const [hashKey, raw] of Object.entries(data)) {
-    out.push(extractTableEntrySummary(table, hashKey, raw));
+  for (const hashKey in data) {
+    if (!Object.prototype.hasOwnProperty.call(data, hashKey)) continue;
+    const raw = data[hashKey]!;
+    const entry = extractTableEntrySummary(table, hashKey, raw);
+    internEntryStrings(entry);
+    out.push(entry);
   }
   return out;
 }
@@ -1913,6 +1973,17 @@ async function search(
       fuzzy,
     },
   );
+  if (state.phase === 'ready' && !fuzzy?.enabled && hasIndexableTextSearchTerms(parsed)) {
+    const generation = indexGeneration;
+    // Return the first cold result immediately, then prepare the compact index
+    // in yielding batches while the worker is otherwise idle.
+    setTimeout(() => {
+      if (state.phase !== 'ready' || generation !== indexGeneration) return;
+      void prepareTextSearchIndex(entries).catch((error: unknown) => {
+        console.error('[manifest] Failed to prepare the text search index:', error);
+      });
+    }, 0);
+  }
   searchPageCache = { key: cacheKey, response };
   if (requestedLimit === undefined) return response;
   return {
@@ -2146,7 +2217,7 @@ function scanTableForDeepSearch(
     }
     if (!matchesAllValues(raw, terms)) continue;
     if (onlyArtifactPerks) {
-      entry = entriesByTableAndHash.get(`${table}:${hash}`) ?? entryByHash.get(hash);
+      entry = getIndexedEntry(table, hash) ?? entryByHash.get(hash);
       if (entry?.isArtifactPerk !== true) continue;
     }
     scan.totalMatches += 1;
@@ -2377,7 +2448,7 @@ async function getDefinition(
     }
 
     let entry =
-      entriesByTableAndHash.get(`${INVENTORY_ITEM_TABLE}:${hash}`) ?? entryByHash.get(hash);
+      getIndexedEntry(INVENTORY_ITEM_TABLE, hash) ?? entryByHash.get(hash);
     if (!entry) {
       const liteTable = 'DestinyInventoryItemLiteDefinition';
       const liteInFlight = loadingPromises.get(liteTable);
@@ -2390,7 +2461,7 @@ async function getDefinition(
         await loadTable(liteTable);
       }
       entry =
-        entriesByTableAndHash.get(`${INVENTORY_ITEM_TABLE}:${hash}`) ?? entryByHash.get(hash);
+        getIndexedEntry(INVENTORY_ITEM_TABLE, hash) ?? entryByHash.get(hash);
     }
     if (!entry) {
       await ensureFullItem(hash);
@@ -2427,7 +2498,7 @@ async function buildDetail(
   if (isLite) {
     payload.isLite = true;
     if (table === INVENTORY_ITEM_TABLE) {
-      const entry = entriesByTableAndHash.get(`${INVENTORY_ITEM_TABLE}:${hash}`);
+      const entry = getIndexedEntry(INVENTORY_ITEM_TABLE, hash);
       if (entry?.isArtifactPerk && entry.parentArtifactHash && entry.parentArtifactName) {
         payload.overview = {
           parentArtifact: {
@@ -2445,9 +2516,10 @@ async function buildDetail(
 }
 
 function computeCoTables(hash: number, currentTable: string): string[] {
-  const tables = tablesByHash.get(hash);
-  if (!tables) return [];
-  return [...tables].filter((table) => table !== currentTable);
+  const tables = coTablesByHash.get(hash);
+  if (tables) return [...tables].filter((table) => table !== currentTable);
+  const firstTable = firstTableByHash.get(hash);
+  return firstTable !== undefined && firstTable !== currentTable ? [firstTable] : [];
 }
 
 function toSummary(entry: SearchIndexEntry): ResolvedHashSummary {
@@ -2465,7 +2537,7 @@ function toSummary(entry: SearchIndexEntry): ResolvedHashSummary {
 function resolveHash(hash: number, targetTables: string[]): ResolvedHashSummary | undefined {
   if (targetTables.length > 0) {
     for (const table of targetTables) {
-      const entry = entriesByTableAndHash.get(`${table}:${hash}`);
+      const entry = getIndexedEntry(table, hash);
       if (entry) return toSummary(entry);
     }
     return undefined;
@@ -2662,7 +2734,7 @@ async function buildInventoryItemOverview(
 
   overview.linkedEntities = await buildLinkedEntities(data);
 
-  const entry = entriesByTableAndHash.get(`${INVENTORY_ITEM_TABLE}:${hash}`);
+  const entry = getIndexedEntry(INVENTORY_ITEM_TABLE, hash);
   if (entry?.isArtifactPerk && entry.parentArtifactHash && entry.parentArtifactName) {
     overview.parentArtifact = {
       hash: entry.parentArtifactHash,
@@ -2827,7 +2899,7 @@ async function buildPlug(
   const hash = asUnsigned(plugItemHash);
   if (hash === undefined) return undefined;
   const definition = await readDefinitionData(INVENTORY_ITEM_TABLE, hash);
-  const entry = entriesByTableAndHash.get(`${INVENTORY_ITEM_TABLE}:${hash}`);
+  const entry = getIndexedEntry(INVENTORY_ITEM_TABLE, hash);
   const displayProperties = asRecord(definition?.displayProperties);
   const icon = asString(displayProperties?.icon);
   const plug: OverviewSocketPlug = {
@@ -2943,7 +3015,7 @@ async function buildLinkedEntities(
     const hash = asUnsigned(raw);
     if (hash === undefined) continue;
     const definition = await readDefinitionData(table, hash);
-    const entry = entriesByTableAndHash.get(`${table}:${hash}`);
+    const entry = getIndexedEntry(table, hash);
     const icon = asString(asRecord(definition?.displayProperties)?.icon);
     linked.push({
       table,
@@ -2998,22 +3070,28 @@ function toVariantItem(entry: SearchIndexEntry): VariantItem {
 
 async function getVariants(table: string, hashInput: number): Promise<VariantItem[]> {
   const hash = toUnsignedHash(hashInput);
-  const target =
-    entriesByTableAndHash.get(`${table}:${hash}`) ?? entryByHash.get(hash);
+  const target = getIndexedEntry(table, hash) ?? entryByHash.get(hash);
   const baseName = target?.name ? normalizeBaseName(target.name) : undefined;
   if (!baseName) return [];
 
   if (variantIndexGeneration !== indexGeneration) {
     variantEntriesByName.clear();
+    const firstVariantEntryByName = new Map<string, number>();
     for (let index = 0; index < entries.length; index += 1) {
       const entry = entries[index]!;
       if (!entry.name) continue;
       const name = normalizeBaseName(entry.name);
       const key = `${entry.table}\u0000${name}`;
+      const firstIndex = firstVariantEntryByName.get(key);
+      if (firstIndex === undefined) {
+        firstVariantEntryByName.set(key, index);
+        continue;
+      }
       const indices = variantEntriesByName.get(key);
       if (indices) indices.push(index);
-      else variantEntriesByName.set(key, [index]);
+      else variantEntriesByName.set(key, [firstIndex, index]);
     }
+    firstVariantEntryByName.clear();
     variantIndexGeneration = indexGeneration;
   }
 
@@ -3053,26 +3131,48 @@ function scanForHash(
 ): void {
   if (value === null || value === undefined) return;
   if (typeof value === 'number') {
-    if (toUnsignedHash(value) === target) paths.push(formatReferencePath(pathStack));
+    if (Number.isInteger(value) && toUnsignedHash(value) === target) {
+      paths.push(formatReferencePath(pathStack));
+    }
     return;
   }
   if (Array.isArray(value)) {
     for (let i = 0; i < value.length; i++) {
-      pathStack.push(arrayPathSegment(i));
-      scanForHash(value[i], target, sourceHash, pathStack, paths);
-      pathStack.pop();
+      const child = value[i];
+      if (typeof child === 'number') {
+        if (Number.isInteger(child) && toUnsignedHash(child) === target) {
+          pathStack.push(arrayPathSegment(i));
+          paths.push(formatReferencePath(pathStack));
+          pathStack.pop();
+        }
+      } else if (Array.isArray(child) || (typeof child === 'object' && child !== null)) {
+        pathStack.push(arrayPathSegment(i));
+        scanForHash(child, target, sourceHash, pathStack, paths);
+        pathStack.pop();
+      }
     }
     return;
   }
   if (typeof value === 'object') {
     const record = value as Record<string, unknown>;
     for (const key in record) {
-      if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
+      // Display-only subtrees cannot contain definition references. Keep
+      // `loreHash` on the normal path so references to lore are not lost.
+      if (key === 'displayProperties' || key === 'flavorText') continue;
       // A definition's own root `hash` field must never count as a self-reference.
       if (pathStack.length === 0 && key === 'hash' && sourceHash === target) continue;
-      pathStack.push(key);
-      scanForHash(record[key], target, sourceHash, pathStack, paths);
-      pathStack.pop();
+      const child = record[key];
+      if (typeof child === 'number') {
+        if (Number.isInteger(child) && toUnsignedHash(child) === target) {
+          pathStack.push(key);
+          paths.push(formatReferencePath(pathStack));
+          pathStack.pop();
+        }
+      } else if (Array.isArray(child) || (typeof child === 'object' && child !== null)) {
+        pathStack.push(key);
+        scanForHash(child, target, sourceHash, pathStack, paths);
+        pathStack.pop();
+      }
     }
   }
 }
@@ -3086,7 +3186,7 @@ function groupReference(
   const key = `${sourceTable}:${sourceHash}`;
   let group = groups.get(key);
   if (!group) {
-    const entry = entriesByTableAndHash.get(key) ?? entryByHash.get(sourceHash);
+    const entry = getIndexedEntry(sourceTable, sourceHash) ?? entryByHash.get(sourceHash);
     group = {
       sourceTable,
       sourceHash,
@@ -3131,7 +3231,6 @@ async function getReverseReferences(
   ): void => {
     scannedTables.push(table);
     for (const hashKey in data) {
-      if (!Object.prototype.hasOwnProperty.call(data, hashKey)) continue;
       const raw = data[hashKey]!;
       const sourceHash = toUnsignedHash(Number(hashKey));
       // Skip the definition being inspected so it never lists itself.
@@ -3339,10 +3438,9 @@ async function resolveSummaries(
   for (const ref of refs) {
     const unsigned = toUnsignedHash(ref.hash);
     const key = `${ref.table}:${unsigned}`;
-    const coTables = tablesByHash.get(unsigned);
-    const hasCoTables = coTables !== undefined && coTables.size > 1;
+    const hasCoTables = coTablesByHash.has(unsigned);
 
-    const indexed = entriesByTableAndHash.get(key);
+    const indexed = getIndexedEntry(ref.table, unsigned);
     if (indexed) {
       result[key] = {
         name: indexed.name,

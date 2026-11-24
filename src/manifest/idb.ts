@@ -296,20 +296,30 @@ export async function purgeOldVersions(
 ): Promise<void> {
   const db = await openDb();
   if (!db) return;
-  const shouldDelete = (key: string): boolean => {
-    const prefix = `${locale}:`;
-    if (!key.startsWith(prefix)) return false;
-    return !key.startsWith(`${locale}:${keepVersionSignature}`);
-  };
   try {
-    for (const storeName of [STORE_SEARCH_INDEX, STORE_TABLES, STORE_FULL_ITEMS]) {
-      const tx = db.transaction(storeName, 'readwrite');
+    const storeNames = [STORE_SEARCH_INDEX, STORE_TABLES, STORE_FULL_ITEMS];
+    const tx = db.transaction(storeNames, 'readwrite');
+    const completed = txComplete(tx);
+    const localeRange = IDBKeyRange.bound(`${locale}:`, `${locale}:\uffff`);
+
+    for (const storeName of storeNames) {
       const store = tx.objectStore(storeName);
-      const keys = await requestResult<IDBValidKey[]>(store.getAllKeys());
-      const toDelete = keys.filter((key) => shouldDelete(String(key)));
-      for (const key of toDelete) store.delete(key);
-      await txComplete(tx);
+      const request = store.openCursor(localeRange);
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) return;
+        const key = String(cursor.key);
+        const keepKey =
+          storeName === STORE_SEARCH_INDEX
+            ? `${locale}:${keepVersionSignature}`
+            : `${locale}:${keepVersionSignature}:`;
+        if (storeName === STORE_SEARCH_INDEX ? key !== keepKey : !key.startsWith(keepKey)) {
+          cursor.delete();
+        }
+        cursor.continue();
+      };
     }
+    await completed;
   } catch {
     // Degrade silently.
   }

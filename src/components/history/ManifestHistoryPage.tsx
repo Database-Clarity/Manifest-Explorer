@@ -1,6 +1,7 @@
 import {
   memo,
   useCallback,
+  useDeferredValue,
   useEffect,
   useMemo,
   useState,
@@ -95,15 +96,22 @@ function friendlyTableName(table: string): string {
   return getFriendlyTableName(table);
 }
 
+const RELEASE_DATE_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+  day: 'numeric',
+  year: 'numeric',
+  timeZone: 'UTC',
+});
+const RELEASE_DATE_NO_YEAR_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+  day: 'numeric',
+  timeZone: 'UTC',
+});
+
 function formatDate(date: string, includeYear = true): string {
   const parsed = new Date(date);
   if (Number.isNaN(parsed.getTime())) return date;
-  return new Intl.DateTimeFormat('en-US', {
-    month: 'short',
-    day: 'numeric',
-    ...(includeYear ? { year: 'numeric' } : {}),
-    timeZone: 'UTC',
-  }).format(parsed);
+  return (includeYear ? RELEASE_DATE_FORMATTER : RELEASE_DATE_NO_YEAR_FORMATTER).format(parsed);
 }
 
 function versionLabel(version: HistoryVersionMeta): string {
@@ -130,6 +138,13 @@ function countsFor(version: HistoryVersionMeta): {
 
 const RELEASE_KINDS: readonly ChangeKind[] = ['a', 'm', 'r', 'u', 'c'];
 const releaseTupleSearchText = new WeakMap<ReleaseItemTuple, Map<string, string>>();
+// Re-created `ChangedEntry` objects defeat `memo(EntryCard)` and churn hundreds
+// of objects on every search keystroke. Cache one entry per release tuple/kind;
+// the release object identity bounds the cache lifetime.
+const releaseEntryCache = new WeakMap<
+  ManifestReleaseSummary,
+  WeakMap<ReleaseItemTuple, Map<string, ChangedEntry>>
+>();
 
 function countReleaseKinds(
   tables: Record<string, ReleaseTableChanges>,
@@ -149,8 +164,24 @@ function entryFromReleaseTuple(
   kind: ChangeKind,
   tuple: ReleaseItemTuple,
 ): ChangedEntry {
+  let entriesByTuple = releaseEntryCache.get(release);
+  if (!entriesByTuple) {
+    entriesByTuple = new WeakMap();
+    releaseEntryCache.set(release, entriesByTuple);
+  }
+  let entriesByKind = entriesByTuple.get(tuple);
+  if (!entriesByKind) {
+    entriesByKind = new Map();
+    entriesByTuple.set(tuple, entriesByKind);
+  }
+  const cacheKey = `${table}:${kind}`;
+  const cached = entriesByKind.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
   const tableLabel = friendlyTableName(table);
-  return {
+  const entry: ChangedEntry = {
     key: `${table}:${tuple[0]}:${kind}`,
     table,
     hash: tuple[0] >>> 0,
@@ -164,6 +195,8 @@ function entryFromReleaseTuple(
     date: release.date,
     ...(release.version === undefined ? {} : { version: release.version }),
   };
+  entriesByKind.set(cacheKey, entry);
+  return entry;
 }
 
 function tupleSearchText(tuple: ReleaseItemTuple, table: string): string {
@@ -224,7 +257,7 @@ function VersionCounts({ version }: { version: HistoryVersionMeta }): ReactNode 
   );
 }
 
-function VersionSidebar({
+const VersionSidebar = memo(function VersionSidebar({
   versions,
   selectedIndex,
   search,
@@ -237,10 +270,15 @@ function VersionSidebar({
   onSearch: (value: string) => void;
   onSelect: (index: number) => void;
 }): ReactNode {
-  const filtered = versions.filter((version) => {
-    const target = `${version.date} ${version.version ?? ''} ${version.id}`.toLowerCase();
-    return target.includes(search.trim().toLowerCase());
-  });
+  const normalizedSearch = search.trim().toLowerCase();
+  const filtered = useMemo(() => {
+    if (!normalizedSearch) return versions;
+    return versions.filter((version) =>
+      `${version.date} ${version.version ?? ''} ${version.id}`
+        .toLowerCase()
+        .includes(normalizedSearch),
+    );
+  }, [normalizedSearch, versions]);
 
   return (
     <aside className={styles.sidebar} aria-label="Manifest versions">
@@ -301,9 +339,9 @@ function VersionSidebar({
       </div>
     </aside>
   );
-}
+});
 
-function EntryCard({
+const EntryCard = memo(function EntryCard({
   entry,
   onOpen,
 }: {
@@ -341,9 +379,9 @@ function EntryCard({
       </span>
     </button>
   );
-}
+});
 
-function ReleaseOverview({
+const ReleaseOverview = memo(function ReleaseOverview({
   release,
   onOpenEntry,
 }: {
@@ -352,6 +390,10 @@ function ReleaseOverview({
 }): ReactNode {
   const [kindFilter, setKindFilter] = useState<ChangeKind | 'all'>('all');
   const [search, setSearch] = useState('');
+  // Typing must stay instant on releases with 61k entries: the cheap input
+  // update renders immediately while the expensive tuple filtering below runs
+  // at a lower priority against the deferred query.
+  const deferredSearch = useDeferredValue(search);
   const [showCountsState, setShowCountsState] = useState<{
     versionIndex: number;
     counts: Record<string, number>;
@@ -364,7 +406,7 @@ function ReleaseOverview({
     0,
   );
   const groups = useMemo(() => {
-    const query = search.trim().toLowerCase();
+    const query = deferredSearch.trim().toLowerCase();
     const tables = Object.entries(release.tables).map(([table, changes]) => {
       const tuplesByKind = {} as Record<ChangeKind, readonly ReleaseItemTuple[]>;
       const countsByKind: Record<ChangeKind, number> = {
@@ -398,7 +440,7 @@ function ReleaseOverview({
       .sort((a, b) =>
         friendlyTableName(a.table).localeCompare(friendlyTableName(b.table)),
       );
-  }, [kindFilter, release, search]);
+  }, [deferredSearch, kindFilter, release]);
 
   return (
     <div className={styles.overviewScroll}>
@@ -510,9 +552,9 @@ function ReleaseOverview({
       )}
     </div>
   );
-}
+});
 
-function EntryDiffPanel({
+const EntryDiffPanel = memo(function EntryDiffPanel({
   entry,
   onNavigateExplorer,
 }: {
@@ -547,7 +589,24 @@ function EntryDiffPanel({
     };
   }, [entry.hash, entry.table]);
 
+  // One reconstruction per `(table, hash, versionIndex)` per fetched revision
+  // set. `readSnapshot` is stable for as long as the tab stays open, so
+  // switching Diff/Pretty/JSON or moving between open entry tabs is a lookup.
+  const snapshotCache = useMemo(() => new Map<string, unknown>(), [definition, revisions]);
+  const readSnapshot = useCallback(
+    <T,>(key: string, build: () => T): T => {
+      if (snapshotCache.has(key)) {
+        return snapshotCache.get(key) as T;
+      }
+      const value = build();
+      snapshotCache.set(key, value);
+      return value;
+    },
+    [snapshotCache],
+  );
+
   const snapshots = useMemo(() => {
+    const prefix = `${entry.table}:${entry.hash}`;
     const removalAtRelease = revisions.find(
       (revision) => revision.v === entry.versionIndex && revision.k === 'r',
     );
@@ -557,41 +616,55 @@ function EntryDiffPanel({
 
     if (removalAtRelease) {
       return {
-        before: reconstructRemovedSnapshot(revisions, entry.versionIndex),
+        before: readSnapshot(`${prefix}:removed@${entry.versionIndex}`, () =>
+          reconstructRemovedSnapshot(revisions, entry.versionIndex),
+        ),
         after: null,
       };
     }
     if (definition) {
       return {
-        before: reconstructRevisionSnapshot(definition.data, revisions, entry.versionIndex - 1),
-        after: reconstructRevisionSnapshot(definition.data, revisions, entry.versionIndex),
+        before: readSnapshot(`${prefix}:revision@${entry.versionIndex - 1}`, () =>
+          reconstructRevisionSnapshot(
+            definition.data,
+            revisions,
+            entry.versionIndex - 1,
+          ),
+        ),
+        after: readSnapshot(`${prefix}:revision@${entry.versionIndex}`, () =>
+          reconstructRevisionSnapshot(definition.data, revisions, entry.versionIndex),
+        ),
       };
     }
     if (!latestRemoval) return { before: null, after: null };
 
-    const removedBase = reconstructRemovedSnapshot(revisions, latestRemoval.v);
+    const removedBase = readSnapshot<Record<string, unknown> | null>(
+      `${prefix}:removed@${latestRemoval.v}`,
+      () => reconstructRemovedSnapshot(revisions, latestRemoval.v),
+    );
     if (!removedBase) return { before: null, after: null };
     const beforeRemovalRevisions = revisions.filter((revision) => revision.v < latestRemoval.v);
     if (entry.versionIndex > latestRemoval.v) return { before: null, after: null };
     return {
-      before:
-        entry.versionIndex === latestRemoval.v
-          ? reconstructRevisionSnapshot(removedBase, beforeRemovalRevisions, entry.versionIndex - 1)
-          : reconstructRevisionSnapshot(
-              removedBase,
-              beforeRemovalRevisions,
-              entry.versionIndex - 1,
-            ),
+      before: readSnapshot(`${prefix}:removed-revision@${entry.versionIndex - 1}`, () =>
+        reconstructRevisionSnapshot(
+          removedBase,
+          beforeRemovalRevisions,
+          entry.versionIndex - 1,
+        ),
+      ),
       after:
         entry.versionIndex === latestRemoval.v
           ? null
-          : reconstructRevisionSnapshot(
-              removedBase,
-              beforeRemovalRevisions,
-              entry.versionIndex,
+          : readSnapshot(`${prefix}:removed-revision@${entry.versionIndex}`, () =>
+              reconstructRevisionSnapshot(
+                removedBase,
+                beforeRemovalRevisions,
+                entry.versionIndex,
+              ),
             ),
     };
-  }, [definition, entry.versionIndex, revisions]);
+  }, [definition, entry.hash, entry.table, entry.versionIndex, readSnapshot, revisions]);
 
   const displaySnapshot = snapshots.after ?? snapshots.before;
   const treeData = isRecord(displaySnapshot) ? displaySnapshot : {};
@@ -687,7 +760,7 @@ function EntryDiffPanel({
       )}
     </div>
   );
-}
+});
 
 function HistoryWorkspaceTabs({
   state,
@@ -848,11 +921,23 @@ export const ManifestHistoryPage = memo(function ManifestHistoryPage({
     });
   }, []);
 
-  const mobileVersions = versions.filter((version) =>
-    `${version.date} ${version.version ?? ''} ${version.id}`
-      .toLowerCase()
-      .includes(versionSearch.trim().toLowerCase()),
-  );
+  const selectOverview = useCallback(() => {
+    setTabState((current) => ({ ...current, activeKey: null }));
+  }, []);
+
+  const selectEntryTab = useCallback((key: string) => {
+    setTabState((current) => ({ ...current, activeKey: key }));
+  }, []);
+
+  const mobileVersions = useMemo(() => {
+    const query = versionSearch.trim().toLowerCase();
+    if (!query) return versions;
+    return versions.filter((version) =>
+      `${version.date} ${version.version ?? ''} ${version.id}`
+        .toLowerCase()
+        .includes(query),
+    );
+  }, [versionSearch, versions]);
 
   return (
     <section className={styles.historyPage} aria-label="Manifest history explorer">
@@ -861,7 +946,7 @@ export const ManifestHistoryPage = memo(function ManifestHistoryPage({
         selectedIndex={activeVersionIndex}
         search={versionSearch}
         onSearch={setVersionSearch}
-        onSelect={(nextIndex) => onSelectVersion(nextIndex)}
+        onSelect={onSelectVersion}
       />
 
       <div className={styles.mobilePicker}>
@@ -890,8 +975,8 @@ export const ManifestHistoryPage = memo(function ManifestHistoryPage({
       <main className={styles.historyWorkspace}>
         <HistoryWorkspaceTabs
           state={tabState}
-          onSelectOverview={() => setTabState((current) => ({ ...current, activeKey: null }))}
-          onSelectEntry={(key) => setTabState((current) => ({ ...current, activeKey: key }))}
+          onSelectOverview={selectOverview}
+          onSelectEntry={selectEntryTab}
           onCloseEntry={closeEntry}
         />
         <div className={styles.tabPanels}>

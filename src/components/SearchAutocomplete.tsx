@@ -1,5 +1,5 @@
 /// <reference types="vite/client" />
-import { useLayoutEffect, useRef, type ReactNode } from 'react';
+import { memo, useLayoutEffect, useRef, type ReactNode } from 'react';
 import type { FilterOption, TableStatus } from '../types/manifest';
 import styles from './SearchAutocomplete.module.scss';
 
@@ -62,6 +62,18 @@ export interface SearchSuggestionResult {
 }
 
 const NUMBER_FORMAT = new Intl.NumberFormat('en-US');
+
+interface NormalizedSuggestionCatalog {
+  categories: FilterOption[];
+  seasons: FilterOption[];
+  sources: readonly SearchAutocompleteSource[];
+  tables: TableStatus[];
+}
+
+const normalizedCatalogCache = new WeakMap<
+  object,
+  WeakMap<object, NormalizedSuggestionCatalog>
+>();
 
 interface ValueOption {
   value: string;
@@ -262,6 +274,13 @@ const FALLBACK_SOURCES: readonly SearchAutocompleteSource[] = [
   { key: 'events', label: 'Events' },
   { key: 'exoticquest', label: 'Exotic Quest' },
 ];
+
+const EMPTY_NORMALIZED_CATALOG: NormalizedSuggestionCatalog = {
+  categories: [],
+  seasons: [],
+  sources: FALLBACK_SOURCES,
+  tables: [],
+};
 
 interface ActiveToken {
   /** Start of the whole token, including a leading `-`. */
@@ -506,6 +525,30 @@ function dedupeTables(tables: readonly TableStatus[]): TableStatus[] {
   return [...byShortName.values()];
 }
 
+function getNormalizedCatalog(
+  catalog: SearchAutocompleteCatalog,
+  tables: readonly TableStatus[],
+): NormalizedSuggestionCatalog {
+  let byTables = normalizedCatalogCache.get(catalog);
+  if (!byTables) {
+    byTables = new WeakMap();
+    normalizedCatalogCache.set(catalog, byTables);
+  }
+
+  const cached = byTables.get(tables);
+  if (cached) return cached;
+
+  const liveSources = readSources(catalog);
+  const normalized: NormalizedSuggestionCatalog = {
+    categories: readCategories(catalog),
+    seasons: readSeasons(catalog),
+    sources: liveSources.length > 0 ? liveSources : FALLBACK_SOURCES,
+    tables: dedupeTables(tables),
+  };
+  byTables.set(tables, normalized);
+  return normalized;
+}
+
 function operatorSuggestions(typedKey: string, negated: boolean): SearchSuggestion[] {
   const term = typedKey.trim().toLowerCase();
   if (term.length < 2) return [];
@@ -534,8 +577,7 @@ function valueSuggestions(
   key: string,
   negated: boolean,
   typed: string,
-  catalog: SearchAutocompleteCatalog,
-  tables: readonly TableStatus[],
+  catalog: NormalizedSuggestionCatalog,
 ): SearchSuggestion[] {
   const prefix = negated ? '-' : '';
   const candidates: RankedCandidate[] = [];
@@ -567,7 +609,7 @@ function valueSuggestions(
       idSuffix: 'latest',
     });
 
-    for (const season of readSeasons(catalog)) {
+    for (const season of catalog.seasons) {
       const value = String(season.value);
       const dot = season.label.indexOf('·');
       const name = dot >= 0 ? season.label.slice(dot + 1).trim() : season.label;
@@ -581,10 +623,7 @@ function valueSuggestions(
   }
 
   if (group === 'source') {
-    const liveSources = readSources(catalog);
-    const sources = liveSources.length > 0 ? liveSources : FALLBACK_SOURCES;
-
-    for (const source of sources) {
+    for (const source of catalog.sources) {
       add(`${key}:${quoteValue(source.key)}`, source.label, [
         source.key,
         source.label,
@@ -596,7 +635,7 @@ function valueSuggestions(
   }
 
   if (group === 'table') {
-    const liveTables = dedupeTables(tables);
+    const liveTables = catalog.tables;
     const artifactLive = liveTables.find(
       (table) => normalizeLookup(table.shortName) === 'artifactperks',
     );
@@ -624,7 +663,7 @@ function valueSuggestions(
   }
 
   if (group === 'category') {
-    for (const category of readCategories(catalog)) {
+    for (const category of catalog.categories) {
       add(`${key}:${quoteValue(category.label)}`, category.label, [category.label], {
         count: category.count,
         idSuffix: category.label,
@@ -670,7 +709,20 @@ export function buildSearchSuggestions(
 
     const valueEnd = Math.max(token.colon + 1, Math.min(clamped, token.end));
     const typed = unwrapTypedValue(query.slice(token.colon + 1, valueEnd));
-    return valueSuggestions(group, token.key, token.negated, typed, catalog, tables);
+    const normalizedCatalog =
+      group === 'season' ||
+      group === 'source' ||
+      group === 'table' ||
+      group === 'category'
+        ? getNormalizedCatalog(catalog, tables)
+        : EMPTY_NORMALIZED_CATALOG;
+    return valueSuggestions(
+      group,
+      token.key,
+      token.negated,
+      typed,
+      normalizedCatalog,
+    );
   }
 
   const typedKey = query.slice(
@@ -716,7 +768,7 @@ function cx(...parts: Array<string | false | null | undefined>): string {
  * owns focus/caret/highlight state; this component only renders the listbox and
  * forwards mouse interaction back through the same accept callback.
  */
-export function SearchAutocomplete({
+export const SearchAutocomplete = memo(function SearchAutocomplete({
   id,
   suggestions,
   highlightIndex,
@@ -817,4 +869,4 @@ export function SearchAutocomplete({
       </div>
     </div>
   );
-}
+});

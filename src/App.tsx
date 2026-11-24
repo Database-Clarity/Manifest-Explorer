@@ -30,7 +30,6 @@ import { Header } from './components/Header';
 import { ResultsPane } from './components/ResultsPane';
 import { StatusBar } from './components/StatusBar';
 import { TableRail } from './components/TableRail';
-import { DefinitionInspector } from './components/inspector/DefinitionInspector';
 import { NoticeStrip } from './ui/NoticeStrip';
 import {
   checkForAppUpdate,
@@ -71,6 +70,16 @@ const LazyManifestHistoryPage = lazy(() =>
     default: module.ManifestHistoryPage,
   })),
 );
+type DefinitionInspectorModule = typeof import('./components/inspector/DefinitionInspector');
+let definitionInspectorModulePromise: Promise<DefinitionInspectorModule> | null = null;
+function loadDefinitionInspector(): Promise<DefinitionInspectorModule> {
+  definitionInspectorModulePromise ??= import('./components/inspector/DefinitionInspector');
+  return definitionInspectorModulePromise;
+}
+const LazyDefinitionInspector = lazy(async () => {
+  const module = await loadDefinitionInspector();
+  return { default: module.DefinitionInspector };
+});
 const LazyHelpDialog = lazy(() =>
   import('./components/HelpDialog').then((module) => ({
     default: module.HelpDialog,
@@ -189,6 +198,33 @@ export function App(): ReactNode {
   const [pathname, setPathname] = useState(
     () => (typeof window === 'undefined' ? '/' : window.location.pathname),
   );
+  useEffect(() => {
+    if (typeof window === 'undefined' || window.location.pathname !== '/') return;
+
+    let idleHandle: number | null = null;
+    let timeoutHandle: number | null = null;
+    const prefetch = (): void => {
+      void loadDefinitionInspector();
+    };
+    const idleWindow = window as Window & {
+      requestIdleCallback?: (
+        callback: () => void,
+        options?: { timeout: number },
+      ) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+
+    if (idleWindow.requestIdleCallback) {
+      idleHandle = idleWindow.requestIdleCallback(prefetch, { timeout: 250 });
+    } else {
+      timeoutHandle = window.setTimeout(prefetch, 250);
+    }
+
+    return () => {
+      if (idleHandle !== null) idleWindow.cancelIdleCallback?.(idleHandle);
+      if (timeoutHandle !== null) window.clearTimeout(timeoutHandle);
+    };
+  }, []);
   const searchSeqRef = useRef(0);
   const detailSeqRef = useRef(0);
   const syncingHashRef = useRef(false);
@@ -1845,32 +1881,34 @@ export function App(): ReactNode {
             )}
 
             {currentRef && (!isNarrowLayout || mobileInspectorOpen) && (
-              <DefinitionInspector
-                width={inspectorWidth}
-                onResize={handleInspectorResize}
-                currentRef={currentRef}
-                detail={detail}
-                loading={detailLoading}
-                loadingFull={loadingFull}
-                error={detailError}
-                variants={variants}
-                variantsLoading={variantsLoading}
-                references={references}
-                referencesLoading={referencesLoading}
-                pinnedDetail={pinnedDetail}
-                pinnedLoading={pinnedLoading}
-                clarityEntry={clarityEntry}
-                clarityLoading={clarityLoading}
-                showClarity={showClarityDescriptions}
-                onNavigateRef={handleNavigateRef}
-                onNavigateBack={handleNavigateBack}
-                onNavigateForward={handleNavigateForward}
-                onJumpToHistoryIndex={handleJumpToHistoryIndex}
-                onSwitchSession={handleSwitchSession}
-                onLoadFullItem={handleLoadFullItem}
-                onLoadPriorityTable={handleLoadTable}
-                onRetry={handleRetryDetail}
-              />
+              <Suspense fallback={null}>
+                <LazyDefinitionInspector
+                  width={inspectorWidth}
+                  onResize={handleInspectorResize}
+                  currentRef={currentRef}
+                  detail={detail}
+                  loading={detailLoading}
+                  loadingFull={loadingFull}
+                  error={detailError}
+                  variants={variants}
+                  variantsLoading={variantsLoading}
+                  references={references}
+                  referencesLoading={referencesLoading}
+                  pinnedDetail={pinnedDetail}
+                  pinnedLoading={pinnedLoading}
+                  clarityEntry={clarityEntry}
+                  clarityLoading={clarityLoading}
+                  showClarity={showClarityDescriptions}
+                  onNavigateRef={handleNavigateRef}
+                  onNavigateBack={handleNavigateBack}
+                  onNavigateForward={handleNavigateForward}
+                  onJumpToHistoryIndex={handleJumpToHistoryIndex}
+                  onSwitchSession={handleSwitchSession}
+                  onLoadFullItem={handleLoadFullItem}
+                  onLoadPriorityTable={handleLoadTable}
+                  onRetry={handleRetryDetail}
+                />
+              </Suspense>
             )}
           </>
         )}

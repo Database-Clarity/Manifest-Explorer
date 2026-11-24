@@ -2,6 +2,7 @@
 import {
   lazy,
   Suspense,
+  useCallback,
   useEffect,
   useLayoutEffect,
   memo,
@@ -310,7 +311,7 @@ export const Header = memo(function Header({
     syncSearchCaret(event.currentTarget);
   }
 
-  function acceptSuggestion(suggestion: SearchSuggestion): void {
+  const acceptSuggestion = useCallback((suggestion: SearchSuggestion): void => {
     const input = searchInputRef.current;
     const caret = input?.selectionStart ?? searchCaret;
     const result = applySearchSuggestion(query, caret, suggestion);
@@ -326,12 +327,15 @@ export const Header = memo(function Header({
         input.setSelectionRange(result.caret, result.caret);
       });
     }
-  }
+  }, [query, searchCaret]);
 
   function handleSearchKeyDown(event: KeyboardEvent<HTMLTextAreaElement>): void {
     const input = event.currentTarget;
     const caret = input.selectionStart ?? input.value.length;
-    const current = buildSearchSuggestions(query, caret, filterCatalog, tables);
+    const current =
+      caret === searchCaret
+        ? suggestions
+        : buildSearchSuggestions(query, caret, filterCatalog, tables);
     const open = searchFocused && !suggestionsDismissed && current.length > 0;
 
     if (event.key === 'Escape') {

@@ -4,6 +4,19 @@ import type { ImageScalingMode } from '../types/manifest';
 import { useSettingsStore } from '../stores/settings';
 import styles from './BungieIcon.module.scss';
 
+const MAX_CACHED_ICON_URLS = 2_000;
+const loadedIconUrls = new Set<string>();
+const failedIconUrls = new Set<string>();
+
+function rememberIconUrl(cache: Set<string>, url: string): void {
+  if (cache.has(url)) return;
+  cache.add(url);
+  if (cache.size > MAX_CACHED_ICON_URLS) {
+    const oldest = cache.values().next().value;
+    if (oldest !== undefined) cache.delete(oldest);
+  }
+}
+
 export interface BungieIconProps {
   /** Relative Bungie icon path, e.g. /common/destiny2_content/icons/....png */
   icon?: string;
@@ -86,10 +99,27 @@ export function BungieIcon({
           className={styles.watermark}
           src={watermarkSrc}
           alt=""
-          loading="lazy"
-          decoding="async"
+          loading={
+            watermarkSrc !== null && loadedIconUrls.has(watermarkSrc)
+              ? 'eager'
+              : 'lazy'
+          }
+          decoding={
+            watermarkSrc !== null && loadedIconUrls.has(watermarkSrc)
+              ? 'sync'
+              : 'async'
+          }
           aria-hidden="true"
-          onError={() => setBrokenWatermark(watermarkSrc)}
+          onLoad={() => {
+            if (watermarkSrc !== null) rememberIconUrl(loadedIconUrls, watermarkSrc);
+          }}
+          onError={() => {
+            if (watermarkSrc === null) return;
+            rememberIconUrl(failedIconUrls, watermarkSrc);
+            setBrokenWatermark((current) =>
+              current === watermarkSrc ? current : watermarkSrc,
+            );
+          }}
         />
       ) : null}
 
@@ -98,10 +128,17 @@ export function BungieIcon({
           className={imageClass}
           src={iconSrc}
           alt={alt ?? ''}
-          loading="lazy"
-          decoding="async"
+          loading={iconSrc !== null && loadedIconUrls.has(iconSrc) ? 'eager' : 'lazy'}
+          decoding={iconSrc !== null && loadedIconUrls.has(iconSrc) ? 'sync' : 'async'}
           draggable={false}
-          onError={() => setBrokenIcon(iconSrc)}
+          onLoad={() => {
+            if (iconSrc !== null) rememberIconUrl(loadedIconUrls, iconSrc);
+          }}
+          onError={() => {
+            if (iconSrc === null) return;
+            rememberIconUrl(failedIconUrls, iconSrc);
+            setBrokenIcon((current) => (current === iconSrc ? current : iconSrc));
+          }}
         />
       ) : (
         <span

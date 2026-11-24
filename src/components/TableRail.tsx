@@ -121,6 +121,9 @@ export const TableRail = memo(function TableRail({
   const manifestStatus = useExplorerStore((state) => state.manifestStatus);
 
   const { loadedCount, totalCount, hasUnloadedTables } = useMemo(() => {
+    if (collapsed) {
+      return { loadedCount: 0, totalCount: 0, hasUnloadedTables: false };
+    }
     const realTables = tables.filter((table) => table.name !== 'ArtifactPerks');
     const loaded =
       realTables.length > 0
@@ -128,14 +131,17 @@ export const TableRail = memo(function TableRail({
         : manifestStatus.loadedTableCount;
     const total = realTables.length > 0 ? realTables.length : manifestStatus.totalTableCount;
     return { loadedCount: loaded, totalCount: total, hasUnloadedTables: total > loaded };
-  }, [tables, manifestStatus]);
+  }, [collapsed, tables, manifestStatus]);
 
-  const normalizedFilter = filterText.trim().toLowerCase();
-  const uniqueTables = useMemo(() => dedupeTables(tables), [tables]);
+  const normalizedFilter = collapsed ? '' : filterText.trim().toLowerCase();
+  const uniqueTables = useMemo(
+    () => (collapsed ? [] : dedupeTables(tables)),
+    [collapsed, tables],
+  );
 
-  const coreTables = useMemo(
-    () =>
-      uniqueTables
+  const coreTables = useMemo(() => {
+    if (collapsed) return [];
+    return uniqueTables
         .filter(
           (table) =>
             CORE_TABLE_SET.has(canonicalTableName(table.name)) &&
@@ -145,26 +151,24 @@ export const TableRail = memo(function TableRail({
           (a, b) =>
             (CORE_TABLE_RANK.get(canonicalTableName(a.name)) ?? 99) -
             (CORE_TABLE_RANK.get(canonicalTableName(b.name)) ?? 99),
-        ),
-    [uniqueTables, normalizedFilter],
-  );
+        );
+  }, [collapsed, uniqueTables, normalizedFilter]);
 
-  const otherGroups = useMemo(
-    () =>
-      TABLE_GROUP_ORDER.map(([group, label]) => ({
-        group,
-        label,
-        tables: uniqueTables
-          .filter(
-            (table) =>
-              !CORE_TABLE_SET.has(canonicalTableName(table.name)) &&
-              (table.group === group || (group === 'gameplay' && table.group === 'primary')) &&
-              matchesFilter(table, normalizedFilter),
-          )
-          .sort((a, b) => a.shortName.localeCompare(b.shortName)),
-      })).filter((entry) => entry.tables.length > 0),
-    [uniqueTables, normalizedFilter],
-  );
+  const otherGroups = useMemo(() => {
+    if (collapsed) return [];
+    return TABLE_GROUP_ORDER.map(([group, label]) => ({
+      group,
+      label,
+      tables: uniqueTables
+        .filter(
+          (table) =>
+            !CORE_TABLE_SET.has(canonicalTableName(table.name)) &&
+            (table.group === group || (group === 'gameplay' && table.group === 'primary')) &&
+            matchesFilter(table, normalizedFilter),
+        )
+        .sort((a, b) => a.shortName.localeCompare(b.shortName)),
+    })).filter((entry) => entry.tables.length > 0);
+  }, [collapsed, uniqueTables, normalizedFilter]);
 
   const groups = useMemo(
     () => [

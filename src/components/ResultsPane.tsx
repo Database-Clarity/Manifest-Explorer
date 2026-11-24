@@ -111,8 +111,19 @@ function formatDuration(ms: number): string {
   return `${(ms / 1000).toFixed(2)} s`;
 }
 
+// Result keys are looked up for every mounted row on every scroll frame, so
+// cache the joined string on the (stable) result object instead of rebuilding
+// it hundreds of times per second while the virtual window slides.
+const RESULT_KEY_CACHE = new WeakMap<SearchResultItem, string>();
+
 function resultKey(item: SearchResultItem): string {
-  return `${item.table}:${item.hash}`;
+  const cached = RESULT_KEY_CACHE.get(item);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const key = `${item.table}:${item.hash}`;
+  RESULT_KEY_CACHE.set(item, key);
+  return key;
 }
 
 function itemLabel(item: SearchResultItem): string {
@@ -563,6 +574,10 @@ export const ResultsPane = memo(function ResultsPane({
   }, []);
 
   const handleScroll = useCallback(() => {
+    // Coalesce every scroll event in a frame into a single rAF state commit so
+    // fast wheel/trackpad bursts (and 277k-item flings) never queue redundant
+    // renders. The scroll offset is read at frame time, not at event time, so
+    // the window stays glued to the latest position.
     if (typeof window === 'undefined' || typeof window.requestAnimationFrame !== 'function') {
       const element = scrollRef.current;
       if (element) {
@@ -608,11 +623,14 @@ export const ResultsPane = memo(function ResultsPane({
   const gridGutter = remPx * GRID_GUTTER_REM;
   const columns =
     viewMode === 'grid'
-      ? Math.max(
-          1,
-          Math.floor(
-            (viewportWidth - 2 * gridSidePad + gridGutter) /
-              (GRID_MIN_CELL_PX + gridGutter),
+      ? Math.min(
+          2,
+          Math.max(
+            1,
+            Math.floor(
+              (viewportWidth - 2 * gridSidePad + gridGutter) /
+                (GRID_MIN_CELL_PX + gridGutter),
+            ),
           ),
         )
       : 1;
@@ -909,15 +927,26 @@ export const ResultsPane = memo(function ResultsPane({
     }
   }, [clampedSelectedIndex, results.length]);
 
-  const rows: ReactNode[] = [];
+  const artifactPerksCategory = filters.table === ARTIFACT_PERKS_TABLE;
 
-  if (hasResults) {
+  // The virtual window is rebuilt only when its contents can actually change.
+  // Scroll frames that keep the same row range reuse these element objects, so
+  // the memoized rows/cells bail out of reconciliation while only the window
+  // transform moves. Every callback prop is a stable `useCallback` hook and all
+  // other row props are primitives, so `React.memo` stays effective per frame.
+  const rows = useMemo<ReactNode[]>(() => {
+    const nextRows: ReactNode[] = [];
+
+    if (!hasResults) {
+      return nextRows;
+    }
+
     if (viewMode === 'list') {
       for (let index = firstRow; index < windowEnd; index += 1) {
         const item = results[index];
         if (!item) continue;
         const itemKey = resultKey(item);
-        rows.push(
+        nextRows.push(
           <ListRow
             key={itemKey}
             item={item}
@@ -930,63 +959,84 @@ export const ResultsPane = memo(function ResultsPane({
             collectMode={collectMode}
             showTableColumn={showTableColumn}
             showInlineTable={showInlineTable}
-            artifactPerksCategory={filters.table === ARTIFACT_PERKS_TABLE}
+            artifactPerksCategory={artifactPerksCategory}
             onActivate={handleActivate}
             onCopyHash={handleCopyHash}
           />,
         );
       }
-    } else {
-      for (let rowIndex = firstRow; rowIndex < windowEnd; rowIndex += 1) {
-        const start = rowIndex * columns;
-        const cells: ReactNode[] = [];
+      return nextRows;
+    }
 
-        for (let column = 0; column < columns; column += 1) {
-          const index = start + column;
-          const item = results[index];
-          if (!item) break;
-          const itemKey = resultKey(item);
-          cells.push(
-            <GridCell
-              key={itemKey}
-              item={item}
-              index={index}
-              setSize={results.length}
-              rowHeight={rowHeight}
-              active={itemKey === activeEntryKey}
-              cursor={index === clampedSelectedIndex}
-              collected={collectedKeys.has(itemKey)}
-              collectMode={collectMode}
-              showTableColumn={false}
-              showInlineTable={showInlineTable}
-              artifactPerksCategory={filters.table === ARTIFACT_PERKS_TABLE}
-              onActivate={handleActivate}
-              onCopyHash={handleCopyHash}
-            />,
-          );
-        }
+    for (let rowIndex = firstRow; rowIndex < windowEnd; rowIndex += 1) {
+      const start = rowIndex * columns;
+      const cells: ReactNode[] = [];
 
-        if (cells.length === 0) continue;
-
-        rows.push(
-          <div
-            key={`grid-row-${rowIndex}`}
-            className={joinClasses(
-              styles.gridRow,
-              rowIndex === totalRows - 1 ? styles.gridRowEnd : '',
-            )}
-            style={{
-              height: rowHeight,
-              gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
-            }}
-            role="presentation"
-          >
-            {cells}
-          </div>,
+      for (let column = 0; column < columns; column += 1) {
+        const index = start + column;
+        const item = results[index];
+        if (!item) break;
+        const itemKey = resultKey(item);
+        cells.push(
+          <GridCell
+            key={itemKey}
+            item={item}
+            index={index}
+            setSize={results.length}
+            rowHeight={rowHeight}
+            active={itemKey === activeEntryKey}
+            cursor={index === clampedSelectedIndex}
+            collected={collectedKeys.has(itemKey)}
+            collectMode={collectMode}
+            showTableColumn={false}
+            showInlineTable={showInlineTable}
+            artifactPerksCategory={artifactPerksCategory}
+            onActivate={handleActivate}
+            onCopyHash={handleCopyHash}
+          />,
         );
       }
+
+      if (cells.length === 0) continue;
+
+      nextRows.push(
+        <div
+          key={`grid-row-${rowIndex}`}
+          className={joinClasses(
+            styles.gridRow,
+            rowIndex === totalRows - 1 ? styles.gridRowEnd : '',
+          )}
+          style={{
+            height: rowHeight,
+            gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
+          }}
+          role="presentation"
+        >
+          {cells}
+        </div>,
+      );
     }
-  }
+
+    return nextRows;
+  }, [
+    activeEntryKey,
+    artifactPerksCategory,
+    clampedSelectedIndex,
+    collectMode,
+    collectedKeys,
+    columns,
+    firstRow,
+    handleActivate,
+    handleCopyHash,
+    hasResults,
+    results,
+    rowHeight,
+    showInlineTable,
+    showTableColumn,
+    totalRows,
+    viewMode,
+    windowEnd,
+  ]);
 
   return (
     <section className={styles.pane} aria-label="Search results">

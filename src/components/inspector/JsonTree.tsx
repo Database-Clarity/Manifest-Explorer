@@ -38,9 +38,13 @@ import {
   activateOnMiddleClick,
   preventMiddleClickAutoScroll,
 } from '../middleClick';
-import { ColorSwatchWidget } from './ColorSwatchWidget';
 import styles from './JsonTree.module.scss';
 
+const LazyColorSwatchWidget = lazy(() =>
+  import('./ColorSwatchWidget').then((module) => ({
+    default: module.ColorSwatchWidget,
+  })),
+);
 const LazyImageLightbox = lazy(() =>
   import('./ImageLightbox').then((module) => ({ default: module.ImageLightbox })),
 );
@@ -365,13 +369,20 @@ interface FindMatch {
   ancestorPaths: string[];
 }
 
+const MAX_FIND_MATCHES = 5_000;
+
+interface FindMatchesResult {
+  matches: readonly FindMatch[];
+  truncated: boolean;
+}
+
 const NO_FIND_MATCHES: readonly FindMatch[] = [];
 
 function collectFindMatches(
   data: Record<string, unknown>,
   filterLower: string,
   resolvedRefs: Record<string, ResolvedHashSummary>,
-): FindMatch[] {
+): FindMatchesResult {
   const matches: FindMatch[] = [];
   // A single mutable ancestor stack: `ancestors.slice()` only runs when a
   // match is actually recorded, keeping large definitions O(N) instead of O(N²).
@@ -383,13 +394,18 @@ function collectFindMatches(
     path: string,
     value: unknown,
   ): void => {
+    if (matches.length > MAX_FIND_MATCHES) return;
     if (matchesNodeSelf(nodeKey, parentKey, value, filterLower, resolvedRefs)) {
       matches.push({ path, ancestorPaths: ancestors.slice() });
     }
 
     if (Array.isArray(value)) {
       ancestors.push(path);
-      for (let index = 0; index < value.length; index += 1) {
+      for (
+        let index = 0;
+        index < value.length && matches.length <= MAX_FIND_MATCHES;
+        index += 1
+      ) {
         const childKey = String(index);
         visit(childKey, nodeKey, `${path}[${childKey}]`, value[index]);
       }
@@ -397,7 +413,11 @@ function collectFindMatches(
     } else if (typeof value === 'object' && value !== null) {
       ancestors.push(path);
       const entries = Object.entries(value as Record<string, unknown>);
-      for (let index = 0; index < entries.length; index += 1) {
+      for (
+        let index = 0;
+        index < entries.length && matches.length <= MAX_FIND_MATCHES;
+        index += 1
+      ) {
         const entry = entries[index];
         if (!entry) {
           continue;
@@ -409,14 +429,21 @@ function collectFindMatches(
   };
 
   const rootEntries = Object.entries(data);
-  for (let index = 0; index < rootEntries.length; index += 1) {
+  for (
+    let index = 0;
+    index < rootEntries.length && matches.length <= MAX_FIND_MATCHES;
+    index += 1
+  ) {
     const entry = rootEntries[index];
     if (!entry) {
       continue;
     }
     visit(entry[0], undefined, entry[0], entry[1]);
   }
-  return matches;
+  return {
+    matches: matches.slice(0, MAX_FIND_MATCHES),
+    truncated: matches.length > MAX_FIND_MATCHES,
+  };
 }
 
 interface InlineImagePreviewProps {
@@ -804,13 +831,15 @@ const JsonNode = memo(function JsonNode({
           )}
           {peek && <span className={styles.peek}>{peek}</span>}
           {swatch && (
-            <ColorSwatchWidget
-              r={swatch.r}
-              g={swatch.g}
-              b={swatch.b}
-              a={swatch.a}
-              onCopy={onCopy}
-            />
+            <Suspense fallback={null}>
+              <LazyColorSwatchWidget
+                r={swatch.r}
+                g={swatch.g}
+                b={swatch.b}
+                a={swatch.a}
+                onCopy={onCopy}
+              />
+            </Suspense>
           )}
           <div className={styles.rowActions}>
             <button
@@ -1290,13 +1319,15 @@ export const JsonTree = memo(function JsonTree({
     [deferredFilterLower, resolvedRefs],
   );
 
-  const findMatches = useMemo(
+  const findMatchesResult = useMemo(
     () =>
       searchMode === 'find' && deferredFilterLower
         ? collectFindMatches(data, deferredFilterLower, resolvedRefs)
-        : NO_FIND_MATCHES,
+        : { matches: NO_FIND_MATCHES, truncated: false },
     [data, deferredFilterLower, resolvedRefs, searchMode],
   );
+  const findMatches = findMatchesResult.matches;
+  const findMatchesTruncated = findMatchesResult.truncated;
   const clampedActiveMatchIndex =
     findMatches.length === 0
       ? 0
@@ -1447,7 +1478,7 @@ export const JsonTree = memo(function JsonTree({
             <span className={styles.matchCount} aria-live="polite">
               {findMatches.length === 0
                 ? '0 / 0'
-                : `${clampedActiveMatchIndex + 1} / ${findMatches.length}`}
+                : `${clampedActiveMatchIndex + 1} / ${findMatches.length}${findMatchesTruncated ? '+' : ''}`}
             </span>
             <button
               type="button"

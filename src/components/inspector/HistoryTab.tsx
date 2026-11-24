@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import type {
   DefinitionRef,
   ImageScalingMode,
@@ -20,7 +20,32 @@ import styles from './InspectorTabs.module.scss';
 type HistoryView = 'updates' | 'compare';
 type RevisionMode = 'diff' | 'pretty' | 'json';
 type CompareMode = 'diff' | 'from-json' | 'to-json';
+type SnapshotLookup = (version: number) => unknown;
 const CURRENT_VERSION = 'current';
+
+const REVISION_MODES: ReadonlyArray<{ value: RevisionMode; label: string }> = [
+  { value: 'diff', label: 'Diff' },
+  { value: 'pretty', label: 'Pretty' },
+  { value: 'json', label: 'JSON' },
+];
+
+const COMPARE_MODES: ReadonlyArray<{ value: CompareMode; label: string }> = [
+  { value: 'diff', label: 'Diff' },
+  { value: 'from-json', label: 'From JSON' },
+  { value: 'to-json', label: 'To JSON' },
+];
+
+const DATE_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+  day: 'numeric',
+  year: 'numeric',
+  timeZone: 'UTC',
+});
+const MONTH_YEAR_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+  year: 'numeric',
+  timeZone: 'UTC',
+});
 
 export interface HistoryTabProps {
   table: string;
@@ -37,12 +62,7 @@ function formatDate(date: string, includeDay = true): string {
   if (Number.isNaN(parsed.getTime())) {
     return date;
   }
-  return new Intl.DateTimeFormat('en-US', {
-    month: 'short',
-    ...(includeDay ? { day: 'numeric' } : {}),
-    year: 'numeric',
-    timeZone: 'UTC',
-  }).format(parsed);
+  return (includeDay ? DATE_FORMATTER : MONTH_YEAR_FORMATTER).format(parsed);
 }
 
 function revisionLabel(revision: ResolvedItemRevision): string {
@@ -86,16 +106,6 @@ function HistoryGap(): ReactNode {
 function versionOptionLabel(version: HistoryVersionMeta): string {
   const date = formatDate(version.date);
   return `${date} · ${version.version ?? version.id}`;
-}
-
-function versionSnapshot(
-  version: string,
-  currentData: Record<string, unknown>,
-  result: ItemHistoryResult,
-): unknown {
-  return version === CURRENT_VERSION
-    ? currentData
-    : reconstructRevisionSnapshot(currentData, result.revisions, Number(version));
 }
 
 function snapshotText(snapshot: unknown): string {
@@ -159,7 +169,10 @@ function JsonSnapshot({
   version: string;
   onCopy: (text: string, label: string) => void;
 }): ReactNode {
-  const json = snapshotText(snapshot);
+  // Cache the pretty-printed JSON: switching Diff → Pretty → JSON or re-expanding
+  // a revision reuses the same snapshot object, and stringifying a multi-MB
+  // definition is the expensive part of this panel.
+  const json = useMemo(() => snapshotText(snapshot), [snapshot]);
   const filename = `${table}-${hash}-v${version}.json`;
   return (
     <div className={styles.historySnapshot}>
@@ -215,10 +228,8 @@ function SnapshotPretty({
   );
 }
 
-function RevisionCard({
+const RevisionCard = memo(function RevisionCard({
   revision,
-  revisions,
-  currentData,
   expanded,
   onToggle,
   filter,
@@ -228,12 +239,11 @@ function RevisionCard({
   imageScaling,
   onNavigateRef,
   onCopy,
+  getSnapshot,
 }: {
   revision: ResolvedItemRevision;
-  revisions: readonly ResolvedItemRevision[];
-  currentData: Record<string, unknown>;
   expanded: boolean;
-  onToggle: () => void;
+  onToggle: (version: number) => void;
   filter: string;
   table: string;
   hash: number;
@@ -241,24 +251,20 @@ function RevisionCard({
   imageScaling: ImageScalingMode;
   onNavigateRef: (ref: DefinitionRef, inNewTab?: boolean) => void;
   onCopy: (text: string, label: string) => void;
+  /** Cached reconstruction for this tab's `(table, hash, currentData)` scope. */
+  getSnapshot: SnapshotLookup;
 }): ReactNode {
   const [mode, setMode] = useState<RevisionMode>('diff');
+  // Snapshot reconstruction is cached per version, so expanding, collapsing, or
+  // flipping Diff/Pretty/JSON after the first visit is an object lookup.
   const { before, after } = useMemo(() => {
     if (!expanded) return { before: null, after: null };
     return {
-      before:
-        revision.k === 'a'
-          ? null
-          : reconstructRevisionSnapshot(currentData, revisions, revision.v - 1),
-      after: reconstructRevisionSnapshot(currentData, revisions, revision.v),
+      before: revision.k === 'a' ? null : getSnapshot(revision.v - 1),
+      after: getSnapshot(revision.v),
     };
-  }, [currentData, expanded, revision, revisions]);
+  }, [expanded, getSnapshot, revision]);
   const versionLabel = revision.version.version ?? revision.version.id;
-  const modeOptions: { value: RevisionMode; label: string }[] = [
-    { value: 'diff', label: 'Diff' },
-    { value: 'pretty', label: 'Pretty' },
-    { value: 'json', label: 'JSON' },
-  ];
 
   return (
     <article className={styles.historyCard}>
@@ -266,7 +272,7 @@ function RevisionCard({
         type="button"
         className={styles.historyCardToggle}
         aria-expanded={expanded}
-        onClick={onToggle}
+        onClick={() => onToggle(revision.v)}
       >
         <span className={styles.historyCardTitle}>
           <span className={styles.historyDate}>{formatDate(revision.version.date)}</span>
@@ -297,7 +303,7 @@ function RevisionCard({
           <div className={styles.historyCardToolbar}>
             <ModeButtons
               value={mode}
-              options={modeOptions}
+              options={REVISION_MODES}
               label="Revision display mode"
               onChange={setMode}
             />
@@ -331,7 +337,7 @@ function RevisionCard({
       )}
     </article>
   );
-}
+});
 
 export const HistoryTab = memo(function HistoryTab({
   table,
@@ -382,6 +388,32 @@ export const HistoryTab = memo(function HistoryTab({
     );
   }, [result]);
 
+  // One cache per `(table, hash, currentData, revisions)` scope. Snapshots are
+  // detached clones from the history module and are safe to share between the
+  // Diff/Pretty/JSON views, so revisiting a revision (or flipping modes) never
+  // replays patches again.
+  const getSnapshot = useMemo<SnapshotLookup>(() => {
+    const cache = new Map<string, unknown>();
+    const prefix = `${table}:${hash}:`;
+    return (version: number): unknown => {
+      const key = `${prefix}${version}`;
+      if (cache.has(key)) {
+        return cache.get(key);
+      }
+      const snapshot = reconstructRevisionSnapshot(
+        currentData,
+        result?.revisions ?? [],
+        version,
+      );
+      cache.set(key, snapshot);
+      return snapshot;
+    };
+  }, [currentData, hash, result, table]);
+
+  const toggleRevision = useCallback((version: number) => {
+    setExpandedVersion((current) => (current === version ? null : version));
+  }, []);
+
   const query = filter.trim().toLowerCase();
   const visibleRevisions = useMemo(() => {
     if (!result) return [];
@@ -391,15 +423,20 @@ export const HistoryTab = memo(function HistoryTab({
     });
   }, [query, result]);
 
+  const newestFirstVersions = useMemo(
+    () => [...(result?.versions ?? [])].sort((a, b) => b.i - a.i),
+    [result],
+  );
+
   const compareSnapshots = useMemo(() => {
     if (!result?.available || !fromVersion) {
       return { from: null, to: null };
     }
     return {
-      from: versionSnapshot(fromVersion, currentData, result),
-      to: versionSnapshot(toVersion, currentData, result),
+      from: fromVersion === CURRENT_VERSION ? currentData : getSnapshot(Number(fromVersion)),
+      to: toVersion === CURRENT_VERSION ? currentData : getSnapshot(Number(toVersion)),
     };
-  }, [currentData, fromVersion, result, toVersion]);
+  }, [currentData, fromVersion, getSnapshot, result, toVersion]);
 
   if (!result) {
     return (
@@ -426,12 +463,6 @@ export const HistoryTab = memo(function HistoryTab({
           false,
         )}`
       : 'No recorded updates';
-  const newestFirstVersions = [...result.versions].sort((a, b) => b.i - a.i);
-  const compareOptions: { value: CompareMode; label: string }[] = [
-    { value: 'diff', label: 'Diff' },
-    { value: 'from-json', label: 'From JSON' },
-    { value: 'to-json', label: 'To JSON' },
-  ];
 
   return (
     <div className={styles.historyTab} data-inspector-scroll="true">
@@ -504,14 +535,8 @@ export const HistoryTab = memo(function HistoryTab({
                 <div className={styles.historyTimelineEntry} key={revision.v}>
                   <RevisionCard
                     revision={revision}
-                    revisions={result.revisions}
-                    currentData={currentData}
                     expanded={expandedVersion === revision.v}
-                    onToggle={() =>
-                      setExpandedVersion((current) =>
-                        current === revision.v ? null : revision.v,
-                      )
-                    }
+                    onToggle={toggleRevision}
                     filter={filter}
                     table={table}
                     hash={hash}
@@ -519,6 +544,7 @@ export const HistoryTab = memo(function HistoryTab({
                     imageScaling={imageScaling}
                     onNavigateRef={onNavigateRef}
                     onCopy={onCopy}
+                    getSnapshot={getSnapshot}
                   />
                   {(hasGapAfter || hasGapBeforeFirst) && <HistoryGap />}
                 </div>
@@ -563,7 +589,7 @@ export const HistoryTab = memo(function HistoryTab({
           <div className={styles.historyCompareToolbar}>
             <ModeButtons
               value={compareMode}
-              options={compareOptions}
+              options={COMPARE_MODES}
               label="Compare display mode"
               onChange={setCompareMode}
             />

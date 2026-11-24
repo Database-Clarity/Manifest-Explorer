@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   memo,
   useCallback,
   useEffect,
@@ -12,6 +14,7 @@ import type {
   ClarityDescriptionEntry,
   DefinitionDetailPayload,
   DefinitionRef,
+  ImageScalingMode,
   OverviewLinkedEntity,
   OverviewPerk,
   OverviewSocket,
@@ -33,6 +36,10 @@ import { ClearSearchInput } from '../../ui/ClearSearchInput';
 import { activateOnMiddleClick, preventMiddleClickAutoScroll } from '../middleClick';
 import styles from './InspectorTabs.module.scss';
 
+const LazyImageLightbox = lazy(() =>
+  import('./ImageLightbox').then((module) => ({ default: module.ImageLightbox })),
+);
+
 export type NavigateRef = (ref: DefinitionRef, inNewTab?: boolean) => void;
 
 export interface OverviewTabProps {
@@ -41,7 +48,9 @@ export interface OverviewTabProps {
   clarityEntry: ClarityDescriptionEntry | null;
   clarityLoading: boolean;
   showClarity: boolean;
+  imageScaling: ImageScalingMode;
   onNavigateRef: NavigateRef;
+  onCopy: (text: string, label: string) => void;
   onLoadFullItem: () => void;
 }
 
@@ -626,9 +635,12 @@ export const OverviewTab = memo(function OverviewTab({
   clarityEntry,
   clarityLoading,
   showClarity,
+  imageScaling,
   onNavigateRef,
+  onCopy,
   onLoadFullItem,
 }: OverviewTabProps): ReactNode {
+  const [lightbox, setLightbox] = useState<string | null>(null);
   const handleNavigateRef = useStableNavigate(onNavigateRef);
   const overview = detail.overview;
   type OverviewWithParentArtifact = NonNullable<DefinitionDetailPayload['overview']> & {
@@ -674,7 +686,20 @@ export const OverviewTab = memo(function OverviewTab({
       )}
 
       {overview?.screenshot && (
-        <div className={styles.screenshotBlock}>
+        <button
+          type="button"
+          className={styles.screenshotBlock}
+          onClick={() => setLightbox(overview.screenshot ?? null)}
+          title="Open screenshot full size"
+          aria-label="Open screenshot full size"
+          style={{
+            display: 'block',
+            width: '100%',
+            padding: 0,
+            font: 'inherit',
+            cursor: 'zoom-in',
+          }}
+        >
           <img
             src={bungieAssetUrl(overview.screenshot)}
             alt=""
@@ -682,7 +707,7 @@ export const OverviewTab = memo(function OverviewTab({
             loading="lazy"
             decoding="async"
           />
-        </div>
+        </button>
       )}
 
       {(displayProps?.description || overview?.flavorText || overview?.displaySource) && (
@@ -949,6 +974,17 @@ export const OverviewTab = memo(function OverviewTab({
           No structured overview fields for this definition type. Inspect the Pretty JSON
           tab for raw fields.
         </div>
+      )}
+      {lightbox && (
+        <Suspense fallback={null}>
+          <LazyImageLightbox
+            url={bungieAssetUrl(lightbox)}
+            path={lightbox}
+            defaultScaling={imageScaling}
+            onClose={() => setLightbox(null)}
+            onCopy={onCopy}
+          />
+        </Suspense>
       )}
     </div>
   );

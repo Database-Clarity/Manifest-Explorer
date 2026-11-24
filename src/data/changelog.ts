@@ -1,3 +1,5 @@
+import { LATEST_CHANGELOG_VERSION } from './changelogMeta';
+
 export interface ChangelogSection {
   heading: string;
   items: readonly string[];
@@ -15,7 +17,14 @@ export interface ChangelogEntry {
   sections: readonly ChangelogSection[];
 }
 
-export const CHANGELOG_STORAGE_KEY = 'clarity-manifest-explorer:last-seen-changelog';
+export {
+  CHANGELOG_STORAGE_KEY,
+  LATEST_CHANGELOG_VERSION,
+  hasUnseenChangelogMeta,
+  readLastSeenChangelogVersion,
+  shouldAutoOpenChangelog,
+  writeLastSeenChangelogVersion,
+} from './changelogMeta';
 
 export const CHANGELOG: readonly ChangelogEntry[] = [
   {
@@ -259,6 +268,12 @@ export const CHANGELOG: readonly ChangelogEntry[] = [
   },
 ];
 
+if (CHANGELOG[0]?.version !== LATEST_CHANGELOG_VERSION) {
+  throw new Error(
+    `LATEST_CHANGELOG_VERSION (${LATEST_CHANGELOG_VERSION}) must match CHANGELOG[0].version.`,
+  );
+}
+
 export function getLatestChangelogVersion(
   entries: readonly ChangelogEntry[] = CHANGELOG,
 ): string | null {
@@ -312,26 +327,4 @@ export function computeChangelogOpenState(
     expandedVersions: unseenVersions.length > 0 ? unseenVersions : [latestVersion],
     unseenVersions,
   };
-}
-
-export function readLastSeenChangelogVersion(): string | null {
-  try {
-    if (typeof window === 'undefined') {
-      return null;
-    }
-    const version = window.localStorage.getItem(CHANGELOG_STORAGE_KEY);
-    return version?.trim() || null;
-  } catch {
-    return null;
-  }
-}
-
-export function writeLastSeenChangelogVersion(version: string): void {
-  try {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(CHANGELOG_STORAGE_KEY, version);
-    }
-  } catch {
-    // Storage can be unavailable in private browsing or under restrictive policies.
-  }
 }

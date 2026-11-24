@@ -22,6 +22,8 @@
 
 interface R2ObjectBody {
   readonly body: ReadableStream<Uint8Array> | null;
+  /** R2 supplies a quoted validator for the stored object; mocks may omit it. */
+  readonly httpEtag?: string;
   arrayBuffer(): Promise<ArrayBuffer>;
   text(): Promise<string>;
 }
@@ -99,21 +101,21 @@ async function handleFetch(
     if (request.method !== 'GET' && request.method !== 'HEAD') {
       return jsonError(405, 'Method not allowed');
     }
-    return serveVersions(url, env, ctx);
+    return serveVersions(request, url, env, ctx);
   }
 
   if (pathname.startsWith('/api/history/bucket/')) {
     if (request.method !== 'GET' && request.method !== 'HEAD') {
       return jsonError(405, 'Method not allowed');
     }
-    return serveBucket(url, env, ctx);
+    return serveBucket(request, url, env, ctx);
   }
 
   if (pathname.startsWith('/api/history/release/')) {
     if (request.method !== 'GET' && request.method !== 'HEAD') {
       return jsonError(405, 'Method not allowed');
     }
-    return serveRelease(url, env, ctx);
+    return serveRelease(request, url, env, ctx);
   }
 
   if (pathname === '/history' || pathname.startsWith('/history/')) {
@@ -279,15 +281,50 @@ function jsonError(status: number, message: string): Response {
   });
 }
 
-function jsonOk(value: unknown, cacheControl: string): Response {
+function jsonOk(value: unknown, cacheControl: string, etag?: string): Response {
+  const headers: Record<string, string> = {
+    ...CORS_HEADERS,
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': cacheControl,
+  };
+  if (etag) headers.ETag = etag;
   return new Response(JSON.stringify(value), {
     status: 200,
-    headers: {
-      ...CORS_HEADERS,
-      'Content-Type': 'application/json; charset=utf-8',
-      'Cache-Control': cacheControl,
-    },
+    headers,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Conditional request helpers
+// ---------------------------------------------------------------------------
+
+/** `If-None-Match` uses the weak comparison function (RFC 9110 §13.1.2). */
+function stripWeakPrefix(tag: string): string {
+  return tag.startsWith('W/') ? tag.slice(2) : tag;
+}
+
+function ifNoneMatchMatches(header: string | null, etag: string | null): boolean {
+  if (!header || !etag) return false;
+  const target = stripWeakPrefix(etag.trim());
+  if (!target) return false;
+  return header.split(',').some((candidate) => {
+    const trimmed = candidate.trim();
+    if (!trimmed) return false;
+    // `*` matches any current representation.
+    if (trimmed === '*') return true;
+    return stripWeakPrefix(trimmed) === target;
+  });
+}
+
+function notModifiedResponse(cacheControl: string | null, etag: string): Response {
+  const headers: Record<string, string> = { ...CORS_HEADERS, ETag: etag };
+  if (cacheControl) headers['Cache-Control'] = cacheControl;
+  return new Response(null, { status: 304, headers });
+}
+
+/** HEAD keeps the representation headers but never a body. */
+function headOnlyResponse(response: Response): Response {
+  return new Response(null, { status: response.status, headers: response.headers });
 }
 
 function fallbackEtag(text: string): string {
@@ -300,13 +337,26 @@ function fallbackEtag(text: string): string {
 }
 
 async function serveVersions(
+  request: Request,
   url: URL,
   env: Env,
   ctx: ExecutionContext,
 ): Promise<Response> {
+  const isHead = request.method === 'HEAD';
+  const ifNoneMatch = request.headers.get('If-None-Match');
   const cacheKey = buildCacheKey(url, '/api/history/versions');
   const cached = await matchEdgeCache(cacheKey);
-  if (cached) return cached;
+  if (cached) {
+    const cachedEtag = cached.headers.get('ETag');
+    // Older edge entries predate validators. Refresh those from R2 instead of
+    // serving a cache hit that cannot participate in conditional requests.
+    if (cachedEtag) {
+      if (ifNoneMatchMatches(ifNoneMatch, cachedEtag)) {
+        return notModifiedResponse(cached.headers.get('Cache-Control'), cachedEtag);
+      }
+      return isHead ? headOnlyResponse(cached) : cached;
+    }
+  }
 
   try {
     const object = await env.MANIFEST_HISTORY.get(VERSIONS_KEY);
@@ -326,8 +376,14 @@ async function serveVersions(
       },
     });
 
+    // Always cache the full 200 representation and derive 304 responses from
+    // it on demand; a 304 must never be stored in `caches.default`.
     storeInEdgeCache(cacheKey, response, ctx);
-    return response;
+
+    if (ifNoneMatchMatches(ifNoneMatch, etag)) {
+      return notModifiedResponse(HISTORY_CACHE_CONTROL, etag);
+    }
+    return isHead ? headOnlyResponse(response) : response;
   } catch (error) {
     console.error(
       JSON.stringify({ event: 'history-versions-error', error: errorMessage(error) }),
@@ -337,6 +393,7 @@ async function serveVersions(
 }
 
 async function serveBucket(
+  request: Request,
   url: URL,
   env: Env,
   ctx: ExecutionContext,
@@ -365,6 +422,9 @@ async function serveBucket(
     requestedVersion && CACHE_BUSTER_RE.test(requestedVersion) ? requestedVersion : null;
   const cacheControl = version ? IMMUTABLE_CACHE_CONTROL : HISTORY_CACHE_CONTROL;
   const cacheSearch = version ? `?v=${version}&format=json-v2` : '?format=json-v2';
+  const isHead = request.method === 'HEAD';
+  const ifNoneMatch = request.headers.get('If-None-Match');
+  const deterministicEtag = `"${canonicalTable}:${bucket}:${version ?? 'latest'}"`;
 
   const cacheKey = buildCacheKey(
     url,
@@ -372,18 +432,34 @@ async function serveBucket(
     cacheSearch,
   );
   const cached = await matchEdgeCache(cacheKey);
-  if (cached) return cached;
+  if (cached) {
+    const cachedEtag = cached.headers.get('ETag');
+    // Legacy bucket cache entries have no validator; bypass them so the
+    // decoded R2 representation can be refreshed with an ETag.
+    if (cachedEtag) {
+      if (ifNoneMatchMatches(ifNoneMatch, cachedEtag)) {
+        return notModifiedResponse(cached.headers.get('Cache-Control'), cachedEtag);
+      }
+      return isHead ? headOnlyResponse(cached) : cached;
+    }
+  }
 
   const key = `${BUCKET_PREFIX}/${canonicalTable}/${bucket}.json.gz`;
 
   try {
     const object = await env.MANIFEST_HISTORY.get(key);
+    // R2's validator changes whenever the stored object changes; the
+    // deterministic fallback still distinguishes every URL variant.
+    const etag = object?.httpEtag || deterministicEtag;
     if (!object) {
       // Buckets with no recorded changes must not produce noisy 404s in the
       // browser console, so answer with an empty bucket instead.
-      const empty = jsonOk({}, cacheControl);
+      const empty = jsonOk({}, cacheControl, etag);
       storeInEdgeCache(cacheKey, empty, ctx);
-      return empty;
+      if (ifNoneMatchMatches(ifNoneMatch, etag)) {
+        return notModifiedResponse(cacheControl, etag);
+      }
+      return isHead ? headOnlyResponse(empty) : empty;
     }
 
     // R2 stores bucket files as gzip-compressed JSON. Return decoded JSON here
@@ -406,11 +482,18 @@ async function serveBucket(
         ...CORS_HEADERS,
         'Content-Type': 'application/json; charset=utf-8',
         'Cache-Control': cacheControl,
+        ETag: etag,
       },
     });
 
+    // Always cache the full 200 representation and derive 304 responses from
+    // it on demand; a 304 must never be stored in `caches.default`.
     storeInEdgeCache(cacheKey, response, ctx);
-    return response;
+
+    if (ifNoneMatchMatches(ifNoneMatch, etag)) {
+      return notModifiedResponse(cacheControl, etag);
+    }
+    return isHead ? headOnlyResponse(response) : response;
   } catch (error) {
     console.error(
       JSON.stringify({
@@ -425,6 +508,7 @@ async function serveBucket(
 }
 
 async function serveRelease(
+  request: Request,
   url: URL,
   env: Env,
   ctx: ExecutionContext,
@@ -448,6 +532,9 @@ async function serveRelease(
     requestedVersion && CACHE_BUSTER_RE.test(requestedVersion) ? requestedVersion : null;
   const cacheControl = version ? IMMUTABLE_CACHE_CONTROL : HISTORY_CACHE_CONTROL;
   const cacheSearch = version ? `?v=${version}&format=json-v2` : '?format=json-v2';
+  const isHead = request.method === 'HEAD';
+  const ifNoneMatch = request.headers.get('If-None-Match');
+  const deterministicEtag = `"release:${versionIndex}:${version ?? 'latest'}"`;
 
   const cacheKey = buildCacheKey(
     url,
@@ -455,7 +542,17 @@ async function serveRelease(
     cacheSearch,
   );
   const cached = await matchEdgeCache(cacheKey);
-  if (cached) return cached;
+  if (cached) {
+    const cachedEtag = cached.headers.get('ETag');
+    // Legacy release cache entries have no validator; fall through to R2 and
+    // replace them with a validated response.
+    if (cachedEtag) {
+      if (ifNoneMatchMatches(ifNoneMatch, cachedEtag)) {
+        return notModifiedResponse(cached.headers.get('Cache-Control'), cachedEtag);
+      }
+      return isHead ? headOnlyResponse(cached) : cached;
+    }
+  }
 
   const key = `${RELEASE_PREFIX}/${versionIndex}.json.gz`;
 
@@ -464,6 +561,9 @@ async function serveRelease(
     if (!object) {
       return jsonError(404, 'History release not found');
     }
+    // R2's validator changes whenever the stored object changes; the
+    // deterministic fallback still distinguishes every URL variant.
+    const etag = object.httpEtag || deterministicEtag;
 
     // R2 stores release files as gzip-compressed JSON. Return decoded JSON
     // here for the same reason as `serveBucket`: Cloudflare's edge can
@@ -484,11 +584,18 @@ async function serveRelease(
         ...CORS_HEADERS,
         'Content-Type': 'application/json; charset=utf-8',
         'Cache-Control': cacheControl,
+        ETag: etag,
       },
     });
 
+    // Always cache the full 200 representation and derive 304 responses from
+    // it on demand; a 304 must never be stored in `caches.default`.
     storeInEdgeCache(cacheKey, response, ctx);
-    return response;
+
+    if (ifNoneMatchMatches(ifNoneMatch, etag)) {
+      return notModifiedResponse(cacheControl, etag);
+    }
+    return isHead ? headOnlyResponse(response) : response;
   } catch (error) {
     console.error(
       JSON.stringify({

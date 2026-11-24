@@ -30,7 +30,7 @@ type Phase =
 interface ParserState {
   phase: Phase;
   keyBuffer: string;
-  valueBuffer: string;
+  valueSegments: string[];
   inString: boolean;
   escaped: boolean;
   valueIsCompound: boolean;
@@ -42,7 +42,7 @@ function createParserState(): ParserState {
   return {
     phase: 'beforeObject',
     keyBuffer: '',
-    valueBuffer: '',
+    valueSegments: [],
     inString: false,
     escaped: false,
     valueIsCompound: false,
@@ -56,7 +56,7 @@ function isJsonWhitespace(ch: string): boolean {
 }
 
 function emitEntry(state: ParserState, emit: TopLevelJsonEntryHandler): void {
-  emit(unescapeJsonString(state.keyBuffer), state.valueBuffer);
+  emit(unescapeJsonString(state.keyBuffer), state.valueSegments.join(''));
 }
 
 /**
@@ -69,6 +69,7 @@ function feedParser(
   text: string,
   emit: TopLevelJsonEntryHandler,
 ): void {
+  let valueSliceStart = state.phase === 'inValue' ? 0 : -1;
   for (let i = 0; i < text.length; i++) {
     const ch = text.charAt(i);
     switch (state.phase) {
@@ -109,28 +110,26 @@ function feedParser(
 
       case 'expectValue':
         if (isJsonWhitespace(ch)) break;
-        state.valueBuffer = '';
+        state.valueSegments = [];
         state.inString = false;
         state.escaped = false;
         state.valueBraceDepth = 0;
         state.valueBracketDepth = 0;
         if (ch === '{') {
           state.valueIsCompound = true;
-          state.valueBraceDepth = 1;
         } else if (ch === '[') {
           state.valueIsCompound = true;
-          state.valueBracketDepth = 1;
         } else {
           state.valueIsCompound = false;
-          if (ch === '"') state.inString = true;
         }
-        state.valueBuffer += ch;
         state.phase = 'inValue';
+        valueSliceStart = i;
+        // Reprocess this character in the value phase.
+        i -= 1;
         break;
 
       case 'inValue':
         if (state.inString) {
-          state.valueBuffer += ch;
           if (state.escaped) {
             state.escaped = false;
           } else if (ch === '\\') {
@@ -139,7 +138,6 @@ function feedParser(
             state.inString = false;
           }
         } else if (state.valueIsCompound) {
-          state.valueBuffer += ch;
           if (ch === '"') {
             state.inString = true;
           } else if (ch === '{') {
@@ -147,25 +145,40 @@ function feedParser(
           } else if (ch === '}') {
             state.valueBraceDepth -= 1;
             if (state.valueBraceDepth === 0 && state.valueBracketDepth === 0) {
+              if (valueSliceStart >= 0) {
+                state.valueSegments.push(text.slice(valueSliceStart, i + 1));
+              }
               emitEntry(state, emit);
               state.phase = 'expectKeyOrEnd';
+              valueSliceStart = -1;
             }
           } else if (ch === '[') {
             state.valueBracketDepth += 1;
           } else if (ch === ']') {
             state.valueBracketDepth -= 1;
             if (state.valueBraceDepth === 0 && state.valueBracketDepth === 0) {
+              if (valueSliceStart >= 0) {
+                state.valueSegments.push(text.slice(valueSliceStart, i + 1));
+              }
               emitEntry(state, emit);
               state.phase = 'expectKeyOrEnd';
+              valueSliceStart = -1;
             }
           }
         } else {
           // Scalar value: string / number / true / false / null.
-          if (ch === ',' || ch === '}') {
+          if (ch === '"') {
+            state.inString = true;
+          } else if (ch === ',' || ch === '}') {
+            if (valueSliceStart >= 0) {
+              state.valueSegments.push(text.slice(valueSliceStart, i));
+            }
             emitEntry(state, emit);
             state.phase = ch === '}' ? 'done' : 'expectKeyOrEnd';
+            valueSliceStart = -1;
           } else {
-            state.valueBuffer += ch;
+            // The contiguous span is copied once at the entry boundary or
+            // end of the decoded chunk.
           }
         }
         break;
@@ -174,6 +187,9 @@ function feedParser(
         // Trailing content after the top-level object is ignored.
         break;
     }
+  }
+  if (state.phase === 'inValue' && valueSliceStart >= 0 && valueSliceStart < text.length) {
+    state.valueSegments.push(text.slice(valueSliceStart));
   }
 }
 

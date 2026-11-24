@@ -13,6 +13,9 @@ import itemHashToSeasonRaw from './d2ai/seasons.json';
 import sourceHashToSeasonRaw from './d2ai/source-to-season-v2.json';
 import craftableHashesRaw from './d2ai/craftable-hashes.json';
 import sourceInfoRaw from './d2ai/source-info-v2.json';
+import { normalizeSourceLookup } from './sourceLookup';
+
+export { normalizeSourceLookup } from './sourceLookup';
 
 /** A single DIM D2Sources entry (keyed by canonical source key). */
 export interface D2SourceEntry {
@@ -41,11 +44,6 @@ export interface D2aiMappings {
   sourceLabels: Record<string, string>;
   /** canonical DIM source key -> aliases (from the D2Sources snapshot). */
   sourceAliasesByKey: Record<string, string[]>;
-}
-
-/** Lowercase and strip all whitespace/punctuation for source lookups. */
-export function normalizeSourceLookup(token: string): string {
-  return token.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
 /** Drop "Season of [the]", "Episode:" and "Season:" prefixes from a season name. */

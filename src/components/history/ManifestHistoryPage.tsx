@@ -17,6 +17,7 @@ import {
   type HistoryVersionMeta,
   type ItemRevision,
   type ManifestReleaseSummary,
+  type ReleaseItemTuple,
   type ReleaseTableChanges,
 } from '../../manifest/history';
 import { getFriendlyTableName } from '../../manifest/tables';
@@ -127,30 +128,58 @@ function countsFor(version: HistoryVersionMeta): {
   return null;
 }
 
-function releaseEntries(release: ManifestReleaseSummary): ChangedEntry[] {
-  const entries: ChangedEntry[] = [];
-  for (const [table, changes] of Object.entries(release.tables)) {
-    for (const kind of ['a', 'm', 'r', 'u', 'c'] as const) {
-      const tuples = changes[kind] ?? [];
-      for (const tuple of tuples) {
-        entries.push({
-          key: `${table}:${tuple[0]}:${kind}`,
-          table,
-          hash: tuple[0] >>> 0,
-          name: tuple[1] || `${friendlyTableName(table)} ${tuple[0]}`,
-          subtitle: tuple[2] || friendlyTableName(table),
-          icon: tuple[3],
-          tierType: tuple[4],
-          ...(tuple[5] === undefined ? {} : { changedFields: tuple[5] }),
-          kind,
-          versionIndex: release.v,
-          date: release.date,
-          ...(release.version === undefined ? {} : { version: release.version }),
-        });
-      }
+const RELEASE_KINDS: readonly ChangeKind[] = ['a', 'm', 'r', 'u', 'c'];
+const releaseTupleSearchText = new WeakMap<ReleaseItemTuple, Map<string, string>>();
+
+function countReleaseKinds(
+  tables: Record<string, ReleaseTableChanges>,
+): Record<ChangeKind, number> {
+  const counts: Record<ChangeKind, number> = { a: 0, m: 0, r: 0, u: 0, c: 0 };
+  for (const changes of Object.values(tables)) {
+    for (const kind of RELEASE_KINDS) {
+      counts[kind] += changes[kind]?.length ?? 0;
     }
   }
-  return entries;
+  return counts;
+}
+
+function entryFromReleaseTuple(
+  release: ManifestReleaseSummary,
+  table: string,
+  kind: ChangeKind,
+  tuple: ReleaseItemTuple,
+): ChangedEntry {
+  const tableLabel = friendlyTableName(table);
+  return {
+    key: `${table}:${tuple[0]}:${kind}`,
+    table,
+    hash: tuple[0] >>> 0,
+    name: tuple[1] || `${tableLabel} ${tuple[0]}`,
+    subtitle: tuple[2] || tableLabel,
+    icon: tuple[3],
+    tierType: tuple[4],
+    ...(tuple[5] === undefined ? {} : { changedFields: tuple[5] }),
+    kind,
+    versionIndex: release.v,
+    date: release.date,
+    ...(release.version === undefined ? {} : { version: release.version }),
+  };
+}
+
+function tupleSearchText(tuple: ReleaseItemTuple, table: string): string {
+  let byTable = releaseTupleSearchText.get(tuple);
+  if (!byTable) {
+    byTable = new Map();
+    releaseTupleSearchText.set(tuple, byTable);
+  }
+  const cached = byTable.get(table);
+  if (cached !== undefined) return cached;
+  const tableLabel = friendlyTableName(table);
+  const text =
+    `${tuple[1] || `${tableLabel} ${tuple[0]}`} ${tuple[2] || tableLabel} ${tuple[0]} ${table} ${tableLabel}`
+      .toLowerCase();
+  byTable.set(table, text);
+  return text;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -323,40 +352,53 @@ function ReleaseOverview({
 }): ReactNode {
   const [kindFilter, setKindFilter] = useState<ChangeKind | 'all'>('all');
   const [search, setSearch] = useState('');
-  const [showCounts, setShowCounts] = useState<Record<string, number>>({});
-  const allEntries = useMemo(() => releaseEntries(release), [release]);
-  const kindCounts = useMemo(
-    () =>
-      allEntries.reduce(
-        (counts, entry) => {
-          counts[entry.kind] += 1;
-          return counts;
-        },
-        { a: 0, m: 0, r: 0, u: 0, c: 0 },
-      ),
-    [allEntries],
+  const [showCountsState, setShowCountsState] = useState<{
+    versionIndex: number;
+    counts: Record<string, number>;
+  }>(() => ({ versionIndex: release.v, counts: {} }));
+  const showCounts =
+    showCountsState.versionIndex === release.v ? showCountsState.counts : {};
+  const allKindCounts = useMemo(() => countReleaseKinds(release.tables), [release]);
+  const allEntryCount = RELEASE_KINDS.reduce(
+    (total, kind) => total + allKindCounts[kind],
+    0,
   );
-  const filteredEntries = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    return allEntries.filter((entry) => {
-      if (kindFilter !== 'all' && entry.kind !== kindFilter) return false;
-      if (!query) return true;
-      return `${entry.name} ${entry.subtitle} ${entry.hash} ${entry.table} ${friendlyTableName(entry.table)}`
-        .toLowerCase()
-        .includes(query);
-    });
-  }, [allEntries, kindFilter, search]);
   const groups = useMemo(() => {
-    const grouped = new Map<string, ChangedEntry[]>();
-    for (const entry of filteredEntries) {
-      const group = grouped.get(entry.table) ?? [];
-      group.push(entry);
-      grouped.set(entry.table, group);
-    }
-    return [...grouped.entries()].sort((a, b) =>
-      friendlyTableName(a[0]).localeCompare(friendlyTableName(b[0])),
-    );
-  }, [filteredEntries]);
+    const query = search.trim().toLowerCase();
+    const tables = Object.entries(release.tables).map(([table, changes]) => {
+      const tuplesByKind = {} as Record<ChangeKind, readonly ReleaseItemTuple[]>;
+      const countsByKind: Record<ChangeKind, number> = {
+        a: 0,
+        m: 0,
+        r: 0,
+        u: 0,
+        c: 0,
+      };
+
+      for (const kind of RELEASE_KINDS) {
+        const tuples = changes[kind] ?? [];
+        if (kindFilter !== 'all' && kindFilter !== kind) {
+          tuplesByKind[kind] = [];
+          continue;
+        }
+        const matchingTuples = query
+          ? tuples.filter((tuple) => tupleSearchText(tuple, table).includes(query))
+          : tuples;
+        tuplesByKind[kind] = matchingTuples;
+        countsByKind[kind] = matchingTuples.length;
+      }
+      const count = RELEASE_KINDS.reduce(
+        (total, kind) => total + countsByKind[kind],
+        0,
+      );
+      return { table, tuplesByKind, countsByKind, count };
+    });
+    return tables
+      .filter((group) => group.count > 0)
+      .sort((a, b) =>
+        friendlyTableName(a.table).localeCompare(friendlyTableName(b.table)),
+      );
+  }, [kindFilter, release, search]);
 
   return (
     <div className={styles.overviewScroll}>
@@ -388,8 +430,8 @@ function ReleaseOverview({
               {label}
               <span>
                 {value === 'all'
-                  ? allEntries.length
-                  : kindCounts[value]}
+                  ? allEntryCount
+                  : allKindCounts[value]}
               </span>
             </button>
           ))}
@@ -409,18 +451,26 @@ function ReleaseOverview({
         <p className={styles.emptyMessage}>No changed entries match this filter.</p>
       ) : (
         <div className={styles.tableGroups}>
-          {groups.map(([table, entries]) => {
+          {groups.map((group) => {
+            const { table } = group;
             const showLimit = showCounts[table] ?? 60;
-            const shown = entries.slice(0, showLimit);
+            const shown: ChangedEntry[] = [];
+            for (const kind of RELEASE_KINDS) {
+              for (const tuple of group.tuplesByKind[kind]) {
+                if (shown.length >= showLimit) break;
+                shown.push(entryFromReleaseTuple(release, table, kind, tuple));
+              }
+              if (shown.length >= showLimit) break;
+            }
             return (
               <details className={styles.tableGroup} key={table} open>
                 <summary className={styles.tableGroupSummary}>
                   <span>{friendlyTableName(table)}</span>
                   <span className={styles.tableGroupMeta}>
-                    {entries.length.toLocaleString()} entries
+                    {group.count.toLocaleString()} entries
                     <span className={styles.tableKindCounts}>
-                      {(['a', 'm', 'r', 'u', 'c'] as const).map((kind) => {
-                        const count = entries.filter((entry) => entry.kind === kind).length;
+                      {RELEASE_KINDS.map((kind) => {
+                        const count = group.countsByKind[kind];
                         return count > 0 ? (
                           <span key={kind} className={styles[`kindCount${kind.toUpperCase()}`]}>
                             {KIND_SIGNS[kind]}{count}
@@ -435,19 +485,22 @@ function ReleaseOverview({
                     <EntryCard entry={entry} onOpen={onOpenEntry} key={entry.key} />
                   ))}
                 </div>
-                {entries.length > shown.length && (
+                {group.count > shown.length && (
                   <button
                     type="button"
                     className={styles.showMore}
                     onClick={() =>
-                      setShowCounts((current) => ({
-                        ...current,
-                        [table]: Math.min(entries.length, showLimit + 60),
+                      setShowCountsState((current) => ({
+                        versionIndex: release.v,
+                        counts: {
+                          ...(current.versionIndex === release.v ? current.counts : {}),
+                          [table]: Math.min(group.count, showLimit + 60),
+                        },
                       }))
                     }
                   >
-                    Show {Math.min(60, entries.length - shown.length)} more
-                    <span> · {entries.length - shown.length} remaining</span>
+                    Show {Math.min(60, group.count - shown.length)} more
+                    <span> · {group.count - shown.length} remaining</span>
                   </button>
                 )}
               </details>

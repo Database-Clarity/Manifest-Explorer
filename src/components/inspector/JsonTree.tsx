@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   memo,
   useCallback,
   useDeferredValue,
@@ -37,8 +39,11 @@ import {
   preventMiddleClickAutoScroll,
 } from '../middleClick';
 import { ColorSwatchWidget } from './ColorSwatchWidget';
-import { ImageLightbox } from './ImageLightbox';
 import styles from './JsonTree.module.scss';
+
+const LazyImageLightbox = lazy(() =>
+  import('./ImageLightbox').then((module) => ({ default: module.ImageLightbox })),
+);
 
 export interface JsonTreeProps {
   data: Record<string, unknown>;
@@ -200,6 +205,7 @@ function resolveObjectKeyRef(
  * cache, so repeated renders never re-walk deep values.
  */
 const FILTER_MAX_DEPTH = 8;
+const CHILDREN_CHUNK_SIZE = 120;
 
 type FilterCache = ReadonlyArray<WeakMap<object, boolean>>;
 
@@ -582,6 +588,7 @@ const JsonNode = memo(function JsonNode({
     () => expansionStore.getSnapshot(path),
     () => expansionStore.getSnapshot(path),
   );
+  const [childLimit, setChildLimit] = useState(CHILDREN_CHUNK_SIZE);
   const selfKeyMatches = filterLower.length > 0 && nodeKey.toLowerCase().includes(filterLower);
   const selfMatches =
     searchMode === 'filter' &&
@@ -627,27 +634,70 @@ const JsonNode = memo(function JsonNode({
             : defaultExpanded;
 
   if (isObject) {
-    const entries = isExpanded
-      ? isArray
-        ? (value as unknown[]).map((childValue, index) => [String(index), childValue] as const)
-        : Object.entries(value as Record<string, unknown>)
-      : null;
-    const filteredEntries =
-      entries === null
-        ? null
-        : searchMode === 'filter' && filterLower.length > 0 && !preserveSubtree
-          ? entries.filter(([childKey, childValue]) =>
-              matchesFilter(
-                childKey,
-                childValue,
-                filterLower,
-                0,
-                filterCache,
-                nodeKey,
-                resolvedRefs,
-              ),
+    const arrayValue = isArray ? (value as unknown[]) : null;
+    const objectValue = isArray ? null : (value as Record<string, unknown>);
+    const objectKeys = isExpanded && objectValue ? Object.keys(objectValue) : null;
+    const count = arrayValue
+      ? arrayValue.length
+      : objectKeys?.length ?? Object.keys(objectValue ?? {}).length;
+    const readChild = (index: number): readonly [string, unknown] => {
+      const childKey = arrayValue ? String(index) : objectKeys?.[index] ?? '';
+      return [
+        childKey,
+        arrayValue ? arrayValue[index] : objectValue?.[childKey],
+      ];
+    };
+    const filterActive = searchMode === 'filter' && filterLower.length > 0;
+    const chunkChildren =
+      isExpanded && count > CHILDREN_CHUNK_SIZE && !filterActive;
+    let visibleEntries: Array<readonly [string, unknown]> | null = null;
+    let remainingChildren = 0;
+    if (isExpanded) {
+      visibleEntries = [];
+      if (filterActive && !preserveSubtree) {
+        for (let index = 0; index < count; index += 1) {
+          const entry = readChild(index);
+          if (
+            matchesFilter(
+              entry[0],
+              entry[1],
+              filterLower,
+              0,
+              filterCache,
+              nodeKey,
+              resolvedRefs,
             )
-          : entries;
+          ) {
+            visibleEntries.push(entry);
+          }
+        }
+      } else if (chunkChildren) {
+        const revealFindMatches = searchMode === 'find' && filterLower.length > 0;
+        if (!revealFindMatches) {
+          for (let index = 0; index < Math.min(childLimit, count); index += 1) {
+            visibleEntries.push(readChild(index));
+          }
+        } else {
+          for (let index = 0; index < count; index += 1) {
+            const childKey = arrayValue ? String(index) : objectKeys?.[index] ?? '';
+            const childPath = arrayValue
+              ? `${path}[${childKey}]`
+              : `${path}.${childKey}`;
+            if (
+              index < childLimit ||
+              expandedByFind.has(childPath)
+            ) {
+              visibleEntries.push(readChild(index));
+            }
+          }
+        }
+        remainingChildren = count - visibleEntries.length;
+      } else {
+        for (let index = 0; index < count; index += 1) {
+          visibleEntries.push(readChild(index));
+        }
+      }
+    }
 
     const swatch = !isArray ? asColorSwatch(value) : null;
     const objectKeyRef = isArray
@@ -661,9 +711,6 @@ const JsonNode = memo(function JsonNode({
           icon: objectKeyRef.icon,
         }
       : null;
-    const count = isArray
-      ? (value as unknown[]).length
-      : Object.keys(value as Record<string, unknown>).length;
     const peek =
       !isExpanded && count > 0
         ? getCollapsedPeek(value as Record<string, unknown>, isArray)
@@ -785,9 +832,9 @@ const JsonNode = memo(function JsonNode({
           </div>
         </div>
 
-        {isExpanded && filteredEntries !== null && filteredEntries.length > 0 && (
+        {isExpanded && visibleEntries !== null && visibleEntries.length > 0 && (
           <div className={styles.children}>
-            {filteredEntries.map(([childKey, childValue]) => {
+            {visibleEntries.map(([childKey, childValue]) => {
               const childPath = isArray ? `${path}[${childKey}]` : `${path}.${childKey}`;
               return (
                 <JsonNode
@@ -815,6 +862,38 @@ const JsonNode = memo(function JsonNode({
                 />
               );
             })}
+            {chunkChildren && remainingChildren > 0 && (
+              <div
+                role="group"
+                aria-label={`More ${nodeKey} entries`}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.375rem',
+                  padding: '0.375rem 0.25rem',
+                }}
+              >
+                <button
+                  type="button"
+                  className={styles.toolBtn}
+                  onClick={() =>
+                    setChildLimit((limit) =>
+                      Math.min(count, limit + CHILDREN_CHUNK_SIZE),
+                    )
+                  }
+                >
+                  Show {Math.min(CHILDREN_CHUNK_SIZE, remainingChildren)} more (
+                  {remainingChildren.toLocaleString()} remaining)
+                </button>
+                <button
+                  type="button"
+                  className={styles.toolBtn}
+                  onClick={() => setChildLimit(count)}
+                >
+                  Show all
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -1232,6 +1311,7 @@ export const JsonTree = memo(function JsonTree({
     }
     visibleMatches.forEach((match) => {
       match.ancestorPaths.forEach((path) => paths.add(path));
+      paths.add(match.path);
     });
     return paths;
   }, [clampedActiveMatchIndex, findMatches]);
@@ -1433,13 +1513,15 @@ export const JsonTree = memo(function JsonTree({
       </div>
 
       {lightbox && (
-        <ImageLightbox
-          url={lightbox.url}
-          path={lightbox.path}
-          defaultScaling={imageScaling}
-          onClose={() => setLightbox(null)}
-          onCopy={handleCopy}
-        />
+        <Suspense fallback={null}>
+          <LazyImageLightbox
+            url={lightbox.url}
+            path={lightbox.path}
+            defaultScaling={imageScaling}
+            onClose={() => setLightbox(null)}
+            onCopy={handleCopy}
+          />
+        </Suspense>
       )}
     </div>
   );

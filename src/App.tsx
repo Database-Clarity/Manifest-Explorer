@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -18,31 +20,29 @@ import type {
   UnnamedMode,
   VariantItem,
 } from './types/manifest';
+import type { ChangelogDialogProps } from './components/ChangelogDialog';
 import * as manifestClient from './manifest/client';
 import { getShortTableName } from './manifest/tables';
 import { useCollectorStore } from './stores/collector';
-import { useExplorerStore } from './stores/explorer';
+import { useExplorerStore, type InspectorSession } from './stores/explorer';
 import { useSettingsStore } from './stores/settings';
 import { Header } from './components/Header';
-import { HelpDialog } from './components/HelpDialog';
-import { ChangelogDialog } from './components/ChangelogDialog';
 import { ResultsPane } from './components/ResultsPane';
 import { StatusBar } from './components/StatusBar';
 import { TableRail } from './components/TableRail';
 import { DefinitionInspector } from './components/inspector/DefinitionInspector';
-import { ManifestHistoryPage } from './components/history/ManifestHistoryPage';
 import { NoticeStrip } from './ui/NoticeStrip';
 import {
   checkForAppUpdate,
   startAppUpdateWatcher,
 } from './utils/appUpdate';
 import {
-  CHANGELOG,
-  computeChangelogOpenState,
-  getLatestChangelogVersion,
+  LATEST_CHANGELOG_VERSION,
+  hasUnseenChangelogMeta,
   readLastSeenChangelogVersion,
+  shouldAutoOpenChangelog,
   writeLastSeenChangelogVersion,
-} from './data/changelog';
+} from './data/changelogMeta';
 import {
   cacheKey,
   clarityCache,
@@ -65,6 +65,41 @@ const TAB_KEYS: readonly InspectorTab[] = [
 
 const DEFAULT_SEARCH_LIMIT = 2500;
 const DEFAULT_DEEP_SEARCH_LIMIT = 400;
+
+const LazyManifestHistoryPage = lazy(() =>
+  import('./components/history/ManifestHistoryPage').then((module) => ({
+    default: module.ManifestHistoryPage,
+  })),
+);
+const LazyHelpDialog = lazy(() =>
+  import('./components/HelpDialog').then((module) => ({
+    default: module.HelpDialog,
+  })),
+);
+const LazyChangelogDialog = lazy(async () => {
+  const [{ ChangelogDialog }, { CHANGELOG }] = await Promise.all([
+    import('./components/ChangelogDialog'),
+    import('./data/changelog'),
+  ]);
+  const ChangelogDialogWithEntries = (
+    props: Omit<ChangelogDialogProps, 'entries'>,
+  ) => <ChangelogDialog {...props} entries={CHANGELOG} />;
+  return { default: ChangelogDialogWithEntries };
+});
+
+let sessionSignatureSource: readonly InspectorSession[] | null = null;
+let cachedSessionRefSignature = '';
+
+function getSessionRefSignature(sessions: readonly InspectorSession[]): string {
+  if (sessions === sessionSignatureSource) return cachedSessionRefSignature;
+  sessionSignatureSource = sessions;
+  cachedSessionRefSignature = sessions
+    .map((session) =>
+      session.history.map((entry) => `${entry.table}:${entry.hash}`).join(','),
+    )
+    .join('|');
+  return cachedSessionRefSignature;
+}
 
 function initialResultLimit(isDeepSearch: boolean): number {
   return isDeepSearch ? DEFAULT_DEEP_SEARCH_LIMIT : DEFAULT_SEARCH_LIMIT;
@@ -166,9 +201,16 @@ export function App(): ReactNode {
   const maxPushedBySessionRef = useRef(new Map<string, number>());
 
   const [helpOpen, setHelpOpen] = useState(false);
-  const [changelogState, setChangelogState] = useState(() =>
-    computeChangelogOpenState(readLastSeenChangelogVersion()),
-  );
+  const [changelogState, setChangelogState] = useState(() => {
+    const lastSeenVersion = readLastSeenChangelogVersion();
+    return {
+      shouldAutoOpen: shouldAutoOpenChangelog(lastSeenVersion),
+      expandedVersions: [LATEST_CHANGELOG_VERSION],
+      unseenVersions: hasUnseenChangelogMeta(lastSeenVersion)
+        ? [LATEST_CHANGELOG_VERSION]
+        : [],
+    };
+  });
   const [changelogOpen, setChangelogOpen] = useState(
     () => changelogState.shouldAutoOpen,
   );
@@ -182,6 +224,21 @@ export function App(): ReactNode {
   const lastManifestVersionRef = useRef(
     useExplorerStore.getState().manifestStatus.versionSignature,
   );
+
+  useEffect(() => {
+    if (!changelogOpen) return;
+    let active = true;
+    void import('./data/changelog').then(({ computeChangelogOpenState }) => {
+      if (active) {
+        setChangelogState(
+          computeChangelogOpenState(readLastSeenChangelogVersion()),
+        );
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [changelogOpen]);
 
   const markAppUpdateAvailable = useCallback((_latestBuildId: string) => {
     setAppUpdateAvailable(true);
@@ -207,14 +264,27 @@ export function App(): ReactNode {
   // Explorer state
   const deepSearch = useExplorerStore((s) => s.deepSearch);
   const filters = useExplorerStore((s) => s.filters);
-  const manifestStatus = useExplorerStore((s) => s.manifestStatus);
+  const manifestLocale = useExplorerStore((s) => s.manifestStatus.locale);
+  const manifestPhase = useExplorerStore((s) => s.manifestStatus.phase);
+  const manifestIndexedEntryCount = useExplorerStore(
+    (s) => s.manifestStatus.indexedEntryCount,
+  );
+  const manifestLoadedTableCount = useExplorerStore(
+    (s) => s.manifestStatus.loadedTableCount,
+  );
+  const manifestVersionSignature = useExplorerStore(
+    (s) => s.manifestStatus.versionSignature,
+  );
   const results = useExplorerStore((s) => s.results);
   const totalMatches = useExplorerStore((s) => s.totalMatches);
   const scopeEntryCount = useExplorerStore((s) => s.scopeEntryCount);
   const hiddenUnnamedCount = useExplorerStore((s) => s.hiddenUnnamedCount);
   const selectedResultIndex = useExplorerStore((s) => s.selectedResultIndex);
-  const sessions = useExplorerStore((s) => s.sessions);
-  const history = useExplorerStore((s) => s.history);
+  const sessionsCount = useExplorerStore((s) => s.sessions.length);
+  const sessionRefSignature = useExplorerStore((s) => getSessionRefSignature(s.sessions));
+  const activeEntry = useExplorerStore((s) =>
+    s.historyIndex >= 0 ? (s.history[s.historyIndex] ?? null) : null,
+  );
   const historyIndex = useExplorerStore((s) => s.historyIndex);
   const activeTab = useExplorerStore((s) => s.activeTab);
   const pinnedDiffRef = useExplorerStore((s) => s.pinnedDiffRef);
@@ -235,7 +305,6 @@ export function App(): ReactNode {
   const hydrateEntrySummaries = useExplorerStore((s) => s.hydrateEntrySummaries);
   const inspectorMaximized = useExplorerStore((s) => s.inspectorMaximized);
   const activeSessionIndex = useExplorerStore((s) => s.activeSessionIndex);
-  const sessionsCount = sessions.length;
   const jumpToHistoryIndex = useExplorerStore((s) => s.jumpToHistoryIndex);
   const restoreHistoryPoint = useExplorerStore((s) => s.restoreHistoryPoint);
   const closeInspector = useExplorerStore((s) => s.closeInspector);
@@ -283,7 +352,6 @@ export function App(): ReactNode {
     setPathname('/');
   }, []);
 
-  const activeEntry = historyIndex >= 0 ? (history[historyIndex] ?? null) : null;
   const currentRef: DefinitionRef | null = useMemo(
     () =>
       activeEntry
@@ -536,9 +604,9 @@ export function App(): ReactNode {
     }
   }, [
     isHistoryRoute,
-    sessions,
+    sessionsCount,
     activeSessionIndex,
-    history,
+    activeEntry,
     historyIndex,
     deepSearch,
     filters.table,
@@ -643,24 +711,20 @@ export function App(): ReactNode {
   );
 
   const manifestReady =
-    manifestStatus.locale === locale &&
-    (manifestStatus.indexedEntryCount > 0 || manifestStatus.phase === 'ready');
+    manifestLocale === locale &&
+    (manifestIndexedEntryCount > 0 || manifestPhase === 'ready');
 
   useLayoutEffect(() => {
-    if (lastManifestVersionRef.current === manifestStatus.versionSignature) {
+    if (lastManifestVersionRef.current === manifestVersionSignature) {
       return;
     }
-    lastManifestVersionRef.current = manifestStatus.versionSignature;
+    lastManifestVersionRef.current = manifestVersionSignature;
     clearInspectorCaches();
-  }, [manifestStatus.versionSignature]);
+  }, [manifestVersionSignature]);
 
   // Background-resolve display names, icons & co-table flags for EVERY open tab
   // and EVERY history/future entry (including inactive tabs and hydrated URLs).
   // Re-runs when new tables finish loading so co-table disambiguation stays accurate.
-  const sessionRefSignature = sessions
-    .map((s) => s.history.map((e) => `${e.table}:${e.hash}`).join(','))
-    .join('|');
-
   useEffect(() => {
     if (!manifestReady || !sessionRefSignature) {
       return;
@@ -694,7 +758,7 @@ export function App(): ReactNode {
   }, [
     sessionRefSignature,
     manifestReady,
-    manifestStatus.loadedTableCount,
+    manifestLoadedTableCount,
     hydrateEntrySummaries,
   ]);
 
@@ -726,8 +790,8 @@ export function App(): ReactNode {
     lastResultLimitRef.current = resultLimit;
 
     if (
-      manifestStatus.locale !== locale ||
-      (manifestStatus.indexedEntryCount === 0 && manifestStatus.phase !== 'ready')
+      manifestLocale !== locale ||
+      (manifestIndexedEntryCount === 0 && manifestPhase !== 'ready')
     ) {
       return;
     }
@@ -808,8 +872,8 @@ export function App(): ReactNode {
     queryPrecedence,
     resultLimit,
     locale,
-    manifestStatus.indexedEntryCount,
-    manifestStatus.phase,
+    manifestIndexedEntryCount,
+    manifestPhase,
     setSearchResults,
     setSearching,
   ]);
@@ -1019,7 +1083,7 @@ export function App(): ReactNode {
     currentRef?.hash,
     locale,
     manifestReady,
-    manifestStatus.versionSignature,
+    manifestVersionSignature,
     showClarityDescriptions,
     detailReloadCounter,
     loadFullForCurrent,
@@ -1074,7 +1138,7 @@ export function App(): ReactNode {
     locale,
     activeTab,
     manifestReady,
-    manifestStatus.versionSignature,
+    manifestVersionSignature,
     detailReloadCounter,
   ]);
 
@@ -1097,7 +1161,7 @@ export function App(): ReactNode {
       setReferences(cached.data);
       setReferencesLoading(false);
       if (
-        cached.loadedTableCount === manifestStatus.loadedTableCount ||
+        cached.loadedTableCount === manifestLoadedTableCount ||
         !manifestReady
       ) {
         return;
@@ -1112,7 +1176,7 @@ export function App(): ReactNode {
     }
 
     let cancelled = false;
-    const loadedTableCount = manifestStatus.loadedTableCount;
+    const loadedTableCount = manifestLoadedTableCount;
     void manifestClient
       .getReverseReferences(currentRef.hash, currentRef.table)
       .then((data) => {
@@ -1135,8 +1199,8 @@ export function App(): ReactNode {
     currentRef?.hash,
     locale,
     activeTab,
-    manifestStatus.loadedTableCount,
-    manifestStatus.versionSignature,
+    manifestLoadedTableCount,
+    manifestVersionSignature,
     manifestReady,
     refReloadCounter,
     detailReloadCounter,
@@ -1187,7 +1251,7 @@ export function App(): ReactNode {
     pinnedDiffRef?.hash,
     locale,
     manifestReady,
-    manifestStatus.versionSignature,
+    manifestVersionSignature,
   ]);
 
   // Actions
@@ -1296,20 +1360,16 @@ export function App(): ReactNode {
   }, []);
 
   const handleOpenChangelog = useCallback(() => {
-    const latestVersion = getLatestChangelogVersion();
     setChangelogState({
       shouldAutoOpen: false,
-      expandedVersions: latestVersion ? [latestVersion] : [],
+      expandedVersions: [LATEST_CHANGELOG_VERSION],
       unseenVersions: [],
     });
     setChangelogOpen(true);
   }, []);
 
   const handleCloseChangelog = useCallback(() => {
-    const latestVersion = getLatestChangelogVersion();
-    if (latestVersion) {
-      writeLastSeenChangelogVersion(latestVersion);
-    }
+    writeLastSeenChangelogVersion(LATEST_CHANGELOG_VERSION);
     setChangelogState((state) => ({ ...state, unseenVersions: [] }));
     setChangelogOpen(false);
   }, []);
@@ -1741,11 +1801,22 @@ export function App(): ReactNode {
 
       <main className={styles.workspace}>
         {isHistoryRoute ? (
-          <ManifestHistoryPage
-            versionIndex={historyVersionIndex}
-            onSelectVersion={selectHistoryVersion}
-            onNavigateExplorer={navigateExplorerDefinition}
-          />
+          <Suspense
+            fallback={
+              <div
+                role="status"
+                style={{ padding: '1rem', color: 'var(--text-muted)' }}
+              >
+                Loading manifest history…
+              </div>
+            }
+          >
+            <LazyManifestHistoryPage
+              versionIndex={historyVersionIndex}
+              onSelectVersion={selectHistoryVersion}
+              onNavigateExplorer={navigateExplorerDefinition}
+            />
+          </Suspense>
         ) : (
           <>
             <TableRail
@@ -1814,14 +1885,21 @@ export function App(): ReactNode {
         hasUnseenChangelog={changelogState.unseenVersions.length > 0}
       />
 
-      <HelpDialog open={helpOpen} onClose={() => setHelpOpen(false)} />
-      <ChangelogDialog
-        open={changelogOpen}
-        onClose={handleCloseChangelog}
-        entries={CHANGELOG}
-        expandedVersions={changelogState.expandedVersions}
-        unseenVersions={changelogState.unseenVersions}
-      />
+      {helpOpen && (
+        <Suspense fallback={null}>
+          <LazyHelpDialog open={helpOpen} onClose={() => setHelpOpen(false)} />
+        </Suspense>
+      )}
+      {changelogOpen && (
+        <Suspense fallback={null}>
+          <LazyChangelogDialog
+            open={changelogOpen}
+            onClose={handleCloseChangelog}
+            expandedVersions={changelogState.expandedVersions}
+            unseenVersions={changelogState.unseenVersions}
+          />
+        </Suspense>
+      )}
       <NoticeStrip />
     </div>
   );

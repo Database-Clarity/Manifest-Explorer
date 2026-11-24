@@ -13,7 +13,7 @@ import {
   TIER_FILTER_OPTIONS,
 } from './enums';
 import { parseHashInput } from './hash';
-import { normalizeSourceLookup } from './d2ai';
+import { normalizeSourceLookup } from './sourceLookup';
 import { ARTIFACT_PERKS_TABLE, TABLE_METADATA, getShortTableName, resolveTableAlias } from './tables';
 
 export interface SearchFlags {
@@ -1406,14 +1406,16 @@ class ScoredEntryTopK {
   }
 }
 
+const WORD_CHAR_RE = /[a-z0-9]/;
+
 function hasWordBoundary(haystack: string, needle: string): boolean {
   let index = haystack.indexOf(needle);
   while (index !== -1) {
     const before = index === 0 ? '' : haystack.charAt(index - 1);
     const afterIndex = index + needle.length;
     const after = afterIndex >= haystack.length ? '' : haystack.charAt(afterIndex);
-    const beforeOk = before === '' || !/[a-z0-9]/.test(before);
-    const afterOk = after === '' || !/[a-z0-9]/.test(after);
+    const beforeOk = before === '' || !WORD_CHAR_RE.test(before);
+    const afterOk = after === '' || !WORD_CHAR_RE.test(after);
     if (beforeOk && afterOk) return true;
     index = haystack.indexOf(needle, index + 1);
   }
@@ -1683,13 +1685,10 @@ function sourceMatches(
   if (!token) return false;
   const canonical = context?.sourceAliasToKey?.get(normalizedToken);
   if (canonical && entry.sourceTags?.includes(canonical) === true) return true;
-  if (
-    normalizedToken.length >= 3 &&
-    entry.sourceTags?.some(
-      (tag) => tag === normalizedToken || tag.includes(normalizedToken),
-    ) === true
-  ) {
-    return true;
+  if (normalizedToken.length >= 3 && entry.sourceTags) {
+    for (const tag of entry.sourceTags) {
+      if (tag === normalizedToken || tag.includes(normalizedToken)) return true;
+    }
   }
   if (entry.sourceLower?.includes(token) === true) return true;
   return entry.descLower.includes(token);
@@ -1697,7 +1696,12 @@ function sourceMatches(
 
 function traitMatches(entry: SearchIndexEntry, token: string): boolean {
   if (!token) return false;
-  return entry.traitIds?.some((trait) => trait.includes(token)) === true;
+  const traitIds = entry.traitIds;
+  if (!traitIds) return false;
+  for (const trait of traitIds) {
+    if (trait.includes(token)) return true;
+  }
+  return false;
 }
 
 function resolveSeasonNumbers(
@@ -1785,7 +1789,10 @@ function matchesTypeValue(entry: SearchIndexEntry, value: number): boolean {
 }
 
 function matchesAnyType(entry: SearchIndexEntry, values: readonly number[]): boolean {
-  return values.some((value) => matchesTypeValue(entry, value));
+  for (const value of values) {
+    if (matchesTypeValue(entry, value)) return true;
+  }
+  return false;
 }
 
 function tableKey(table: string): string {
@@ -1809,28 +1816,18 @@ function cachedTableKey(table: string): string {
 
 const ARTIFACT_PERKS_KEY = tableKey(ARTIFACT_PERKS_TABLE);
 
-function resolveCategoryLowerNames(
-  entry: SearchIndexEntry,
-  categoryLowerNames: Map<number, string>,
-): string[] | undefined {
-  if (!entry.itemCategoryHashes || entry.itemCategoryHashes.length === 0) return undefined;
-  const names: string[] = [];
-  for (const hash of entry.itemCategoryHashes) {
-    const name = categoryLowerNames.get(hash);
-    if (name) names.push(name);
-  }
-  return names.length > 0 ? names : undefined;
-}
-
 function categoryMatches(
   entry: SearchIndexEntry,
-  tokens: readonly string[],
+  token: string,
   categoryLowerNames: Map<number, string>,
 ): boolean {
-  if (tokens.length === 0) return true;
-  const names = resolveCategoryLowerNames(entry, categoryLowerNames);
-  if (!names) return false;
-  return tokens.every((token) => names.some((name) => name.includes(token)));
+  const hashes = entry.itemCategoryHashes;
+  if (!hashes || hashes.length === 0) return false;
+  for (const hash of hashes) {
+    const name = categoryLowerNames.get(hash);
+    if (name?.includes(token)) return true;
+  }
+  return false;
 }
 
 /** Build the lowercased category-name lookup once per search, on first use. */
@@ -1943,7 +1940,7 @@ function evaluateAtom(atom: QueryAtom, entry: SearchIndexEntry, evalCtx: EvalCon
     case 'trait':
       return traitMatches(entry, atom.value);
     case 'category':
-      return categoryMatches(entry, [atom.value], ensureCategoryLowerNames(evalCtx));
+      return categoryMatches(entry, atom.value, ensureCategoryLowerNames(evalCtx));
     case 'flag':
       return entryFlag(entry, atom.flag);
     case 'hash':
@@ -1978,45 +1975,45 @@ function evaluateNode(node: QueryNode, entry: SearchIndexEntry, evalCtx: EvalCon
   }
 }
 
-interface ScopePossibility {
-  canMatch: boolean;
-  canFail: boolean;
-}
-
 /**
  * Project a query AST onto its table atoms. Non-table atoms are treated as
  * unknown, so the result identifies entries that could match the table portion
  * of the query without requiring unrelated text/metadata predicates to match.
  */
-function couldMatchQueryTableScope(node: QueryNode, entry: SearchIndexEntry): boolean {
-  const visit = (current: QueryNode): ScopePossibility => {
-    switch (current.type) {
-      case 'and': {
-        const children = current.children.map(visit);
-        return {
-          canMatch: children.every((child) => child.canMatch),
-          canFail: children.some((child) => child.canFail),
-        };
+function tableScopePossibility(current: QueryNode, entry: SearchIndexEntry): number {
+  switch (current.type) {
+    case 'and': {
+      let canMatch = true;
+      let canFail = false;
+      for (const child of current.children) {
+        const possibility = tableScopePossibility(child, entry);
+        canMatch = canMatch && (possibility & 1) !== 0;
+        canFail = canFail || (possibility & 2) !== 0;
       }
-      case 'or': {
-        const children = current.children.map(visit);
-        return {
-          canMatch: children.some((child) => child.canMatch),
-          canFail: children.every((child) => child.canFail),
-        };
-      }
-      case 'not': {
-        const child = visit(current.child);
-        return { canMatch: child.canFail, canFail: child.canMatch };
-      }
-      case 'atom': {
-        if (current.kind !== 'table') return { canMatch: true, canFail: true };
-        const matches = matchesTableKey(entry, cachedTableKey(current.table));
-        return { canMatch: matches, canFail: !matches };
-      }
+      return (canMatch ? 1 : 0) | (canFail ? 2 : 0);
     }
-  };
-  return visit(node).canMatch;
+    case 'or': {
+      let canMatch = false;
+      let canFail = true;
+      for (const child of current.children) {
+        const possibility = tableScopePossibility(child, entry);
+        canMatch = canMatch || (possibility & 1) !== 0;
+        canFail = canFail && (possibility & 2) !== 0;
+      }
+      return (canMatch ? 1 : 0) | (canFail ? 2 : 0);
+    }
+    case 'not': {
+      const possibility = tableScopePossibility(current.child, entry);
+      return ((possibility & 2) >> 1) | ((possibility & 1) << 1);
+    }
+    case 'atom':
+      if (current.kind !== 'table') return 3;
+      return matchesTableKey(entry, cachedTableKey(current.table)) ? 1 : 2;
+  }
+}
+
+function couldMatchQueryTableScope(node: QueryNode, entry: SearchIndexEntry): boolean {
+  return (tableScopePossibility(node, entry) & 1) !== 0;
 }
 
 function hasTableAtom(ast: QueryNode | null): boolean {
@@ -2202,12 +2199,17 @@ export function scoreAndFilterEntries(
       if (entry.classType === undefined || !uiFilters.classTypes.includes(entry.classType)) continue;
     }
     if (uiFilters.itemTypes.length > 0 && !matchesAnyType(entry, uiFilters.itemTypes)) continue;
-    if (
-      selectedCategories.length > 0 &&
-      (!entry.itemCategoryHashes ||
-        !selectedCategories.some((hash) => entry.itemCategoryHashes?.includes(hash)))
-    ) {
-      continue;
+    if (selectedCategories.length > 0) {
+      const entryCategories = entry.itemCategoryHashes;
+      if (!entryCategories || entryCategories.length === 0) continue;
+      let categoryMatches = false;
+      for (const hash of selectedCategories) {
+        if (entryCategories.includes(hash)) {
+          categoryMatches = true;
+          break;
+        }
+      }
+      if (!categoryMatches) continue;
     }
     if (uiFilters.onlyRedacted && entry.isRedacted !== true) continue;
 

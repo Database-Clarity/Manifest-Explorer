@@ -121,6 +121,7 @@ export interface ExplorerState {
 
   /** Persist per-entry view state & resolved display metadata. */
   setActiveTab: (tab: InspectorTab) => void;
+  getEntryScroll: (tab: InspectorTab) => number;
   saveEntryScroll: (tab: InspectorTab, scrollTop: number) => void;
   saveEntryJsonState: (patch: {
     jsonFilter?: string;
@@ -180,6 +181,36 @@ const NOTICE_TIMEOUTS: Record<NoticeTone, number> = {
 const NOTICE_TIMERS = new Map<string, ReturnType<typeof setTimeout>>();
 let noticeCounter = 0;
 let sessionCounter = 0;
+const ENTRY_SCROLL_BY_TAB = new Map<
+  string,
+  Partial<Record<InspectorTab, number>>
+>();
+
+function entryScrollKey(sessionId: string, historyIndex: number): string {
+  return `${sessionId}:${historyIndex}`;
+}
+
+function clearSessionEntryScroll(sessionId: string): void {
+  const prefix = `${sessionId}:`;
+  for (const key of ENTRY_SCROLL_BY_TAB.keys()) {
+    if (key.startsWith(prefix)) ENTRY_SCROLL_BY_TAB.delete(key);
+  }
+}
+
+function clearAllEntryScroll(): void {
+  ENTRY_SCROLL_BY_TAB.clear();
+}
+
+function clearForwardEntryScroll(sessionId: string, historyIndex: number): void {
+  const prefix = `${sessionId}:`;
+  for (const key of ENTRY_SCROLL_BY_TAB.keys()) {
+    if (!key.startsWith(prefix)) continue;
+    const entryIndex = Number(key.slice(prefix.length));
+    if (Number.isInteger(entryIndex) && entryIndex > historyIndex) {
+      ENTRY_SCROLL_BY_TAB.delete(key);
+    }
+  }
+}
 
 function createNoticeId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -469,6 +500,7 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
     }
 
     const nextHistory = [...active.history.slice(0, active.historyIndex + 1), entry];
+    clearForwardEntryScroll(active.id, active.historyIndex);
     const nextSessions = state.sessions.map((s, idx) =>
       idx === state.activeSessionIndex
         ? {
@@ -552,6 +584,8 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
       if (index < 0 || index >= state.sessions.length) {
         return {};
       }
+      const closedSession = state.sessions[index];
+      if (closedSession) clearSessionEntryScroll(closedSession.id);
       const nextSessions = state.sessions.filter((_, idx) => idx !== index);
       if (nextSessions.length === 0) {
         return {
@@ -574,6 +608,9 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
       const keep = state.sessions[index];
       if (!keep) {
         return {};
+      }
+      for (const session of state.sessions) {
+        if (session.id !== keep.id) clearSessionEntryScroll(session.id);
       }
       return syncActiveSession([keep], 0);
     }),
@@ -672,26 +709,30 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
       return syncActiveSession(nextSessions, state.activeSessionIndex);
     }),
 
-  saveEntryScroll: (tab, scrollTop) =>
-    set((state) => {
-      if (state.activeSessionIndex < 0) return {};
-      const active = state.sessions[state.activeSessionIndex];
-      const current = active?.history[active.historyIndex];
-      if (!active || !current) return {};
-      const rounded = Math.max(0, Math.round(scrollTop));
-      if (current.scrollByTab[tab] === rounded) return {};
+  getEntryScroll: (tab) => {
+    const state = get();
+    if (state.activeSessionIndex < 0) return 0;
+    const active = state.sessions[state.activeSessionIndex];
+    if (!active || active.historyIndex < 0) return 0;
+    const key = entryScrollKey(active.id, active.historyIndex);
+    return ENTRY_SCROLL_BY_TAB.get(key)?.[tab] ??
+      active.history[active.historyIndex]?.scrollByTab[tab] ??
+      0;
+  },
 
-      const nextSessions = state.sessions.map((s, idx) => {
-        if (idx !== state.activeSessionIndex) return s;
-        const nextHistory = s.history.map((item, hIdx) =>
-          hIdx === s.historyIndex
-            ? { ...item, scrollByTab: { ...item.scrollByTab, [tab]: rounded } }
-            : item,
-        );
-        return { ...s, history: nextHistory };
-      });
-      return syncActiveSession(nextSessions, state.activeSessionIndex);
-    }),
+  saveEntryScroll: (tab, scrollTop) => {
+    const state = get();
+    if (state.activeSessionIndex < 0) return;
+    const active = state.sessions[state.activeSessionIndex];
+    if (!active || active.historyIndex < 0) return;
+    const current = active.history[active.historyIndex];
+    if (!current) return;
+    const rounded = Math.max(0, Math.round(scrollTop));
+    const key = entryScrollKey(active.id, active.historyIndex);
+    const offsets = ENTRY_SCROLL_BY_TAB.get(key) ?? {};
+    if ((offsets[tab] ?? current.scrollByTab[tab] ?? 0) === rounded) return;
+    ENTRY_SCROLL_BY_TAB.set(key, { ...offsets, [tab]: rounded });
+  },
 
   saveEntryJsonState: (patch) =>
     set((state) => {
@@ -788,7 +829,8 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
       return syncActiveSession(nextSessions, state.activeSessionIndex);
     }),
 
-  closeInspector: () =>
+  closeInspector: () => {
+    clearAllEntryScroll();
     set({
       sessions: [],
       activeSessionIndex: -1,
@@ -797,7 +839,8 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
       activeTab: 'pretty',
       mobileInspectorOpen: false,
       inspectorMaximized: false,
-    }),
+    });
+  },
 
   pinForDiff: (ref) =>
     set((state) => {
@@ -854,6 +897,7 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
   },
 
   hydrateFromHashUrl: (hashPath) => {
+    clearAllEntryScroll();
     const raw = stripHash(hashPath);
     const queryMarker = raw.indexOf('?');
     const pathPart = queryMarker >= 0 ? raw.slice(0, queryMarker) : raw;

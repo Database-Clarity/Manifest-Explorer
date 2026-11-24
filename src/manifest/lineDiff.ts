@@ -280,11 +280,9 @@ export function groupJsonDiffLines(
   const segments: JsonDiffSegment[] = [];
   const oldLines = lines
     .filter((line) => line.oldLine !== null)
-    .sort((a, b) => (a.oldLine ?? 0) - (b.oldLine ?? 0))
     .map((line) => line.text);
   const newLines = lines
     .filter((line) => line.newLine !== null)
-    .sort((a, b) => (a.newLine ?? 0) - (b.newLine ?? 0))
     .map((line) => line.text);
 
   const scopeAtLine = (source: readonly string[], targetLine: number): string[] => {

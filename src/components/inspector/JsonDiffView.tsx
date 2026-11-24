@@ -13,6 +13,12 @@ export interface JsonDiffViewProps {
   onCopy?: (text: string, label: string) => void;
   /** Prefer split on desktop while allowing the view to adapt on narrow screens. */
   defaultLayout?: 'inline' | 'split';
+  onStats?: (stats: JsonDiffStats) => void;
+}
+
+export interface JsonDiffStats {
+  added: number;
+  removed: number;
 }
 
 interface JsonSyntaxViewProps {
@@ -84,6 +90,26 @@ function syntaxLine(text: string, query: string): ReactNode[] {
   return parts;
 }
 
+const diffSyntaxCache = new WeakMap<JsonDiffLine, Map<string, ReactNode[]>>();
+
+function syntaxDiffLine(line: JsonDiffLine, query: string): ReactNode[] {
+  let byQuery = diffSyntaxCache.get(line);
+  if (!byQuery) {
+    byQuery = new Map();
+    diffSyntaxCache.set(line, byQuery);
+  }
+  const cached = byQuery.get(query);
+  if (cached) return cached;
+
+  const tokens = syntaxLine(line.text, query);
+  byQuery.set(query, tokens);
+  if (byQuery.size > 4) {
+    const oldestQuery = byQuery.keys().next().value;
+    if (oldestQuery !== undefined) byQuery.delete(oldestQuery);
+  }
+  return tokens;
+}
+
 function formatJson(value: unknown): string[] {
   if (value === undefined) return [];
   const text = JSON.stringify(value, null, 2);
@@ -96,15 +122,19 @@ export const JsonSyntaxView = memo(function JsonSyntaxView({
 }: JsonSyntaxViewProps): ReactNode {
   const lines = useMemo(() => formatJson(value), [value]);
   const query = filter.trim();
+  const tokenizedLines = useMemo(
+    () => lines.map((line) => syntaxLine(line, query)),
+    [lines, query],
+  );
   return (
     <div className={styles.syntaxViewport} role="region" aria-label="Formatted JSON">
       <div className={styles.codeRows}>
-        {lines.map((line, index) => (
+        {lines.map((_, index) => (
           <div className={styles.syntaxRow} key={index}>
             <span className={styles.syntaxLineNumber} aria-hidden="true">
               {index + 1}
             </span>
-            <code className={styles.codeLine}>{syntaxLine(line, query)}</code>
+            <code className={styles.codeLine}>{tokenizedLines[index]}</code>
           </div>
         ))}
       </div>
@@ -131,7 +161,7 @@ function JsonLine({ line, filter }: { line: JsonDiffLine; filter: string }): Rea
       <span className={styles.signGutter} aria-hidden="true">
         {sign}
       </span>
-      <code className={styles.codeLine}>{syntaxLine(line.text, filter)}</code>
+      <code className={styles.codeLine}>{syntaxDiffLine(line, filter)}</code>
     </div>
   );
 }
@@ -206,7 +236,7 @@ function SplitCell({
       <span className={styles.splitLineNumber} aria-hidden="true">
         {lineNumber ?? ''}
       </span>
-      <code className={styles.codeLine}>{syntaxLine(line.text, filter)}</code>
+      <code className={styles.codeLine}>{syntaxDiffLine(line, filter)}</code>
     </div>
   );
 }
@@ -318,6 +348,7 @@ export const JsonDiffView = memo(function JsonDiffView({
   filter = '',
   onCopy,
   defaultLayout = 'inline',
+  onStats,
 }: JsonDiffViewProps): ReactNode {
   const userSelectedLayoutRef = useRef(false);
   const [layout, setLayout] = useState<'inline' | 'split'>(() =>
@@ -335,6 +366,10 @@ export const JsonDiffView = memo(function JsonDiffView({
     [diff.lines, expandedLines, expandAll],
   );
   const query = filter.trim();
+
+  useEffect(() => {
+    onStats?.({ added: diff.added, removed: diff.removed });
+  }, [diff.added, diff.removed, onStats]);
 
   useEffect(() => {
     if (defaultLayout !== 'split' || typeof window.matchMedia !== 'function') return;

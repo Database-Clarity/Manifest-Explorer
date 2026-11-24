@@ -1,8 +1,7 @@
-import { memo, useMemo, useState, type ReactNode } from 'react';
+import { memo, useCallback, useState, type ReactNode } from 'react';
 import type { DefinitionDetailPayload, DefinitionRef } from '../../types/manifest';
-import { computeJsonDiff } from '../../manifest/diff';
 import { getShortTableName } from '../../manifest/tables';
-import { JsonDiffView } from './JsonDiffView';
+import { JsonDiffView, type JsonDiffStats } from './JsonDiffView';
 import { Skeleton } from '../../ui/Skeleton';
 import { ClearSearchInput } from '../../ui/ClearSearchInput';
 import { activateOnMiddleClick, preventMiddleClickAutoScroll } from '../middleClick';
@@ -28,16 +27,31 @@ export const DiffTab = memo(function DiffTab({
   onNavigateRef,
 }: DiffTabProps): ReactNode {
   const [filter, setFilter] = useState('');
+  const [lineStats, setLineStats] = useState<{
+    before: unknown;
+    after: unknown;
+    stats: JsonDiffStats;
+  } | null>(null);
 
   const isSame =
     pinnedRef !== null &&
     pinnedRef.table === current.table &&
     pinnedRef.hash === current.hash;
 
-  const entries = useMemo(() => {
-    if (!pinnedDetail || isSame) return [];
-    return computeJsonDiff(pinnedDetail.data, current.data);
-  }, [pinnedDetail, current.data, isSame]);
+  const handleDiffStats = useCallback(
+    (stats: JsonDiffStats) => {
+      if (!pinnedDetail) return;
+      setLineStats((currentStats) =>
+        currentStats?.before === pinnedDetail.data &&
+        currentStats.after === current.data &&
+        currentStats.stats.added === stats.added &&
+        currentStats.stats.removed === stats.removed
+          ? currentStats
+          : { before: pinnedDetail.data, after: current.data, stats },
+      );
+    },
+    [current.data, pinnedDetail],
+  );
 
   if (!pinnedRef) {
     return (
@@ -87,6 +101,10 @@ export const DiffTab = memo(function DiffTab({
   const pinnedName =
     ((pinnedDetail.data.displayProperties as { name?: string } | undefined)?.name ??
       `${getShortTableName(pinnedDetail.table)} ${pinnedDetail.hash}`);
+  const currentLineStats =
+    lineStats?.before === pinnedDetail.data && lineStats.after === current.data
+      ? lineStats.stats
+      : null;
 
   return (
     <div className={styles.scrollBody} data-inspector-scroll="true">
@@ -114,7 +132,9 @@ export const DiffTab = memo(function DiffTab({
             </button>
           </span>
           <span className={styles.metaCount}>
-            {entries.length} {entries.length === 1 ? 'difference' : 'differences'}
+            {currentLineStats
+              ? `+${currentLineStats.added} / −${currentLineStats.removed} lines`
+              : 'Calculating line diff…'}
           </span>
         </div>
         <div className={styles.diffControls}>
@@ -133,13 +153,14 @@ export const DiffTab = memo(function DiffTab({
         </div>
       </div>
 
-      {entries.length === 0 ? (
+      {currentLineStats?.added === 0 && currentLineStats.removed === 0 ? (
         <div className={styles.emptyState}>These two definitions are identical.</div>
       ) : (
         <JsonDiffView
           before={pinnedDetail.data}
           after={current.data}
           filter={filter}
+          onStats={handleDiffStats}
         />
       )}
     </div>

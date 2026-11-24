@@ -83,6 +83,8 @@ const INVENTORY_ITEM_LITE_TABLE = 'DestinyInventoryItemLiteDefinition';
 const FULL_ITEM_LRU_LIMIT = 256;
 const STREAM_FLUSH_ENTRIES = 2500;
 const STREAM_FLUSH_BYTES = 10_000_000;
+const RAW_TABLE_MEMORY_BUDGET_BYTES = 96 * 1024 * 1024;
+const REVERSE_REFERENCE_CACHE_LIMIT = 64;
 const fullItemWaiters = new Map<number, Array<(parsed: Record<string, unknown>) => void>>();
 const BUNGIE_MANIFEST_URL = 'https://www.bungie.net/Platform/Destiny2/Manifest/';
 const CLARITY_URL =
@@ -289,11 +291,126 @@ const entryByHash = new Map<number, SearchIndexEntry>();
 const tablesByHash = new Map<number, Set<string>>();
 const tableStatuses = new Map<string, TableStatus>();
 const tableDataMap = new Map<string, Record<string, Record<string, unknown>>>();
+const tableDataBytes = new Map<string, number>();
+const persistedRawTables = new Set<string>();
 const fullItemLru = new Map<number, Record<string, unknown>>();
 const categoryNameMap = new Map<number, string>();
 const loadingPromises = new Map<string, Promise<void>>();
 let fullItemCount = 0;
+let retainedRawTableBytes = 0;
 let clarityPromise: Promise<Map<number, ClarityDescriptionEntry>> | undefined;
+let indexGeneration = 0;
+let filterCatalogCache: { generation: number; tablesCount: number; catalog: FilterCatalog } | undefined;
+let searchPageCache: { key: string; response: SearchResponse } | undefined;
+let variantIndexGeneration = -1;
+const variantEntriesByName = new Map<string, number[]>();
+const reverseReferenceCache = new Map<string, ReverseReferenceResponse>();
+let artifactPerkHashSetGeneration = -1;
+const artifactPerkHashSet = new Set<number>();
+
+function estimateRawTableBytes(data: Record<string, Record<string, unknown>>): number {
+  const visit = (value: unknown, addBytes: (bytes: number) => void): void => {
+    if (typeof value === 'string') {
+      addBytes(24 + value.length * 2);
+    } else if (typeof value === 'number' || typeof value === 'boolean') {
+      addBytes(16);
+    } else if (Array.isArray(value)) {
+      addBytes(24 + value.length * 8);
+      for (const item of value) visit(item, addBytes);
+    } else if (typeof value === 'object' && value !== null) {
+      addBytes(32);
+      const record = value as Record<string, unknown>;
+      for (const key in record) {
+        if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
+        addBytes(24 + key.length * 2);
+        visit(record[key], addBytes);
+      }
+    }
+  };
+  const SAMPLE_SIZE = 128;
+  let count = 0;
+  let sampled = 0;
+  let sampleBytes = 0;
+  for (const hash in data) {
+    if (!Object.prototype.hasOwnProperty.call(data, hash)) continue;
+    count += 1;
+    if (sampled >= SAMPLE_SIZE) continue;
+    let entryBytes = 32 + hash.length * 2;
+    visit(data[hash], (bytes) => {
+      entryBytes += bytes;
+    });
+    sampleBytes += entryBytes;
+    sampled += 1;
+  }
+  return sampled === 0 ? 64 : Math.round((sampleBytes / sampled) * count + 64);
+}
+
+function isProtectedRawTable(table: string): boolean {
+  return (
+    (CORE_BOOT_TABLES as readonly string[]).includes(table) ||
+    ENRICHMENT_DEPENDENCY_TABLES.has(table)
+  );
+}
+
+function evictRawTablesIfNeeded(): void {
+  if (retainedRawTableBytes <= RAW_TABLE_MEMORY_BUDGET_BYTES) return;
+  for (const table of tableDataMap.keys()) {
+    if (retainedRawTableBytes <= RAW_TABLE_MEMORY_BUDGET_BYTES) break;
+    if (isProtectedRawTable(table) || !persistedRawTables.has(table)) continue;
+    tableDataMap.delete(table);
+    const bytes = tableDataBytes.get(table) ?? 0;
+    tableDataBytes.delete(table);
+    retainedRawTableBytes = Math.max(0, retainedRawTableBytes - bytes);
+  }
+}
+
+function retainRawTable(
+  table: string,
+  data: Record<string, Record<string, unknown>>,
+  persisted = true,
+): void {
+  const oldBytes = tableDataBytes.get(table) ?? 0;
+  retainedRawTableBytes = Math.max(0, retainedRawTableBytes - oldBytes);
+  const bytes = estimateRawTableBytes(data);
+  tableDataBytes.set(table, bytes);
+  retainedRawTableBytes += bytes;
+  if (persisted) persistedRawTables.add(table);
+  tableDataMap.delete(table);
+  tableDataMap.set(table, data);
+  evictRawTablesIfNeeded();
+}
+
+function getRetainedRawTable(
+  table: string,
+): Record<string, Record<string, unknown>> | undefined {
+  const data = tableDataMap.get(table);
+  if (data) {
+    tableDataMap.delete(table);
+    tableDataMap.set(table, data);
+  }
+  return data;
+}
+
+async function getRawTableFromCache(
+  table: string,
+): Promise<Record<string, Record<string, unknown>> | undefined> {
+  const retained = getRetainedRawTable(table);
+  if (retained) return retained;
+  const cached = await getTableData(state.locale, state.versionSignature, table);
+  if (cached) retainRawTable(table, cached, true);
+  return cached;
+}
+
+function invalidateIndexDerivedCaches(): void {
+  indexGeneration += 1;
+  filterCatalogCache = undefined;
+  searchPageCache = undefined;
+  variantIndexGeneration = -1;
+  variantEntriesByName.clear();
+  reverseReferenceCache.clear();
+  artifactPerkHashSetGeneration = -1;
+  artifactPerkHashSet.clear();
+}
 
 // Cross-table enrichment state. Rebuilt from the loaded DestinyArtifactDefinition
 // and DestinySeasonDefinition data before the search index is persisted.
@@ -328,7 +445,7 @@ export function isEnrichmentDependencyTable(table: string): boolean {
 // ---------------------------------------------------------------------------
 
 /** Persist at most once per this many newly indexed tables during Stage 3. */
-export const SEARCH_INDEX_PERSIST_TABLE_BATCH = 18;
+export const SEARCH_INDEX_PERSIST_TABLE_BATCH = 15;
 /** ... or once this many milliseconds have elapsed since the last write. */
 export const SEARCH_INDEX_PERSIST_INTERVAL_MS = 4_000;
 
@@ -587,6 +704,13 @@ function emitTables(force = false): void {
 function currentCatalog(): FilterCatalog {
   // Season/source counts and labels are derived from enriched entries.
   ensureIndexEnriched();
+  const tablesCount = indexedTables.size;
+  if (
+    filterCatalogCache?.generation === indexGeneration &&
+    filterCatalogCache.tablesCount === tablesCount
+  ) {
+    return filterCatalogCache.catalog;
+  }
 
   const categories: FilterOption[] = [...categoryNameMap.entries()]
     .map(([value, label]) => ({ value, label }))
@@ -599,6 +723,7 @@ function currentCatalog(): FilterCatalog {
   const catalog: FilterCatalog = { categories };
   if (seasons.length > 0) catalog.seasons = seasons;
   if (sources.length > 0) catalog.sources = sources;
+  filterCatalogCache = { generation: indexGeneration, tablesCount, catalog };
   return catalog;
 }
 
@@ -694,6 +819,7 @@ function appendEntries(newEntries: SearchIndexEntry[]): void {
     entries.push(entry);
     indexOneEntry(entry);
   }
+  if (newEntries.length > 0) invalidateIndexDerivedCaches();
 }
 
 function normalizeSearchText(value: string): string {
@@ -972,6 +1098,7 @@ function enrichIndexedEntries(): void {
 
   fullEnrichmentPending = false;
   indexDirty = true;
+  invalidateIndexDerivedCaches();
 }
 
 /**
@@ -1165,6 +1292,9 @@ function resetEngineState(): void {
   tablesByHash.clear();
   tableStatuses.clear();
   tableDataMap.clear();
+  tableDataBytes.clear();
+  persistedRawTables.clear();
+  retainedRawTableBytes = 0;
   fullItemLru.clear();
   categoryNameMap.clear();
   loadingPromises.clear();
@@ -1173,6 +1303,7 @@ function resetEngineState(): void {
   indexDirty = false;
   tablesSincePersist = 0;
   lastPersistAt = 0;
+  invalidateIndexDerivedCaches();
 }
 
 function applyCachedState(
@@ -1185,6 +1316,7 @@ function applyCachedState(
   state.fromCache = true;
   state.initialized = true;
   entries = cached.entries;
+  invalidateIndexDerivedCaches();
   indexedTables.clear();
   for (const table of cached.indexedTables) indexedTables.add(table);
   rebuildEntryLookups();
@@ -1495,7 +1627,12 @@ async function loadTablesInParallel(
 async function loadTable(table: string, explicit = false): Promise<void> {
   if (table === ARTIFACT_PERKS_TABLE) return;
   const status = getOrCreateTableStatus(table);
-  if (status.hasFullData) return;
+  if (status.hasFullData) {
+    if (FULL_ITEM_TABLES.has(table) || getRetainedRawTable(table)) return;
+    // A raw secondary table can be marked loaded after its in-memory copy was
+    // evicted. Restore the durable copy before deciding the load is complete.
+    if (await getRawTableFromCache(table)) return;
+  }
   const inFlight = loadingPromises.get(table);
   if (inFlight) {
     await inFlight;
@@ -1550,11 +1687,16 @@ async function doLoadTable(table: string, explicit: boolean): Promise<void> {
     // restore only the search summaries, so this is the hot path for loading
     // raw definitions of a table that is already indexed.
     let data = await getTableData(state.locale, state.versionSignature, table);
+    let persisted = data !== undefined;
     if (!data) {
       data = await fetchComponentJson(path);
       await putTableData(state.locale, state.versionSignature, table, data);
+      // The IndexedDB wrapper degrades silently when unavailable. Only make
+      // newly fetched data evictable when the browser exposes a backing store;
+      // cache reads are independently confirmed by getTableData above.
+      persisted = typeof indexedDB !== 'undefined';
     }
-    tableDataMap.set(table, data);
+    retainRawTable(table, data, persisted);
     status.loaded = true;
     status.hasFullData = true;
     status.count = Object.keys(data).length;
@@ -1644,7 +1786,7 @@ async function streamIntoBuckets(body: ReadableStream<Uint8Array>): Promise<void
           }
         }
         pending.push([hash, raw]);
-        pendingBytes += raw.length;
+        pendingBytes += utf8ByteLength(raw);
       }
       if (pending.length >= STREAM_FLUSH_ENTRIES || pendingBytes >= STREAM_FLUSH_BYTES) {
         await flush();
@@ -1655,6 +1797,32 @@ async function streamIntoBuckets(body: ReadableStream<Uint8Array>): Promise<void
 
   await flush();
   fullItemCount = count;
+}
+
+/** Count TextEncoder-compatible UTF-8 bytes without allocating an encoded copy. */
+function utf8ByteLength(value: string): number {
+  let bytes = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (code <= 0x7f) {
+      bytes += 1;
+    } else if (code <= 0x7ff) {
+      bytes += 2;
+    } else if (code >= 0xd800 && code <= 0xdbff) {
+      const next = i + 1 < value.length ? value.charCodeAt(i + 1) : 0;
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        i += 1;
+      } else {
+        // TextEncoder replaces an unpaired surrogate with U+FFFD.
+        bytes += 3;
+      }
+    } else {
+      // Includes unpaired low surrogates, also replaced by U+FFFD.
+      bytes += 3;
+    }
+  }
+  return bytes;
 }
 
 async function loadAllTables(): Promise<void> {
@@ -1696,16 +1864,47 @@ async function search(
   fuzzy?: FuzzySearchOptions,
   precedence?: QueryPrecedence,
 ): Promise<SearchResponse> {
+  const startedAt = Date.now();
+  const cacheKey = JSON.stringify([
+    query,
+    filters,
+    sort,
+    fuzzy ?? null,
+    precedence ?? null,
+    indexGeneration,
+  ]);
+  const requestedLimit =
+    maxResults === undefined || !Number.isFinite(maxResults)
+      ? undefined
+      : Math.max(0, Math.trunc(maxResults));
+  if (searchPageCache?.key === cacheKey) {
+    const cached = searchPageCache.response;
+    return {
+      ...cached,
+      items:
+        requestedLimit === undefined
+          ? cached.items
+          : cached.items.slice(0, requestedLimit),
+      durationMs: Date.now() - startedAt,
+    };
+  }
+  // Drop the previous page set before allocating/sorting a replacement so the
+  // worker never intentionally retains two full result lists at once.
+  searchPageCache = undefined;
+
   const availableTables = [...Object.keys(state.componentPaths), ARTIFACT_PERKS_TABLE];
   const parsed = parseSearchQuery(query, availableTables, precedence);
   const d2ai = getD2aiMappings();
-  return scoreAndFilterEntries(
+  // Retain the complete sorted match list for subsequent Load More / Load All
+  // requests. Those requests differ only in their limit and can then be served
+  // as an O(1) slice without rescoring the manifest.
+  const response = scoreAndFilterEntries(
     entries,
     parsed,
     filters,
     sort,
     categoryNameMap,
-    maxResults,
+    undefined,
     {
       latestSeason: latestSeasonNumber,
       seasonNameMap: seasonNameByNumber,
@@ -1714,6 +1913,12 @@ async function search(
       fuzzy,
     },
   );
+  searchPageCache = { key: cacheKey, response };
+  if (requestedLimit === undefined) return response;
+  return {
+    ...response,
+    items: response.items.slice(0, requestedLimit),
+  };
 }
 
 async function getFilterCatalog(): Promise<FilterCatalog> {
@@ -1753,6 +1958,99 @@ function matchesAllTerms(haystack: string, terms: string[]): boolean {
   return true;
 }
 
+let activeDeepSearchTerms: string[] = [];
+let activeDeepSearchMask = 0;
+let activeDeepSearchFoundMask = 0;
+let activeDeepSearchUsesMask = true;
+const deepSearchFoundTerms = new Set<string>();
+
+function hasDeepSearchTerm(value: unknown, term: string): boolean {
+  if (value === null || value === undefined) return false;
+  if (typeof value === 'string') return value.toLowerCase().includes(term);
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value).toLowerCase().includes(term);
+  }
+  if (Array.isArray(value)) {
+    for (const child of value) {
+      if (hasDeepSearchTerm(child, term)) return true;
+    }
+    return false;
+  }
+  if (typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    for (const key in record) {
+      if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
+      if (key.toLowerCase().includes(term) || hasDeepSearchTerm(record[key], term)) return true;
+    }
+  }
+  return false;
+}
+
+function deepSearchAllTermsFound(): boolean {
+  return activeDeepSearchUsesMask
+    ? activeDeepSearchFoundMask === activeDeepSearchMask
+    : deepSearchFoundTerms.size === activeDeepSearchTerms.length;
+}
+
+function checkDeepSearchText(text: string): void {
+  const lower = text.toLowerCase();
+  if (activeDeepSearchUsesMask) {
+    for (let i = 0; i < activeDeepSearchTerms.length; i += 1) {
+      const bit = 1 << i;
+      if (
+        (activeDeepSearchFoundMask & bit) === 0 &&
+        lower.includes(activeDeepSearchTerms[i]!)
+      ) {
+        activeDeepSearchFoundMask |= bit;
+      }
+    }
+  } else {
+    for (const term of activeDeepSearchTerms) {
+      if (!deepSearchFoundTerms.has(term) && lower.includes(term)) deepSearchFoundTerms.add(term);
+    }
+  }
+}
+
+function visitDeepSearchValue(value: unknown): boolean {
+  if (deepSearchAllTermsFound() || value === null || value === undefined) {
+    return deepSearchAllTermsFound();
+  }
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    checkDeepSearchText(String(value));
+    return deepSearchAllTermsFound();
+  }
+  if (Array.isArray(value)) {
+    for (const child of value) {
+      if (visitDeepSearchValue(child)) return true;
+    }
+    return false;
+  }
+  if (typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    for (const key in record) {
+      if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
+      checkDeepSearchText(key);
+      if (deepSearchAllTermsFound() || visitDeepSearchValue(record[key])) return true;
+    }
+  }
+  return deepSearchAllTermsFound();
+}
+
+/** Search object text without serializing every definition into a new JSON string. */
+function matchesAllValues(value: unknown, terms: string[]): boolean {
+  if (terms.length === 0) return true;
+  if (terms.length === 1) return hasDeepSearchTerm(value, terms[0]!);
+  activeDeepSearchTerms = terms;
+  activeDeepSearchUsesMask = terms.length <= 31;
+  if (activeDeepSearchUsesMask) {
+    activeDeepSearchMask = (1 << terms.length) - 1;
+    activeDeepSearchFoundMask = 0;
+  } else {
+    deepSearchFoundTerms.clear();
+  }
+  return visitDeepSearchValue(value);
+}
+
 function truncateString(value: string, max: number): string {
   return value.length > max ? value.slice(0, max) : value;
 }
@@ -1782,6 +2080,17 @@ function findDeepMatch(value: unknown, terms: string[], path: string): DeepMatch
     if (found) return found;
   }
   return undefined;
+}
+
+function getArtifactPerkHashes(): Set<number> {
+  if (artifactPerkHashSetGeneration !== indexGeneration) {
+    artifactPerkHashSet.clear();
+    for (const entry of entries) {
+      if (entry.isArtifactPerk === true) artifactPerkHashSet.add(entry.hash);
+    }
+    artifactPerkHashSetGeneration = indexGeneration;
+  }
+  return artifactPerkHashSet;
 }
 
 function entryToResult(entry: SearchIndexEntry): SearchResultItem {
@@ -1826,24 +2135,23 @@ function scanTableForDeepSearch(
   scan: DeepScanState,
   onlyArtifactPerks = false,
 ): void {
-  for (const [hashKey, raw] of Object.entries(data)) {
+  const artifactHashes = onlyArtifactPerks ? getArtifactPerkHashes() : undefined;
+  for (const hashKey in data) {
+    if (!Object.prototype.hasOwnProperty.call(data, hashKey)) continue;
+    const raw = data[hashKey]!;
+    const hash = toUnsignedHash(Number(hashKey));
+    let entry: SearchIndexEntry | undefined;
     if (onlyArtifactPerks) {
-      const entry = extractTableEntrySummary(table, hashKey, raw);
-      if (entry.isArtifactPerk !== true) continue;
-      if (!matchesAllTerms(JSON.stringify(raw), terms)) continue;
-      scan.totalMatches += 1;
-      if (scan.items.length >= scan.cap) continue;
-      const item = entryToResult(entry);
-      const deepMatch = findDeepMatch(raw, terms, '');
-      if (deepMatch) item.deepMatch = deepMatch;
-      scan.items.push(item);
-      continue;
+      if (!artifactHashes?.has(hash)) continue;
     }
-    // Fast pre-filter on the serialized definition before walking the object.
-    if (!matchesAllTerms(JSON.stringify(raw), terms)) continue;
+    if (!matchesAllValues(raw, terms)) continue;
+    if (onlyArtifactPerks) {
+      entry = entriesByTableAndHash.get(`${table}:${hash}`) ?? entryByHash.get(hash);
+      if (entry?.isArtifactPerk !== true) continue;
+    }
     scan.totalMatches += 1;
     if (scan.items.length >= scan.cap) continue;
-    const entry = extractTableEntrySummary(table, hashKey, raw);
+    entry ??= extractTableEntrySummary(table, hashKey, raw);
     const item = entryToResult(entry);
     const deepMatch = findDeepMatch(raw, terms, '');
     if (deepMatch) item.deepMatch = deepMatch;
@@ -1858,6 +2166,8 @@ async function scanFullItemsForDeepSearch(
 ): Promise<void> {
   await iterateFullItems(state.locale, state.versionSignature, (hash, rawJson) => {
     if (onlyArtifactPerks) {
+      if (!getArtifactPerkHashes().has(toUnsignedHash(hash))) return;
+      if (!matchesAllTerms(rawJson, terms)) return;
       let parsed: Record<string, unknown>;
       try {
         parsed = JSON.parse(rawJson) as Record<string, unknown>;
@@ -1866,7 +2176,6 @@ async function scanFullItemsForDeepSearch(
       }
       const entry = extractTableEntrySummary(INVENTORY_ITEM_TABLE, String(hash), parsed);
       if (entry.isArtifactPerk !== true) return;
-      if (!matchesAllTerms(rawJson, terms)) return;
       scan.totalMatches += 1;
       if (scan.items.length >= scan.cap) return;
       const item = entryToResult(entry);
@@ -1905,6 +2214,7 @@ async function deepSearch(
   if (terms.length === 0) {
     return { items: [], totalMatches: 0, durationMs: Date.now() - startedAt };
   }
+  ensureIndexEnriched();
 
   const requestedTable =
     filters.table && filters.table !== 'all' && filters.table !== '' ? filters.table : undefined;
@@ -1914,7 +2224,7 @@ async function deepSearch(
       if (await hasFullItemsCached(state.locale, state.versionSignature)) {
         await scanFullItemsForDeepSearch(terms, scan, true);
       } else {
-        const lite = tableDataMap.get('DestinyInventoryItemLiteDefinition');
+        const lite = await getRawTableFromCache('DestinyInventoryItemLiteDefinition');
         if (lite) {
           scanTableForDeepSearch('DestinyInventoryItemLiteDefinition', lite, terms, scan, true);
         }
@@ -1923,26 +2233,25 @@ async function deepSearch(
       if (await hasFullItemsCached(state.locale, state.versionSignature)) {
         await scanFullItemsForDeepSearch(terms, scan);
       } else {
-        const lite = tableDataMap.get('DestinyInventoryItemLiteDefinition');
+        const lite = await getRawTableFromCache('DestinyInventoryItemLiteDefinition');
         if (lite) scanTableForDeepSearch('DestinyInventoryItemLiteDefinition', lite, terms, scan);
       }
     } else {
-      const mem = tableDataMap.get(requestedTable);
+      const mem = await getRawTableFromCache(requestedTable);
       if (mem) {
         scanTableForDeepSearch(requestedTable, mem, terms, scan);
       } else {
-        const idb = await getTableData(state.locale, state.versionSignature, requestedTable);
-        if (idb) {
-          tableDataMap.set(requestedTable, idb);
-          scanTableForDeepSearch(requestedTable, idb, terms, scan);
-        }
+        // A missing table may have been evicted after its durable IDB write;
+        // getRawTableFromCache already attempts that reload.
       }
     }
   } else {
     const hasFull = await hasFullItemsCached(state.locale, state.versionSignature);
-    for (const [table, data] of tableDataMap) {
+    for (const table of indexedTables) {
       // Prefer the full item buckets over the reduced Lite table when available.
       if (table === 'DestinyInventoryItemLiteDefinition' && hasFull) continue;
+      const data = await getRawTableFromCache(table);
+      if (!data) continue;
       scanTableForDeepSearch(table, data, terms, scan);
     }
     if (hasFull) await scanFullItemsForDeepSearch(terms, scan);
@@ -2093,17 +2402,10 @@ async function getDefinition(
     return buildDetail(table, hash, buildLiteData(entry), true);
   }
 
-  let data = tableDataMap.get(table)?.[String(hash)];
+  let data = (await getRawTableFromCache(table))?.[String(hash)];
   if (!data) {
-    const idb = await getTableData(state.locale, state.versionSignature, table);
-    if (idb) {
-      tableDataMap.set(table, idb);
-      data = idb[String(hash)];
-    }
-  }
-  if (!data) {
-    await loadTable(table);
-    data = tableDataMap.get(table)?.[String(hash)];
+    if (!getOrCreateTableStatus(table).hasFullData) await loadTable(table);
+    data = (await getRawTableFromCache(table))?.[String(hash)];
   }
   if (!data) throw new Error(`Definition ${hash} not found in ${table}`);
   return buildDetail(table, hash, data, false);
@@ -2278,14 +2580,7 @@ async function readDefinitionData(
       return undefined;
     }
   }
-  const mem = tableDataMap.get(table)?.[String(hash)];
-  if (mem) return mem;
-  const idb = await getTableData(state.locale, state.versionSignature, table);
-  if (idb) {
-    tableDataMap.set(table, idb);
-    return idb[String(hash)];
-  }
-  return undefined;
+  return (await getRawTableFromCache(table))?.[String(hash)];
 }
 
 function displayName(definition: Record<string, unknown> | undefined, fallback: string): string {
@@ -2667,12 +2962,14 @@ async function buildLinkedEntities(
 // ---------------------------------------------------------------------------
 
 const VARIANT_SUFFIXES = ['(Adept)', '(Timelost)', '(Harrowed)', '(Brave)', '(Enhanced)'];
+const VARIANT_SUFFIXES_LOWER = VARIANT_SUFFIXES.map((suffix) => suffix.toLowerCase());
 
 function normalizeBaseName(name: string): string {
   let out = name.trim();
   const lower = out.toLowerCase();
-  for (const suffix of VARIANT_SUFFIXES) {
-    if (lower.endsWith(suffix.toLowerCase())) {
+  for (let i = 0; i < VARIANT_SUFFIXES.length; i += 1) {
+    const suffix = VARIANT_SUFFIXES[i]!;
+    if (lower.endsWith(VARIANT_SUFFIXES_LOWER[i]!)) {
       out = out.slice(0, out.length - suffix.length).trim();
       break;
     }
@@ -2706,12 +3003,24 @@ async function getVariants(table: string, hashInput: number): Promise<VariantIte
   const baseName = target?.name ? normalizeBaseName(target.name) : undefined;
   if (!baseName) return [];
 
-  const variants: VariantItem[] = [];
-  for (const entry of entries) {
-    if (entry.table !== table || !entry.name) continue;
-    if (normalizeBaseName(entry.name) === baseName) {
-      variants.push(toVariantItem(entry));
+  if (variantIndexGeneration !== indexGeneration) {
+    variantEntriesByName.clear();
+    for (let index = 0; index < entries.length; index += 1) {
+      const entry = entries[index]!;
+      if (!entry.name) continue;
+      const name = normalizeBaseName(entry.name);
+      const key = `${entry.table}\u0000${name}`;
+      const indices = variantEntriesByName.get(key);
+      if (indices) indices.push(index);
+      else variantEntriesByName.set(key, [index]);
     }
+    variantIndexGeneration = indexGeneration;
+  }
+
+  const variants: VariantItem[] = [];
+  const indices = variantEntriesByName.get(`${table}\u0000${baseName}`) ?? [];
+  for (const index of indices) {
+    variants.push(toVariantItem(entries[index]!));
   }
   variants.sort((a, b) => {
     if (a.hash === hash) return -1;
@@ -2725,30 +3034,45 @@ async function getVariants(table: string, hashInput: number): Promise<VariantIte
 // Reverse references
 // ---------------------------------------------------------------------------
 
+const arrayPathSegments: string[] = [];
+
+function arrayPathSegment(index: number): string {
+  return (arrayPathSegments[index] ??= `\u0000${index}]`);
+}
+
+function formatReferencePath(pathStack: string[]): string {
+  return pathStack.join('.').replace(/\.?\u0000/g, '[');
+}
+
 function scanForHash(
   value: unknown,
   target: number,
   sourceHash: number,
-  path: string,
+  pathStack: string[],
   paths: string[],
 ): void {
   if (value === null || value === undefined) return;
   if (typeof value === 'number') {
-    if (toUnsignedHash(value) === target) paths.push(path);
+    if (toUnsignedHash(value) === target) paths.push(formatReferencePath(pathStack));
     return;
   }
   if (Array.isArray(value)) {
     for (let i = 0; i < value.length; i++) {
-      scanForHash(value[i], target, sourceHash, `${path}[${i}]`, paths);
+      pathStack.push(arrayPathSegment(i));
+      scanForHash(value[i], target, sourceHash, pathStack, paths);
+      pathStack.pop();
     }
     return;
   }
   if (typeof value === 'object') {
-    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-      const childPath = path ? `${path}.${key}` : key;
+    const record = value as Record<string, unknown>;
+    for (const key in record) {
+      if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
       // A definition's own root `hash` field must never count as a self-reference.
-      if (childPath === 'hash' && sourceHash === target) continue;
-      scanForHash(child, target, sourceHash, childPath, paths);
+      if (pathStack.length === 0 && key === 'hash' && sourceHash === target) continue;
+      pathStack.push(key);
+      scanForHash(record[key], target, sourceHash, pathStack, paths);
+      pathStack.pop();
     }
   }
 }
@@ -2783,22 +3107,38 @@ async function getReverseReferences(
 ): Promise<ReverseReferenceResponse> {
   const start = performance.now();
   const target = toUnsignedHash(targetHashInput);
+  const cacheKey = JSON.stringify([
+    target,
+    targetTable ?? null,
+    tablesToScan ?? null,
+    indexGeneration,
+  ]);
+  const cached = reverseReferenceCache.get(cacheKey);
+  if (cached) {
+    reverseReferenceCache.delete(cacheKey);
+    reverseReferenceCache.set(cacheKey, cached);
+    return { ...cached, durationMs: performance.now() - start };
+  }
   const scannedTables: string[] = [];
   const unloadedPriorityTables: string[] = [];
   const groups = new Map<string, ReverseReference>();
+  const pathStack: string[] = [];
+  const matchedPaths: string[] = [];
 
   const scanTableData = (
     table: string,
     data: Record<string, Record<string, unknown>>,
   ): void => {
     scannedTables.push(table);
-    for (const [hashKey, raw] of Object.entries(data)) {
+    for (const hashKey in data) {
+      if (!Object.prototype.hasOwnProperty.call(data, hashKey)) continue;
+      const raw = data[hashKey]!;
       const sourceHash = toUnsignedHash(Number(hashKey));
       // Skip the definition being inspected so it never lists itself.
       if (table === targetTable && sourceHash === target) continue;
-      const paths: string[] = [];
-      scanForHash(raw, target, sourceHash, '', paths);
-      if (paths.length > 0) groupReference(groups, table, sourceHash, paths);
+      matchedPaths.length = 0;
+      scanForHash(raw, target, sourceHash, pathStack, matchedPaths);
+      if (matchedPaths.length > 0) groupReference(groups, table, sourceHash, matchedPaths);
     }
   };
 
@@ -2814,10 +3154,10 @@ async function getReverseReferences(
       } catch {
         return;
       }
-      const paths: string[] = [];
-      scanForHash(parsed, target, sourceHash, '', paths);
-      if (paths.length > 0) {
-        groupReference(groups, INVENTORY_ITEM_TABLE, sourceHash, paths);
+      matchedPaths.length = 0;
+      scanForHash(parsed, target, sourceHash, pathStack, matchedPaths);
+      if (matchedPaths.length > 0) {
+        groupReference(groups, INVENTORY_ITEM_TABLE, sourceHash, matchedPaths);
       }
     });
   };
@@ -2832,35 +3172,25 @@ async function getReverseReferences(
         }
         continue;
       }
-      const mem = tableDataMap.get(table);
-      if (mem) {
+      const data = await getRawTableFromCache(table);
+      if (data) {
+        const mem = data;
         scanTableData(table, mem);
       } else {
-        const idb = await getTableData(state.locale, state.versionSignature, table);
-        if (idb) {
-          tableDataMap.set(table, idb);
-          scanTableData(table, idb);
-        } else {
-          unloadedPriorityTables.push(table);
-        }
+        unloadedPriorityTables.push(table);
       }
     }
   } else {
-    for (const [table, data] of tableDataMap) {
+    for (const [table, data] of [...tableDataMap]) {
       scanTableData(table, data);
+      getRetainedRawTable(table);
     }
     for (const table of REVERSE_REF_PRIORITY_TABLES) {
       if (table === INVENTORY_ITEM_TABLE) continue;
       if (scannedTables.includes(table)) continue;
-      const mem = tableDataMap.get(table);
-      if (mem) {
-        scanTableData(table, mem);
-        continue;
-      }
-      const idb = await getTableData(state.locale, state.versionSignature, table);
-      if (idb) {
-        tableDataMap.set(table, idb);
-        scanTableData(table, idb);
+      const data = await getRawTableFromCache(table);
+      if (data) {
+        scanTableData(table, data);
       } else {
         unloadedPriorityTables.push(table);
       }
@@ -2872,12 +3202,19 @@ async function getReverseReferences(
     }
   }
 
-  return {
+  const response: ReverseReferenceResponse = {
     references: [...groups.values()],
     scannedTables,
     unloadedPriorityTables,
     durationMs: performance.now() - start,
   };
+  reverseReferenceCache.set(cacheKey, response);
+  while (reverseReferenceCache.size > REVERSE_REFERENCE_CACHE_LIMIT) {
+    const oldest = reverseReferenceCache.keys().next().value;
+    if (oldest === undefined) break;
+    reverseReferenceCache.delete(oldest);
+  }
+  return response;
 }
 
 // ---------------------------------------------------------------------------
@@ -3028,14 +3365,7 @@ async function resolveSummaries(
       }
     }
 
-    let raw = tableDataMap.get(ref.table)?.[String(unsigned)];
-    if (!raw && state.versionSignature) {
-      const idbTable = await getTableData(state.locale, state.versionSignature, ref.table);
-      if (idbTable) {
-        tableDataMap.set(ref.table, idbTable);
-        raw = idbTable[String(unsigned)];
-      }
-    }
+    const raw = (await getRawTableFromCache(ref.table))?.[String(unsigned)];
     if (raw) {
       const summary = extractTableEntrySummary(ref.table, String(unsigned), raw);
       result[key] = {

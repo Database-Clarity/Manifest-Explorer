@@ -31,6 +31,7 @@ import {
   type SearchContext,
 } from '../query';
 import { SEASON_ALIASES, formatShortSeasonName, getD2aiMappings, normalizeSourceLookup } from '../d2ai';
+import { normalizeSourceLookup as normalizeSourceLookupPure } from '../sourceLookup';
 import {
   ARTIFACT_PERKS_TABLE,
   CORE_BOOT_TABLES,
@@ -472,6 +473,11 @@ describe('table metadata and summaries', () => {
 
 describe('query parser', () => {
   const tables = [ITEM_TABLE, 'DestinySandboxPerkDefinition', 'DestinyActivityDefinition'];
+
+  it('keeps pure source normalization in the lightweight source lookup module', () => {
+    expect(normalizeSourceLookupPure('Iron Banner!')).toBe('ironbanner');
+    expect(normalizeSourceLookupPure('Iron Banner!')).toBe(normalizeSourceLookup('Iron Banner!'));
+  });
 
   it('keeps quoted phrases together and extracts negation', () => {
     const parsed = parseSearchQuery('"auto rifle" -engram', tables);
@@ -1158,7 +1164,7 @@ describe('cached manifest boot status', () => {
 
 describe('search index persistence coalescing', () => {
   it('batches Stage 3 writes by table count or elapsed time', () => {
-    expect(SEARCH_INDEX_PERSIST_TABLE_BATCH).toBe(18);
+    expect(SEARCH_INDEX_PERSIST_TABLE_BATCH).toBe(15);
     expect(SEARCH_INDEX_PERSIST_INTERVAL_MS).toBe(4_000);
 
     expect(shouldFlushSearchIndex(0, 10_000, 10_001)).toBe(false);

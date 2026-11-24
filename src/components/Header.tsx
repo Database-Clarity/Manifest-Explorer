@@ -1,5 +1,7 @@
 /// <reference types="vite/client" />
 import {
+  lazy,
+  Suspense,
   useEffect,
   useLayoutEffect,
   memo,
@@ -15,10 +17,9 @@ import {
   type RefObject,
 } from 'react';
 import {
-  CHANGELOG,
-  computeChangelogOpenState,
-  readLastSeenChangelogVersion,
-} from '../data/changelog';
+  CHANGELOG_SEEN_EVENT,
+  hasUnseenChangelogMeta,
+} from '../data/changelogMeta';
 import type { BungieLocale } from '../types/manifest';
 import { BUNGIE_LOCALES } from '../types/manifest';
 import { useCollectorStore } from '../stores/collector';
@@ -35,16 +36,29 @@ import {
   SearchIcon,
   SettingsIcon,
 } from '../ui/Icons';
-import { CollectorPopover } from './CollectorPopover';
-import { FiltersPopover } from './FiltersPopover';
 import {
   SearchAutocomplete,
   applySearchSuggestion,
   buildSearchSuggestions,
   type SearchSuggestion,
 } from './SearchAutocomplete';
-import { SettingsPopover } from './SettingsPopover';
 import styles from './Header.module.scss';
+
+const LazyCollectorPopover = lazy(() =>
+  import('./CollectorPopover').then((module) => ({
+    default: module.CollectorPopover,
+  })),
+);
+const LazyFiltersPopover = lazy(() =>
+  import('./FiltersPopover').then((module) => ({
+    default: module.FiltersPopover,
+  })),
+);
+const LazySettingsPopover = lazy(() =>
+  import('./SettingsPopover').then((module) => ({
+    default: module.SettingsPopover,
+  })),
+);
 
 export interface HeaderProps {
   searchInputRef: RefObject<HTMLInputElement | HTMLTextAreaElement | null>;
@@ -95,12 +109,6 @@ function formatBadge(count: number): string {
   return count > 99 ? '99+' : String(count);
 }
 
-function hasUnseenChangelog(): boolean {
-  return (
-    computeChangelogOpenState(readLastSeenChangelogVersion(), CHANGELOG).unseenVersions.length > 0
-  );
-}
-
 /** Stable empty list so the closed autocomplete state never allocates. */
 const EMPTY_SUGGESTIONS: readonly SearchSuggestion[] = [];
 
@@ -131,6 +139,9 @@ export const Header = memo(function Header({
   onSelectTable,
 }: HeaderProps): ReactNode {
   const [menu, setMenu] = useState<MenuState | null>(null);
+  const [hasUnseenChangelog, setHasUnseenChangelog] = useState(
+    () => hasUnseenChangelogMeta(),
+  );
   const [searchFocused, setSearchFocused] = useState(false);
   const [isMobileViewport, setIsMobileViewport] = useState(
     () =>
@@ -161,6 +172,16 @@ export const Header = memo(function Header({
 
   const collectedCount = useCollectorStore((state) => state.items.length);
   const collectMode = useCollectorStore((state) => state.collectMode);
+
+  useEffect(() => {
+    const syncUnseen = (): void => setHasUnseenChangelog(hasUnseenChangelogMeta());
+    window.addEventListener(CHANGELOG_SEEN_EVENT, syncUnseen);
+    window.addEventListener('storage', syncUnseen);
+    return () => {
+      window.removeEventListener(CHANGELOG_SEEN_EVENT, syncUnseen);
+      window.removeEventListener('storage', syncUnseen);
+    };
+  }, []);
 
   const activeFilterCount = countActiveFilters(
     query,
@@ -579,34 +600,46 @@ export const Header = memo(function Header({
 
       </header>
 
-      <FiltersPopover
-        open={filtersOpen}
-        onClose={closeMenu}
-        anchorRef={filtersAnchorRef}
-        align={filtersAlign}
-        onSelectTable={onSelectTable}
-        onLoadAllTables={onLoadAllTables}
-      />
+      {filtersOpen && (
+        <Suspense fallback={null}>
+          <LazyFiltersPopover
+            open={filtersOpen}
+            onClose={closeMenu}
+            anchorRef={filtersAnchorRef}
+            align={filtersAlign}
+            onSelectTable={onSelectTable}
+            onLoadAllTables={onLoadAllTables}
+          />
+        </Suspense>
+      )}
 
-      <CollectorPopover
-        open={collectorOpen}
-        onClose={closeMenu}
-        anchorRef={collectorAnchorRef}
-      />
+      {collectorOpen && (
+        <Suspense fallback={null}>
+          <LazyCollectorPopover
+            open={collectorOpen}
+            onClose={closeMenu}
+            anchorRef={collectorAnchorRef}
+          />
+        </Suspense>
+      )}
 
-      <SettingsPopover
-        open={settingsOpen}
-        onClose={closeMenu}
-        anchorRef={settingsRef}
-        onCheckUpdates={onCheckUpdates}
-        onClearCache={onClearCache}
-        onLoadAllTables={onLoadAllTables}
-        onOpenChangelog={onOpenChangelog}
-        onOpenHelp={onOpenHelp}
-        onOpenCollector={() => setMenu({ name: 'collector', source: 'settings' })}
-        hasUnseenChangelog={hasUnseenChangelog()}
-        onLocaleChange={onLocaleChange}
-      />
+      {settingsOpen && (
+        <Suspense fallback={null}>
+          <LazySettingsPopover
+            open={settingsOpen}
+            onClose={closeMenu}
+            anchorRef={settingsRef}
+            onCheckUpdates={onCheckUpdates}
+            onClearCache={onClearCache}
+            onLoadAllTables={onLoadAllTables}
+            onOpenChangelog={onOpenChangelog}
+            onOpenHelp={onOpenHelp}
+            onOpenCollector={() => setMenu({ name: 'collector', source: 'settings' })}
+            hasUnseenChangelog={hasUnseenChangelog}
+            onLocaleChange={onLocaleChange}
+          />
+        </Suspense>
+      )}
     </>
   );
 });

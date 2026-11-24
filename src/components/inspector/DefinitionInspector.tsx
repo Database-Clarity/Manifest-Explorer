@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   memo,
   useCallback,
   useEffect,
@@ -39,14 +41,34 @@ import { Popover } from '../../ui/Popover';
 import { Skeleton } from '../../ui/Skeleton';
 import { BungieIcon } from '../BungieIcon';
 import { activateOnMiddleClick, preventMiddleClickAutoScroll } from '../middleClick';
-import { DiffTab } from './DiffTab';
-import { HistoryTab } from './HistoryTab';
 import { JsonTree } from './JsonTree';
-import { OverviewTab } from './OverviewTab';
-import { ReferencesTab } from './ReferencesTab';
-import { VariantsTab } from './VariantsTab';
 import styles from './DefinitionInspector.module.scss';
 
+const LazyOverviewTab = lazy(() =>
+  import('./OverviewTab').then((module) => ({ default: module.OverviewTab })),
+);
+const LazyVariantsTab = lazy(() =>
+  import('./VariantsTab').then((module) => ({ default: module.VariantsTab })),
+);
+const LazyReferencesTab = lazy(() =>
+  import('./ReferencesTab').then((module) => ({ default: module.ReferencesTab })),
+);
+const LazyDiffTab = lazy(() =>
+  import('./DiffTab').then((module) => ({ default: module.DiffTab })),
+);
+const LazyHistoryTab = lazy(() =>
+  import('./HistoryTab').then((module) => ({ default: module.HistoryTab })),
+);
+
+function InspectorTabFallback(): ReactNode {
+  return (
+    <div className={styles.loadingState} aria-label="Loading inspector tab">
+      <Skeleton height="1.25rem" width="55%" />
+      <Skeleton height="1rem" width="80%" />
+      <Skeleton height="1rem" width="70%" />
+    </div>
+  );
+}
 function isDefinitionEnhanced(data: Record<string, unknown> | undefined): boolean {
   if (!data) {
     return false;
@@ -156,6 +178,7 @@ function DefinitionInspectorImpl({
   const closeInspector = useExplorerStore((s) => s.closeInspector);
   const setMobileInspectorOpen = useExplorerStore((s) => s.setMobileInspectorOpen);
   const setActiveTab = useExplorerStore((s) => s.setActiveTab);
+  const getEntryScroll = useExplorerStore((s) => s.getEntryScroll);
   const saveEntryScroll = useExplorerStore((s) => s.saveEntryScroll);
   const saveEntryJsonState = useExplorerStore((s) => s.saveEntryJsonState);
   const pinForDiff = useExplorerStore((s) => s.pinForDiff);
@@ -292,7 +315,7 @@ function DefinitionInspectorImpl({
 
   // Restore saved scrollTop whenever switching tabs, stepping through history/future,
   // switching sub-tabs, or finishing a detail load.
-  const targetScrollTop = activeEntry?.scrollByTab[activeTab] ?? 0;
+  const targetScrollTop = getEntryScroll(activeTab);
   useEffect(() => {
     let raf1 = 0;
     let raf2 = 0;
@@ -1172,15 +1195,19 @@ function DefinitionInspectorImpl({
                 className={styles.tabPanelSlot}
                 data-inspector-panel-active={activeTab === 'overview' ? 'true' : 'false'}
               >
-                <OverviewTab
-                  detail={detail}
-                  loadingFull={loadingFull}
-                  clarityEntry={clarityEntry}
-                  clarityLoading={clarityLoading}
-                  showClarity={showClarity}
-                  onNavigateRef={(ref, inNewTab) => navigateWithFlush(ref, inNewTab)}
-                  onLoadFullItem={onLoadFullItem}
-                />
+                <Suspense fallback={<InspectorTabFallback />}>
+                  <LazyOverviewTab
+                    detail={detail}
+                    loadingFull={loadingFull}
+                    clarityEntry={clarityEntry}
+                    clarityLoading={clarityLoading}
+                    showClarity={showClarity}
+                    imageScaling={imageScaling}
+                    onNavigateRef={(ref, inNewTab) => navigateWithFlush(ref, inNewTab)}
+                    onCopy={copyText}
+                    onLoadFullItem={onLoadFullItem}
+                  />
+                </Suspense>
               </div>
             )}
             {visitedTabs.has('variants') && (
@@ -1189,23 +1216,25 @@ function DefinitionInspectorImpl({
                 className={styles.tabPanelSlot}
                 data-inspector-panel-active={activeTab === 'variants' ? 'true' : 'false'}
               >
-                <VariantsTab
-                  currentRef={currentRef}
-                  variants={variants}
-                  loading={variantsLoading}
-                  onNavigateRef={(ref, inNewTab) => navigateWithFlush(ref, inNewTab)}
-                  onDiffVariant={(variantRef) => {
-                    flushScroll();
-                    pinForDiff({
-                      table: currentRef.table,
-                      hash: unsignedHash,
-                      label: itemName,
-                      icon: iconPath,
-                    });
-                    onNavigateRef(variantRef, false);
-                    setActiveTab('diff');
-                  }}
-                />
+                <Suspense fallback={<InspectorTabFallback />}>
+                  <LazyVariantsTab
+                    currentRef={currentRef}
+                    variants={variants}
+                    loading={variantsLoading}
+                    onNavigateRef={(ref, inNewTab) => navigateWithFlush(ref, inNewTab)}
+                    onDiffVariant={(variantRef) => {
+                      flushScroll();
+                      pinForDiff({
+                        table: currentRef.table,
+                        hash: unsignedHash,
+                        label: itemName,
+                        icon: iconPath,
+                      });
+                      onNavigateRef(variantRef, false);
+                      setActiveTab('diff');
+                    }}
+                  />
+                </Suspense>
               </div>
             )}
             {visitedTabs.has('references') && (
@@ -1214,12 +1243,14 @@ function DefinitionInspectorImpl({
                 className={styles.tabPanelSlot}
                 data-inspector-panel-active={activeTab === 'references' ? 'true' : 'false'}
               >
-                <ReferencesTab
-                  response={references}
-                  loading={referencesLoading}
-                  onNavigateRef={(ref, inNewTab) => navigateWithFlush(ref, inNewTab)}
-                  onLoadPriorityTable={onLoadPriorityTable}
-                />
+                <Suspense fallback={<InspectorTabFallback />}>
+                  <LazyReferencesTab
+                    response={references}
+                    loading={referencesLoading}
+                    onNavigateRef={(ref, inNewTab) => navigateWithFlush(ref, inNewTab)}
+                    onLoadPriorityTable={onLoadPriorityTable}
+                  />
+                </Suspense>
               </div>
             )}
             {visitedTabs.has('raw') && (
@@ -1259,24 +1290,26 @@ function DefinitionInspectorImpl({
                 className={styles.tabPanelSlot}
                 data-inspector-panel-active={activeTab === 'diff' ? 'true' : 'false'}
               >
-                <DiffTab
-                  current={detail}
-                  pinnedRef={pinnedDiffRef}
-                  pinnedDetail={pinnedDetail}
-                  pinnedLoading={pinnedLoading}
-                  onPinCurrent={() =>
-                    pinForDiff({
-                      table: currentRef.table,
-                      hash: unsignedHash,
-                      label: itemName,
-                      icon: iconPath,
-                    })
-                  }
-                  onClearPin={clearPinnedDiff}
-                  onNavigateRef={(ref, inNewTab) =>
-                    navigateWithFlush(ref, inNewTab)
-                  }
-                />
+                <Suspense fallback={<InspectorTabFallback />}>
+                  <LazyDiffTab
+                    current={detail}
+                    pinnedRef={pinnedDiffRef}
+                    pinnedDetail={pinnedDetail}
+                    pinnedLoading={pinnedLoading}
+                    onPinCurrent={() =>
+                      pinForDiff({
+                        table: currentRef.table,
+                        hash: unsignedHash,
+                        label: itemName,
+                        icon: iconPath,
+                      })
+                    }
+                    onClearPin={clearPinnedDiff}
+                    onNavigateRef={(ref, inNewTab) =>
+                      navigateWithFlush(ref, inNewTab)
+                    }
+                  />
+                </Suspense>
               </div>
             )}
             {visitedTabs.has('history') && (
@@ -1285,16 +1318,18 @@ function DefinitionInspectorImpl({
                 className={styles.tabPanelSlot}
                 data-inspector-panel-active={activeViewTab === 'history' ? 'true' : 'false'}
               >
-                <HistoryTab
-                  key={`${detail.table}:${detail.hash}`}
-                  table={currentRef.table}
-                  hash={currentRef.hash}
-                  currentData={detail.data}
-                  resolvedRefs={detail.resolvedRefs}
-                  imageScaling={imageScaling}
-                  onNavigateRef={(ref, inNewTab) => navigateWithFlush(ref, inNewTab)}
-                  onCopy={copyText}
-                />
+                <Suspense fallback={<InspectorTabFallback />}>
+                  <LazyHistoryTab
+                    key={`${detail.table}:${detail.hash}`}
+                    table={currentRef.table}
+                    hash={currentRef.hash}
+                    currentData={detail.data}
+                    resolvedRefs={detail.resolvedRefs}
+                    imageScaling={imageScaling}
+                    onNavigateRef={(ref, inNewTab) => navigateWithFlush(ref, inNewTab)}
+                    onCopy={copyText}
+                  />
+                </Suspense>
               </div>
             )}
           </>

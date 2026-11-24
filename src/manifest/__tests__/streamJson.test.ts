@@ -129,6 +129,15 @@ describe('streamTopLevelJsonObject', () => {
     expect(big['k999']).toBe(999);
   });
 
+  it('streams multi-megabyte string values as contiguous slices', async () => {
+    const payload = 'solar🙂-brace{}-quote"\\-'.repeat(90_000);
+    const text = JSON.stringify({ large: payload, trailing: { retained: true } });
+    const { count, entries } = await collectStream(text, 32_768, 1);
+    expect(count).toBe(2);
+    expect(JSON.parse(entries[0]![1])).toBe(payload);
+    expect(JSON.parse(entries[1]![1])).toEqual({ retained: true });
+  });
+
   it('streams an empty object', async () => {
     const { count, entries } = await collectStream('{}', 1);
     expect(count).toBe(0);

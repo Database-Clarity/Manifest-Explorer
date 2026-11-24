@@ -1,6 +1,18 @@
 import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 
+/**
+ * Stable framework runtime that changes far less often than app code. Keeping
+ * it in its own fingerprinted chunk lets browsers reuse the cached React
+ * runtime across deploys instead of re-downloading it with the app bundle.
+ */
+const VENDOR_MODULE_RE = /\/node_modules\/(?:react|react-dom|scheduler|zustand)\//;
+
+function splitVendorChunk(id: string): string | undefined {
+  const normalizedId = id.replace(/\\/g, '/');
+  return VENDOR_MODULE_RE.test(normalizedId) ? 'vendor' : undefined;
+}
+
 function emitVersionJsonPlugin(buildId: string): Plugin {
   return {
     name: 'emit-version-json',
@@ -58,6 +70,11 @@ export default defineConfig(({ command }) => {
     build: {
       target: 'es2022',
       sourcemap: false,
+      rollupOptions: {
+        output: {
+          manualChunks: splitVendorChunk,
+        },
+      },
     },
   };
 });

@@ -2,6 +2,7 @@
 import { memo, type ReactNode } from 'react';
 import type { ManifestStatus } from '../types/manifest';
 import { useExplorerStore } from '../stores/explorer';
+import { ClarityLogoMark, KofiIcon } from '../ui/Icons';
 import styles from './StatusBar.module.scss';
 
 export interface StatusBarProps {
@@ -139,16 +140,18 @@ export const StatusBar = memo(function StatusBar({
           rel="noopener noreferrer"
           title="Clarity website (d2clarity.com)"
         >
+          <ClarityLogoMark size={13} />
           Clarity
         </a>
         <a
-          className={cx(styles.barLink, styles.barLinkAccent)}
+          className={cx(styles.barLink, styles.kofiButton)}
           href="https://ko-fi.com/D2Clarity"
           target="_blank"
           rel="noopener noreferrer"
           title="Support Clarity on Ko-Fi"
         >
-          Ko-Fi
+          <KofiIcon size={12} />
+          Support on Ko-Fi
         </a>
       </div>
     </footer>

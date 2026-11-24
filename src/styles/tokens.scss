@@ -56,6 +56,10 @@
   --cyan: #1cdcfc;
   --cyan-edge: #1cdcfc;
   --enhanced: #eade8b;
+  --pane-bar-h: 2.0625rem;
+  --kofi-bg: #d13838;
+  --kofi-hover: #b82e2e;
+  --kofi-fg: #ffffff;
 
   // Status families
   --warn: #f2ce7e;
@@ -171,6 +175,10 @@
   --cyan: #1cdcfc;
   --cyan-edge: #09647a;
   --enhanced: #6e5a00;
+  --pane-bar-h: 2.0625rem;
+  --kofi-bg: #d13838;
+  --kofi-hover: #b82e2e;
+  --kofi-fg: #ffffff;
 
   // Status families
   --warn: #6e4a00;
@@ -238,7 +246,7 @@
   @include dark-tokens;
   color-scheme: dark;
   --code-font-size: 13px;
-  --code-font-family: ui-monospace, 'Cascadia Code', Consolas, 'Liberation Mono', monospace;
+  --code-font-family: 'Fira Code', ui-monospace, 'Cascadia Code', Consolas, 'Liberation Mono', monospace;
   --brand-font-family: 'Clarity Cut', Arial, Helvetica, sans-serif;
 }
 

@@ -31,6 +31,11 @@ import {
   CopyIcon,
   ExternalLinkIcon,
 } from '../../ui/Icons';
+import { ClearSearchInput } from '../../ui/ClearSearchInput';
+import {
+  activateOnMiddleClick,
+  preventMiddleClickAutoScroll,
+} from '../middleClick';
 import { ColorSwatchWidget } from './ColorSwatchWidget';
 import { ImageLightbox } from './ImageLightbox';
 import styles from './JsonTree.module.scss';
@@ -192,7 +197,7 @@ function resolveObjectKeyRef(
 /**
  * Nested values are walked up to this many levels below the node the filter is
  * invoked on. Object results are memoized per call depth in a per-filter-pass
- * cache, so repeated renders (and shared subtrees) never re-walk deep values.
+ * cache, so repeated renders never re-walk deep values.
  */
 const FILTER_MAX_DEPTH = 8;
 
@@ -205,17 +210,36 @@ function createFilterCache(): FilterCache {
   );
 }
 
-function matchesFilter(
-  key: string,
+function refLabelMatches(
+  table: string,
+  name: string | undefined,
+  filterLower: string,
+): boolean {
+  return (
+    (typeof name === 'string' && name.toLowerCase().includes(filterLower)) ||
+    getShortTableName(table).toLowerCase().includes(filterLower)
+  );
+}
+
+/**
+ * Does this node itself match the query? Runs before any descendant walking so
+ * resolved context labels ("Stat: Reload Speed") and enum annotations
+ * ("Solar", "Exotic") match exactly like raw keys and values. Keeping this
+ * check outside the object cache means the cached subtree result is still keyed
+ * only by object identity (a parsed manifest definition is a tree), while the
+ * per-node context lookup stays correct for its own key/parent pair.
+ */
+function matchesNodeSelf(
+  nodeKey: string,
+  parentKey: string | undefined,
   value: unknown,
   filterLower: string,
-  depth: number,
-  cache: FilterCache,
+  resolvedRefs: Record<string, ResolvedHashSummary>,
 ): boolean {
   if (!filterLower) {
-    return true;
+    return false;
   }
-  if (key.toLowerCase().includes(filterLower)) {
+  if (nodeKey.toLowerCase().includes(filterLower)) {
     return true;
   }
   if (value === null || value === undefined) {
@@ -225,9 +249,58 @@ function matchesFilter(
     return value.toLowerCase().includes(filterLower);
   }
   if (typeof value === 'number' || typeof value === 'boolean') {
-    return String(value).toLowerCase().includes(filterLower);
+    if (String(value).toLowerCase().includes(filterLower)) {
+      return true;
+    }
+    if (typeof value !== 'number') {
+      return false;
+    }
+    const resolvedRef = resolveHashForNode(
+      nodeKey,
+      parentKey,
+      value,
+      resolvedRefs,
+    );
+    if (
+      resolvedRef &&
+      refLabelMatches(resolvedRef.table, resolvedRef.name, filterLower)
+    ) {
+      return true;
+    }
+    const enumInfo = annotateEnumField(nodeKey, value, parentKey);
+    return enumInfo
+      ? enumInfo.label.toLowerCase().includes(filterLower) ||
+          enumInfo.enumName.toLowerCase().includes(filterLower)
+      : false;
   }
-  if (typeof value !== 'object' || depth > FILTER_MAX_DEPTH) {
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    const objectRef = resolveObjectKeyRef(nodeKey, parentKey, resolvedRefs);
+    if (
+      objectRef &&
+      refLabelMatches(objectRef.table, objectRef.name, filterLower)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function matchesFilter(
+  key: string,
+  value: unknown,
+  filterLower: string,
+  depth: number,
+  cache: FilterCache,
+  parentKey: string | undefined,
+  resolvedRefs: Record<string, ResolvedHashSummary>,
+): boolean {
+  if (!filterLower) {
+    return true;
+  }
+  if (matchesNodeSelf(key, parentKey, value, filterLower, resolvedRefs)) {
+    return true;
+  }
+  if (typeof value !== 'object' || value === null || depth > FILTER_MAX_DEPTH) {
     return false;
   }
   const bucket = cache[depth];
@@ -241,7 +314,17 @@ function matchesFilter(
   let result = false;
   if (Array.isArray(value)) {
     for (let index = 0; index < value.length; index += 1) {
-      if (matchesFilter(String(index), value[index], filterLower, depth + 1, cache)) {
+      if (
+        matchesFilter(
+          String(index),
+          value[index],
+          filterLower,
+          depth + 1,
+          cache,
+          key,
+          resolvedRefs,
+        )
+      ) {
         result = true;
         break;
       }
@@ -250,7 +333,18 @@ function matchesFilter(
     const entries = Object.entries(value as Record<string, unknown>);
     for (let index = 0; index < entries.length; index += 1) {
       const entry = entries[index];
-      if (entry && matchesFilter(entry[0], entry[1], filterLower, depth + 1, cache)) {
+      if (
+        entry &&
+        matchesFilter(
+          entry[0],
+          entry[1],
+          filterLower,
+          depth + 1,
+          cache,
+          key,
+          resolvedRefs,
+        )
+      ) {
         result = true;
         break;
       }
@@ -270,24 +364,20 @@ const NO_FIND_MATCHES: readonly FindMatch[] = [];
 function collectFindMatches(
   data: Record<string, unknown>,
   filterLower: string,
+  resolvedRefs: Record<string, ResolvedHashSummary>,
 ): FindMatch[] {
   const matches: FindMatch[] = [];
   // A single mutable ancestor stack: `ancestors.slice()` only runs when a
   // match is actually recorded, keeping large definitions O(N) instead of O(N²).
   const ancestors: string[] = [];
 
-  const visit = (nodeKey: string, path: string, value: unknown): void => {
-    const keyMatches = nodeKey.toLowerCase().includes(filterLower);
-    const valueMatches =
-      value === null
-        ? 'null'.includes(filterLower)
-        : typeof value === 'string'
-          ? value.toLowerCase().includes(filterLower)
-          : typeof value === 'number' || typeof value === 'boolean'
-            ? String(value).toLowerCase().includes(filterLower)
-            : false;
-
-    if (keyMatches || valueMatches) {
+  const visit = (
+    nodeKey: string,
+    parentKey: string | undefined,
+    path: string,
+    value: unknown,
+  ): void => {
+    if (matchesNodeSelf(nodeKey, parentKey, value, filterLower, resolvedRefs)) {
       matches.push({ path, ancestorPaths: ancestors.slice() });
     }
 
@@ -295,7 +385,7 @@ function collectFindMatches(
       ancestors.push(path);
       for (let index = 0; index < value.length; index += 1) {
         const childKey = String(index);
-        visit(childKey, `${path}[${childKey}]`, value[index]);
+        visit(childKey, nodeKey, `${path}[${childKey}]`, value[index]);
       }
       ancestors.pop();
     } else if (typeof value === 'object' && value !== null) {
@@ -306,7 +396,7 @@ function collectFindMatches(
         if (!entry) {
           continue;
         }
-        visit(entry[0], `${path}.${entry[0]}`, entry[1]);
+        visit(entry[0], nodeKey, `${path}.${entry[0]}`, entry[1]);
       }
       ancestors.pop();
     }
@@ -318,7 +408,7 @@ function collectFindMatches(
     if (!entry) {
       continue;
     }
-    visit(entry[0], entry[0], entry[1]);
+    visit(entry[0], undefined, entry[0], entry[1]);
   }
   return matches;
 }
@@ -493,8 +583,12 @@ const JsonNode = memo(function JsonNode({
     () => expansionStore.getSnapshot(path),
   );
   const selfKeyMatches = filterLower.length > 0 && nodeKey.toLowerCase().includes(filterLower);
+  const selfMatches =
+    searchMode === 'filter' &&
+    filterLower.length > 0 &&
+    matchesNodeSelf(nodeKey, parentKey, value, filterLower, resolvedRefs);
   const preserveSubtree =
-    searchMode === 'filter' && filterLower.length > 0 && (ancestorMatched || selfKeyMatches);
+    searchMode === 'filter' && filterLower.length > 0 && (ancestorMatched || selfMatches);
   const isActiveMatch = searchMode === 'find' && path === activeMatchPath;
   const defaultExpanded =
     depth === 0 &&
@@ -505,13 +599,21 @@ const JsonNode = memo(function JsonNode({
   const hasDescendantMatch =
     searchMode === 'filter' &&
     filterLower.length > 0 &&
-    !selfKeyMatches &&
+    !selfMatches &&
     !ancestorMatched &&
     isObject &&
-    matchesFilter(nodeKey, value, filterLower, 0, filterCache);
+    matchesFilter(
+      nodeKey,
+      value,
+      filterLower,
+      0,
+      filterCache,
+      parentKey,
+      resolvedRefs,
+    );
   const isAutoExpandedForSearch =
     searchMode === 'filter'
-      ? filterLower.length > 0 && (selfKeyMatches || hasDescendantMatch)
+      ? filterLower.length > 0 && (selfMatches || hasDescendantMatch)
       : searchMode === 'find' && expandedByFind.has(path);
   const isExpanded =
     manualOpen !== undefined
@@ -535,7 +637,15 @@ const JsonNode = memo(function JsonNode({
         ? null
         : searchMode === 'filter' && filterLower.length > 0 && !preserveSubtree
           ? entries.filter(([childKey, childValue]) =>
-              matchesFilter(childKey, childValue, filterLower, 0, filterCache),
+              matchesFilter(
+                childKey,
+                childValue,
+                filterLower,
+                0,
+                filterCache,
+                nodeKey,
+                resolvedRefs,
+              ),
             )
           : entries;
 
@@ -566,10 +676,11 @@ const JsonNode = memo(function JsonNode({
     };
 
     const handleObjectRefAuxClick = (event: MouseEvent<HTMLButtonElement>): void => {
-      if (event.button === 1 && objectRefTarget) {
-        event.preventDefault();
-        onNavigateRef(objectRefTarget, true);
-      }
+      activateOnMiddleClick(event, () => {
+        if (objectRefTarget) {
+          onNavigateRef(objectRefTarget, true);
+        }
+      });
     };
 
     return (
@@ -606,11 +717,20 @@ const JsonNode = memo(function JsonNode({
                 type="button"
                 className={`${styles.annotation} ${styles.annotationRef} ${styles.refBadge}`}
                 onClick={handleObjectRefClick}
+                onMouseDown={preventMiddleClickAutoScroll}
                 onAuxClick={handleObjectRefAuxClick}
                 title={`Click to inspect · Ctrl+Click or middle-click for new tab (${objectKeyRef.table}:${objectKeyRef.hash}${objectKeyRef.subtitle ? ` — ${objectKeyRef.subtitle}` : ''})`}
               >
-                <span className={styles.refTable}>{getShortTableName(objectKeyRef.table)}</span>
-                <span className={styles.refName}>&quot;{objectKeyRef.name || 'Unnamed'}&quot;</span>
+                <span className={styles.refTable}>
+                  {highlightText(
+                    getShortTableName(objectKeyRef.table),
+                    filterLower,
+                    isActiveMatch,
+                  )}
+                </span>
+                <span className={styles.refName}>
+                  &quot;{highlightText(objectKeyRef.name || 'Unnamed', filterLower, isActiveMatch)}&quot;
+                </span>
               </button>
               <button
                 type="button"
@@ -619,6 +739,14 @@ const JsonNode = memo(function JsonNode({
                   if (objectRefTarget) {
                     onNavigateRef(objectRefTarget, true);
                   }
+                }}
+                onMouseDown={preventMiddleClickAutoScroll}
+                onAuxClick={(event) => {
+                  activateOnMiddleClick(event, () => {
+                    if (objectRefTarget) {
+                      onNavigateRef(objectRefTarget, true);
+                    }
+                  });
                 }}
                 title={`Open ${objectKeyRef.name || getShortTableName(objectKeyRef.table)} in a new tab`}
                 aria-label={`Open ${objectKeyRef.name || getShortTableName(objectKeyRef.table)} in a new tab`}
@@ -727,10 +855,11 @@ const JsonNode = memo(function JsonNode({
   };
 
   const handleRefAuxClick = (event: MouseEvent<HTMLButtonElement>): void => {
-    if (event.button === 1 && resolvedRefTarget) {
-      event.preventDefault();
-      onNavigateRef(resolvedRefTarget, true);
-    }
+    activateOnMiddleClick(event, () => {
+      if (resolvedRefTarget) {
+        onNavigateRef(resolvedRefTarget, true);
+      }
+    });
   };
 
   const handleLazyRefClick = (event: MouseEvent<HTMLButtonElement>): void => {
@@ -739,9 +868,11 @@ const JsonNode = memo(function JsonNode({
   };
 
   const handleLazyRefAuxClick = (event: MouseEvent<HTMLButtonElement>): void => {
-    if (event.button !== 1 || !lazyRefTarget) return;
-    event.preventDefault();
-    onNavigateRef(lazyRefTarget, true);
+    activateOnMiddleClick(event, () => {
+      if (lazyRefTarget) {
+        onNavigateRef(lazyRefTarget, true);
+      }
+    });
   };
 
   return (
@@ -783,11 +914,20 @@ const JsonNode = memo(function JsonNode({
               type="button"
               className={`${styles.annotation} ${styles.annotationRef} ${styles.refBadge}`}
               onClick={handleRefClick}
+              onMouseDown={preventMiddleClickAutoScroll}
               onAuxClick={handleRefAuxClick}
               title={`Click to inspect · Ctrl+Click or middle-click for new tab (${resolvedRef.table}:${resolvedRef.hash}${resolvedRef.subtitle ? ` — ${resolvedRef.subtitle}` : ''})`}
             >
-              <span className={styles.refTable}>{getShortTableName(resolvedRef.table)}</span>
-              <span className={styles.refName}>&quot;{resolvedRef.name || 'Unnamed'}&quot;</span>
+              <span className={styles.refTable}>
+                {highlightText(
+                  getShortTableName(resolvedRef.table),
+                  filterLower,
+                  isActiveMatch,
+                )}
+              </span>
+              <span className={styles.refName}>
+                &quot;{highlightText(resolvedRef.name || 'Unnamed', filterLower, isActiveMatch)}&quot;
+              </span>
             </button>
             <button
               type="button"
@@ -796,6 +936,14 @@ const JsonNode = memo(function JsonNode({
                 if (resolvedRefTarget) {
                   onNavigateRef(resolvedRefTarget, true);
                 }
+              }}
+              onMouseDown={preventMiddleClickAutoScroll}
+              onAuxClick={(event) => {
+                activateOnMiddleClick(event, () => {
+                  if (resolvedRefTarget) {
+                    onNavigateRef(resolvedRefTarget, true);
+                  }
+                });
               }}
               title={`Open ${resolvedRef.name || getShortTableName(resolvedRef.table)} in a new tab`}
               aria-label={`Open ${resolvedRef.name || getShortTableName(resolvedRef.table)} in a new tab`}
@@ -807,9 +955,13 @@ const JsonNode = memo(function JsonNode({
 
         {!resolvedRef && enumInfo && (
           <span className={`${styles.annotation} ${styles.annotationEnum}`}>
-            <span className={styles.enumType}>{enumInfo.enumName}</span>
+            <span className={styles.enumType}>
+              {highlightText(enumInfo.enumName, filterLower, isActiveMatch)}
+            </span>
             <span className={styles.enumDot}>{enumInfo.isBitmask ? ': ' : '.'}</span>
-            <span className={styles.enumLabel}>{enumInfo.label}</span>
+            <span className={styles.enumLabel}>
+              {highlightText(enumInfo.label, filterLower, isActiveMatch)}
+            </span>
           </span>
         )}
 
@@ -819,11 +971,21 @@ const JsonNode = memo(function JsonNode({
               type="button"
               className={`${styles.annotation} ${styles.annotationLazy} ${styles.refBadge}`}
               onClick={handleLazyRefClick}
+              onMouseDown={preventMiddleClickAutoScroll}
               onAuxClick={handleLazyRefAuxClick}
               title={`Table not loaded yet — click to load ${lazyTargetTable} and open ${lazyHash} · Ctrl+Click or middle-click for new tab`}
             >
-              <span className={styles.lazyLabel}>Open {getShortTableName(lazyTargetTable)}</span>
-              <span className={styles.lazyHash}>{lazyHash}</span>
+              <span className={styles.lazyLabel}>
+                Open{' '}
+                {highlightText(
+                  getShortTableName(lazyTargetTable),
+                  filterLower,
+                  isActiveMatch,
+                )}
+              </span>
+              <span className={styles.lazyHash}>
+                {highlightText(String(lazyHash), filterLower, isActiveMatch)}
+              </span>
             </button>
             <button
               type="button"
@@ -832,6 +994,14 @@ const JsonNode = memo(function JsonNode({
                 if (lazyRefTarget) {
                   onNavigateRef(lazyRefTarget, true);
                 }
+              }}
+              onMouseDown={preventMiddleClickAutoScroll}
+              onAuxClick={(event) => {
+                activateOnMiddleClick(event, () => {
+                  if (lazyRefTarget) {
+                    onNavigateRef(lazyRefTarget, true);
+                  }
+                });
               }}
               title={`Open ${getShortTableName(lazyTargetTable)} ${lazyHash} in a new tab`}
               aria-label={`Open ${getShortTableName(lazyTargetTable)} ${lazyHash} in a new tab`}
@@ -1036,14 +1206,17 @@ export const JsonTree = memo(function JsonTree({
   const deferredFilterLower = useDeferredValue(filterLower);
   // One boolean cache per call depth, recreated per filter pass: JsonNode never
   // re-walks the same deep subtree twice for the same filter.
-  const filterCache = useMemo(() => createFilterCache(), [deferredFilterLower]);
+  const filterCache = useMemo(
+    () => createFilterCache(),
+    [deferredFilterLower, resolvedRefs],
+  );
 
   const findMatches = useMemo(
     () =>
       searchMode === 'find' && deferredFilterLower
-        ? collectFindMatches(data, deferredFilterLower)
+        ? collectFindMatches(data, deferredFilterLower, resolvedRefs)
         : NO_FIND_MATCHES,
-    [data, deferredFilterLower, searchMode],
+    [data, deferredFilterLower, resolvedRefs, searchMode],
   );
   const clampedActiveMatchIndex =
     findMatches.length === 0
@@ -1081,9 +1254,17 @@ export const JsonTree = memo(function JsonTree({
       return all;
     }
     return all.filter(([key, value]) =>
-      matchesFilter(key, value, deferredFilterLower, 0, filterCache),
+      matchesFilter(
+        key,
+        value,
+        deferredFilterLower,
+        0,
+        filterCache,
+        undefined,
+        resolvedRefs,
+      ),
     );
-  }, [data, deferredFilterLower, filterCache, searchMode]);
+  }, [data, deferredFilterLower, filterCache, resolvedRefs, searchMode]);
 
   const stepMatch = useCallback(
     (direction: -1 | 1) => {
@@ -1140,15 +1321,16 @@ export const JsonTree = memo(function JsonTree({
   return (
     <div className={styles.wrapper}>
       <div className={styles.toolbar}>
-        <input
-          type="search"
+        <ClearSearchInput
           className={styles.filterInput}
+          wrapperClassName={styles.filterWrap}
           value={filter}
-          onChange={(e) => handleFilterChange(e.target.value)}
+          onValueChange={handleFilterChange}
           onBlur={flushFilterPersist}
           onKeyDown={handleSearchKeyDown}
           placeholder={searchPlaceholder}
           aria-label={searchMode === 'filter' ? 'Filter JSON keys or values' : 'Find in JSON'}
+          clearLabel={searchMode === 'filter' ? 'Clear JSON filter' : 'Clear JSON find'}
         />
         <div className={styles.searchModes} role="group" aria-label="JSON search mode">
           <button

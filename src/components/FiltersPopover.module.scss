@@ -299,16 +299,17 @@
   pointer-events: none;
 }
 
+.searchField {
+  flex: 1;
+  min-width: 0;
+}
+
 .optionSearch {
   @include ctl.field;
   width: 100%;
   min-width: 0;
   padding-left: 1.5rem;
-
-  &::-webkit-search-cancel-button,
-  &::-webkit-search-decoration {
-    appearance: none;
-  }
+  padding-inline-end: 1.75rem;
 }
 
 .optionList {

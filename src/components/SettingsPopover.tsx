@@ -17,7 +17,12 @@ import {
 } from '../stores/settings';
 import { useExplorerStore } from '../stores/explorer';
 import { useCollectorStore } from '../stores/collector';
-import { ChevronDownIcon, ChevronRightIcon } from '../ui/Icons';
+import {
+  ChevronDownIcon,
+  ChevronRightIcon,
+  ClarityWordmark,
+  KofiIcon,
+} from '../ui/Icons';
 import { Popover } from '../ui/Popover';
 import styles from './SettingsPopover.module.scss';
 
@@ -48,6 +53,7 @@ const TOUCH_OPTIONS: ReadonlyArray<readonly [TouchSize, string]> = [
 
 const CODE_FONT_OPTIONS: ReadonlyArray<readonly [CodeFontFamily, string]> = [
   ['system', 'System'],
+  ['fira', 'Fira Code'],
   ['cascadia', 'Cascadia'],
   ['consolas', 'Consolas'],
 ];
@@ -217,9 +223,16 @@ function SettingsPopoverBody({
           </div>
           <div className={styles.aboutLinks}>
             <a href="https://d2clarity.com" target="_blank" rel="noopener noreferrer">
-              Clarity · d2clarity.com
+              <ClarityWordmark height={15} aria-label="Clarity" />
+              <span>· d2clarity.com</span>
             </a>
-            <a href="https://ko-fi.com/D2Clarity" target="_blank" rel="noopener noreferrer">
+            <a
+              className={styles.kofiButton}
+              href="https://ko-fi.com/D2Clarity"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <KofiIcon size={15} />
               Support on Ko-Fi
             </a>
           </div>

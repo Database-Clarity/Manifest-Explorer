@@ -1,7 +1,14 @@
 import { useEffect, useId, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import type { ChangelogEntry } from '../data/changelog';
-import { ChevronDownIcon, CloseIcon, ExternalLinkIcon, HeartIcon, ManifestMark } from '../ui/Icons';
+import {
+  ChevronDownIcon,
+  ClarityLogoMark,
+  CloseIcon,
+  ExternalLinkIcon,
+  KofiIcon,
+  ManifestMark,
+} from '../ui/Icons';
 import styles from './ChangelogDialog.module.scss';
 
 export interface ChangelogDialogProps {
@@ -95,7 +102,7 @@ export function ChangelogDialog({
           <div className={styles.heading}>
             <span className={styles.eyebrow}>
               <ManifestMark size={18} />
-              <span>Clarity · Manifest Explorer</span>
+              <span>Manifest Explorer</span>
             </span>
             <h2 id={titleId} className={styles.title}>
               What’s new
@@ -109,6 +116,7 @@ export function ChangelogDialog({
               rel="noopener noreferrer"
               title="Visit the Clarity website"
             >
+              <ClarityLogoMark size={13} />
               <span>d2clarity.com</span>
               <ExternalLinkIcon size={10} className={styles.headerLinkIcon} />
             </a>
@@ -119,7 +127,7 @@ export function ChangelogDialog({
               rel="noopener noreferrer"
               title="Support Clarity on Ko-Fi"
             >
-              <HeartIcon size={11} className={styles.headerLinkIcon} />
+              <KofiIcon size={14} />
               <span>Support on Ko-Fi</span>
             </a>
           </div>

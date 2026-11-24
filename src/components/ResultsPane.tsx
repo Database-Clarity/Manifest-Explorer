@@ -27,6 +27,7 @@ import { CheckIcon, CloseIcon, GridIcon, ListIcon } from '../ui/Icons';
 import { getTierColorVar } from '../ui/rarity';
 import { Skeleton } from '../ui/Skeleton';
 import { BungieIcon } from './BungieIcon';
+import { activateOnMiddleClick, preventMiddleClickAutoScroll } from './middleClick';
 import styles from './ResultsPane.module.scss';
 
 export interface ResultsPaneProps {
@@ -51,8 +52,10 @@ const GRID_ROW_REM = 5;
 const GRID_ROW_REM_COARSE = 5.5;
 const GRID_ROW_DEEP_REM = 6;
 const GRID_ROW_DEEP_REM_COARSE = 6.5;
-const GRID_MIN_CELL_PX = 220;
-const GRID_GUTTER_PX = 16;
+const GRID_MIN_CELL_PX = 210;
+const GRID_SIDE_PAD_REM = 0.5;
+const GRID_GUTTER_REM = 0.5;
+const GRID_TOP_PAD_REM = 0.5;
 const MAX_VIRTUAL_HEIGHT = 10_000_000;
 const LOAD_MORE_FOOTER_FALLBACK_HEIGHT = 88;
 const MOBILE_QUERY = '(max-width: 700px)';
@@ -229,11 +232,9 @@ const ListRow = memo(function ListRow({
           : 'Click to open in a new tab'
       }
       onClick={() => onActivate(item, index)}
+      onMouseDown={preventMiddleClickAutoScroll}
       onAuxClick={(event) => {
-        if (event.button === 1) {
-          event.preventDefault();
-          onActivate(item, index);
-        }
+        activateOnMiddleClick(event, () => onActivate(item, index));
       }}
     >
       <BungieIcon
@@ -316,6 +317,18 @@ const ListRow = memo(function ListRow({
           onCopyHash(item.hash);
         }}
         onKeyDown={stopActivationKeys}
+        onMouseDown={(event) => {
+          if (event.button === 1) {
+            event.preventDefault();
+            event.stopPropagation();
+          }
+        }}
+        onAuxClick={(event) => {
+          if (event.button === 1) {
+            event.preventDefault();
+            event.stopPropagation();
+          }
+        }}
         title={`Copy hash ${item.hash}`}
       >
         {item.hash}
@@ -366,11 +379,9 @@ const GridCell = memo(function GridCell({
           : 'Click to open in a new tab'
       }
       onClick={() => onActivate(item, index)}
+      onMouseDown={preventMiddleClickAutoScroll}
       onAuxClick={(event) => {
-        if (event.button === 1) {
-          event.preventDefault();
-          onActivate(item, index);
-        }
+        activateOnMiddleClick(event, () => onActivate(item, index));
       }}
     >
       <BungieIcon
@@ -593,9 +604,17 @@ export const ResultsPane = memo(function ResultsPane({
 
   const viewMode: ViewMode = isNarrowPhone ? (narrowViewChoice ?? 'list') : storedViewMode;
   const hasDeepMatches = results.length > 0 && results[0]?.deepMatch !== undefined;
+  const gridSidePad = remPx * GRID_SIDE_PAD_REM;
+  const gridGutter = remPx * GRID_GUTTER_REM;
   const columns =
     viewMode === 'grid'
-      ? Math.max(1, Math.floor((viewportWidth - GRID_GUTTER_PX) / GRID_MIN_CELL_PX))
+      ? Math.max(
+          1,
+          Math.floor(
+            (viewportWidth - 2 * gridSidePad + gridGutter) /
+              (GRID_MIN_CELL_PX + gridGutter),
+          ),
+        )
       : 1;
   const rowHeight =
     remPx *
@@ -713,7 +732,8 @@ export const ResultsPane = memo(function ResultsPane({
   ]);
 
   const totalRows = viewMode === 'grid' ? Math.ceil(results.length / columns) : results.length;
-  const rawRowsHeight = totalRows * rowHeight;
+  const gridTopPad = viewMode === 'grid' ? remPx * GRID_TOP_PAD_REM : 0;
+  const rawRowsHeight = totalRows * rowHeight + gridTopPad;
   const virtualRowsHeight = Math.min(rawRowsHeight, MAX_VIRTUAL_HEIGHT);
   const isVirtualHeightCompressed = rawRowsHeight > MAX_VIRTUAL_HEIGHT;
   const effectiveFooterHeight = hasMoreResults
@@ -730,11 +750,11 @@ export const ResultsPane = memo(function ResultsPane({
   const maxFirstRow = Math.max(0, totalRows - 1);
   const firstRow = Math.min(
     maxFirstRow,
-    Math.max(0, Math.floor(logicalScrollTop / rowHeight) - OVERSCAN_ROWS),
+    Math.max(0, Math.floor((logicalScrollTop - gridTopPad) / rowHeight) - OVERSCAN_ROWS),
   );
   const lastRow = Math.min(
     totalRows,
-    Math.ceil((logicalScrollTop + viewportHeight) / rowHeight) + OVERSCAN_ROWS,
+    Math.ceil((logicalScrollTop + viewportHeight - gridTopPad) / rowHeight) + OVERSCAN_ROWS,
   );
   const windowEnd = Math.min(lastRow, totalRows);
   const offsetY = isVirtualHeightCompressed
@@ -832,6 +852,7 @@ export const ResultsPane = memo(function ResultsPane({
     rowHeight,
     columns,
     viewMode,
+    gridTopPad,
     mapLogicalToPhysical,
   });
   scrollMappingRef.current = {
@@ -842,6 +863,7 @@ export const ResultsPane = memo(function ResultsPane({
     rowHeight,
     columns,
     viewMode,
+    gridTopPad,
     mapLogicalToPhysical,
   };
 
@@ -860,6 +882,7 @@ export const ResultsPane = memo(function ResultsPane({
       rowHeight: rH,
       columns: cols,
       viewMode: mode,
+      gridTopPad: topPad,
       mapLogicalToPhysical: toPhysical,
     } = scrollMappingRef.current;
 
@@ -869,7 +892,7 @@ export const ResultsPane = memo(function ResultsPane({
 
     const rowIndex =
       mode === 'grid' ? Math.floor(clampedSelectedIndex / cols) : clampedSelectedIndex;
-    const rowTop = rowIndex * rH;
+    const rowTop = (mode === 'grid' ? topPad : 0) + rowIndex * rH;
     const rowBottom = rowTop + rH;
     const physTop = element.scrollTop;
     const currentTop = compressed
@@ -948,7 +971,10 @@ export const ResultsPane = memo(function ResultsPane({
         rows.push(
           <div
             key={`grid-row-${rowIndex}`}
-            className={styles.gridRow}
+            className={joinClasses(
+              styles.gridRow,
+              rowIndex === totalRows - 1 ? styles.gridRowEnd : '',
+            )}
             style={{
               height: rowHeight,
               gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
@@ -1273,7 +1299,10 @@ export const ResultsPane = memo(function ResultsPane({
               role="presentation"
             >
               <div
-                className={styles.virtualWindow}
+                className={joinClasses(
+                  styles.virtualWindow,
+                  viewMode === 'grid' ? styles.gridVirtualWindow : '',
+                )}
                 style={{ transform: `translateY(${offsetY}px)` }}
                 role="presentation"
               >

@@ -88,6 +88,7 @@
   line-height: 1;
   white-space: nowrap;
   text-decoration: none;
+  cursor: pointer;
   transition: color 120ms ease, background-color 120ms ease, border-color 120ms ease;
 
   @media (hover: hover) {
@@ -114,13 +115,17 @@
   transition: color 120ms ease;
 }
 
-/* Ko-Fi keeps the quiet base pill and picks up a soft brand tint on hover. */
 .kofiLink {
+  border-color: var(--kofi-bg);
+  background: var(--kofi-bg);
+  color: var(--kofi-fg);
+  font-weight: 650;
+
   @media (hover: hover) {
     &:hover {
-      color: var(--accent-ink);
-      background: var(--pri-hover);
-      border-color: var(--accent-ink);
+      color: var(--kofi-fg);
+      background: var(--kofi-hover);
+      border-color: var(--kofi-hover);
     }
   }
 }
@@ -173,6 +178,10 @@
 
   &:hover {
     background: var(--hover);
+  }
+
+  &:focus-visible {
+    @include ctl.focus-ring;
   }
 }
 

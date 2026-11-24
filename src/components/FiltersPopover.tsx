@@ -12,6 +12,7 @@ import {
   useSettingsStore,
 } from '../stores/settings';
 import { CheckIcon, ChevronRightIcon, SearchIcon } from '../ui/Icons';
+import { ClearSearchInput } from '../ui/ClearSearchInput';
 import { Popover } from '../ui/Popover';
 import {
   clearQueryFilterTokens,
@@ -636,16 +637,17 @@ function FiltersPopoverBody({
               </p>
               <div className={styles.searchWrap}>
                 <SearchIcon size={12} className={styles.searchIcon} />
-                <input
-                  type="search"
+                <ClearSearchInput
                   className={styles.optionSearch}
+                  wrapperClassName={styles.searchField}
                   value={tableQuery}
-                  onChange={(event) => {
-                    setTableQuery(event.target.value);
+                  onValueChange={(value) => {
+                    setTableQuery(value);
                     refreshPinnedTables();
                   }}
                   placeholder="Filter tables…"
                   aria-label="Filter tables"
+                  clearLabel="Clear table filter"
                   autoComplete="off"
                   spellCheck={false}
                 />
@@ -783,16 +785,17 @@ function FiltersPopoverBody({
                 <div className={styles.searchableBody}>
                   <div className={styles.searchWrap}>
                     <SearchIcon size={12} className={styles.searchIcon} />
-                    <input
-                      type="search"
+                    <ClearSearchInput
                       className={styles.optionSearch}
+                      wrapperClassName={styles.searchField}
                       value={sourceQuery}
-                      onChange={(event) => {
-                        setSourceQuery(event.target.value);
+                      onValueChange={(value) => {
+                        setSourceQuery(value);
                         refreshPinnedSources();
                       }}
                       placeholder="Find a raid, dungeon, destination, vendor…"
                       aria-label="Find a source"
+                      clearLabel="Clear source search"
                       autoComplete="off"
                       spellCheck={false}
                     />
@@ -846,16 +849,17 @@ function FiltersPopoverBody({
                 <div className={styles.searchableBody}>
                   <div className={styles.searchWrap}>
                     <SearchIcon size={12} className={styles.searchIcon} />
-                    <input
-                      type="search"
+                    <ClearSearchInput
                       className={styles.optionSearch}
+                      wrapperClassName={styles.searchField}
                       value={categoryQuery}
-                      onChange={(event) => {
-                        setCategoryQuery(event.target.value);
+                      onValueChange={(value) => {
+                        setCategoryQuery(value);
                         refreshPinnedCategories();
                       }}
                       placeholder="Find a category…"
                       aria-label="Find an item category"
+                      clearLabel="Clear category search"
                       autoComplete="off"
                       spellCheck={false}
                     />

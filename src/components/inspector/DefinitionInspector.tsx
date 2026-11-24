@@ -34,9 +34,11 @@ import {
   MinimizeIcon,
 } from '../../ui/Icons';
 import { getTierColorVar } from '../../ui/rarity';
+import { ClearSearchInput } from '../../ui/ClearSearchInput';
 import { Popover } from '../../ui/Popover';
 import { Skeleton } from '../../ui/Skeleton';
 import { BungieIcon } from '../BungieIcon';
+import { activateOnMiddleClick, preventMiddleClickAutoScroll } from '../middleClick';
 import { DiffTab } from './DiffTab';
 import { HistoryTab } from './HistoryTab';
 import { JsonTree } from './JsonTree';
@@ -692,13 +694,13 @@ function DefinitionInspectorImpl({
                   )}
                 </div>
                 {sessions.length > 10 && (
-                  <input
-                    type="search"
+                  <ClearSearchInput
                     className={styles.sessionMenuFilter}
                     value={tabsMenuFilter}
-                    onChange={(e) => setTabsMenuFilter(e.target.value)}
+                    onValueChange={setTabsMenuFilter}
                     placeholder="Find by name, table, or hash…"
                     aria-label="Filter open tabs"
+                    clearLabel="Clear tab filter"
                   />
                 )}
                 <div
@@ -877,7 +879,17 @@ function DefinitionInspectorImpl({
                         ? styles.historyFuture
                         : styles.historyPast
                   }`}
-                  onClick={() => handleJumpClick(idx)}
+                  onClick={(event) => {
+                    if (event.ctrlKey || event.metaKey) {
+                      navigateWithFlush(entry, true);
+                      return;
+                    }
+                    handleJumpClick(idx);
+                  }}
+                  onMouseDown={preventMiddleClickAutoScroll}
+                  onAuxClick={(event) =>
+                    activateOnMiddleClick(event, () => navigateWithFlush(entry, true))
+                  }
                   aria-current={isCurrent ? 'page' : undefined}
                   title={`${positionKind}: ${displayLabel} (${shortCat}:${entry.hash})`}
                 >
@@ -958,9 +970,9 @@ function DefinitionInspectorImpl({
                       event.ctrlKey || event.metaKey,
                     )
                   }
+                  onMouseDown={preventMiddleClickAutoScroll}
                   onAuxClick={(event) => {
-                    if (event.button === 1) {
-                      event.preventDefault();
+                    activateOnMiddleClick(event, () =>
                       navigateWithFlush(
                         {
                           table: 'DestinyInventoryItemDefinition',
@@ -969,8 +981,8 @@ function DefinitionInspectorImpl({
                           icon: parentArtifact.icon,
                         },
                         true,
-                      );
-                    }
+                      ),
+                    );
                   }}
                 >
                   <BungieIcon icon={parentArtifact.icon} size={16} />
@@ -1064,11 +1076,11 @@ function DefinitionInspectorImpl({
                     e.ctrlKey || e.metaKey || e.shiftKey,
                   )
                 }
+                onMouseDown={preventMiddleClickAutoScroll}
                 onAuxClick={(e) => {
-                  if (e.button === 1) {
-                    e.preventDefault();
-                    navigateWithFlush({ table, hash: unsignedHash }, true);
-                  }
+                  activateOnMiddleClick(e, () =>
+                    navigateWithFlush({ table, hash: unsignedHash }, true),
+                  );
                 }}
               >
                 {getShortTableName(table)}
@@ -1261,7 +1273,9 @@ function DefinitionInspectorImpl({
                     })
                   }
                   onClearPin={clearPinnedDiff}
-                  onNavigateRef={(ref) => navigateWithFlush(ref, false)}
+                  onNavigateRef={(ref, inNewTab) =>
+                    navigateWithFlush(ref, inNewTab)
+                  }
                 />
               </div>
             )}
@@ -1276,6 +1290,10 @@ function DefinitionInspectorImpl({
                   table={currentRef.table}
                   hash={currentRef.hash}
                   currentData={detail.data}
+                  resolvedRefs={detail.resolvedRefs}
+                  imageScaling={imageScaling}
+                  onNavigateRef={(ref, inNewTab) => navigateWithFlush(ref, inNewTab)}
+                  onCopy={copyText}
                 />
               </div>
             )}

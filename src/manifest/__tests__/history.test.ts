@@ -1,8 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   clearHistoryCache,
+  fetchHistoryVersionsIndex,
   fetchItemHistory,
+  fetchManifestRelease,
   getHistoryBucketHex,
+  reconstructRemovedSnapshot,
   reconstructRevisionSnapshot,
   type ItemRevision,
   type HistoryManifestIndex,
@@ -99,6 +102,68 @@ describe('reverse-patch reconstruction', () => {
     expect(reconstructRevisionSnapshot(current, revisions)).toEqual(current);
     expect(JSON.stringify(current)).toBe(original);
   });
+
+  it('reverses array additions, removals, and modifications in newest-first order', () => {
+    const current = { values: ['B', 'c'] };
+    const revisions: ItemRevision[] = [
+      { v: 2, k: 'm', d: [[2, '/values/0', 'a']] },
+      { v: 3, k: 'm', d: [[1, '/values/1', 'c']] },
+      { v: 4, k: 'm', d: [[0, '/values/0', 'b', 'B']] },
+    ];
+
+    expect(reconstructRevisionSnapshot(current, revisions, 3)).toEqual({
+      values: ['b', 'c'],
+    });
+    expect(reconstructRevisionSnapshot(current, revisions, 2)).toEqual({
+      values: ['b'],
+    });
+    expect(reconstructRevisionSnapshot(current, revisions, 1)).toEqual({
+      values: ['a', 'b'],
+    });
+  });
+
+  it('restores nested removals before reversing a newly-added parent structure', () => {
+    const current = { branch: { items: [{}] } };
+    const revisions: ItemRevision[] = [
+      { v: 2, k: 'a', d: [[1, '/branch', { items: [{ name: 'x' }] }]] },
+      { v: 3, k: 'm', d: [[2, '/branch/items/0/name', 'x']] },
+    ];
+
+    expect(reconstructRevisionSnapshot(current, revisions, 2)).toEqual({
+      branch: { items: [{ name: 'x' }] },
+    });
+    expect(reconstructRevisionSnapshot(current, revisions, 1)).toBeNull();
+  });
+
+  it('returns an absent snapshot before the item’s Added version', () => {
+    const current = { displayProperties: { name: 'Item' } };
+    const revisions: ItemRevision[] = [
+      { v: 5, k: 'a', d: [[1, '/displayProperties', { name: 'Item' }]] },
+    ];
+
+    expect(reconstructRevisionSnapshot(current, revisions, 4)).toBeNull();
+    expect(reconstructRevisionSnapshot(current, revisions, 5)).toEqual(current);
+  });
+
+  it('reconstructs a full removed snapshot from nested removal values', () => {
+    const revisions: ItemRevision[] = [
+      {
+        v: 8,
+        k: 'r',
+        d: [
+          [2, '/displayProperties/name', 'Removed item'],
+          [2, '/displayProperties/icon', '/icons/removed.png'],
+          [2, '/sockets/socketEntries/0/singleInitialItemHash', 42],
+        ],
+      },
+    ];
+
+    expect(reconstructRemovedSnapshot(revisions, 8)).toEqual({
+      displayProperties: { name: 'Removed item', icon: '/icons/removed.png' },
+      sockets: { socketEntries: [{ singleInitialItemHash: 42 }] },
+    });
+    expect(reconstructRemovedSnapshot(revisions, 7)).toBeNull();
+  });
 });
 
 describe('fetchItemHistory', () => {
@@ -185,5 +250,50 @@ describe('fetchItemHistory', () => {
     expect(result.available).toBe(false);
     expect(result.revisions).toEqual([]);
     expect(result.error).toContain('404');
+  });
+});
+
+describe('history release API', () => {
+  beforeEach(() => {
+    clearHistoryCache();
+    vi.unstubAllGlobals();
+  });
+
+  it('fetches and caches the versions index', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse(index));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const first = await fetchHistoryVersionsIndex();
+    const second = await fetchHistoryVersionsIndex();
+
+    expect(first).toEqual(index);
+    expect(second).toBe(first);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('fetches a release summary with the latest-version cache key', async () => {
+    const release = {
+      v: 4,
+      date: version.date,
+      version: version.version,
+      totals: { a: 1, m: 2, r: 0, u: 0, c: 0 },
+      tables: {
+        DestinyInventoryItemDefinition: {
+          a: [[123, 'Test Item', 'Legendary Weapon', '/icons/test.png', 5]],
+        },
+      },
+    };
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL) => jsonResponse(release));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const first = await fetchManifestRelease(4, 9);
+    const second = await fetchManifestRelease(4, 9);
+
+    expect(first).toEqual(release);
+    expect(second).toBe(first);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      '/api/history/release/4?v=9',
+    );
   });
 });

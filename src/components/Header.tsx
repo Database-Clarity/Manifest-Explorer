@@ -27,6 +27,7 @@ import { useSettingsStore } from '../stores/settings';
 import { countQueryFilterTokens } from '../utils/queryTokens';
 import {
   BookmarkIcon,
+  ClarityWordmark,
   CloseIcon,
   FilterIcon,
   HelpIcon,
@@ -47,6 +48,8 @@ import styles from './Header.module.scss';
 
 export interface HeaderProps {
   searchInputRef: RefObject<HTMLInputElement | HTMLTextAreaElement | null>;
+  activePage?: 'explorer' | 'history';
+  onNavigatePage?: (path: '/' | '/history') => void;
   onCheckUpdates: () => void;
   onClearCache: () => void;
   onLoadAllTables: () => void;
@@ -117,6 +120,8 @@ function resizeSearchTextarea(input: HTMLTextAreaElement, focused: boolean): voi
 
 export const Header = memo(function Header({
   searchInputRef,
+  activePage = 'explorer',
+  onNavigatePage,
   onCheckUpdates,
   onClearCache,
   onLoadAllTables,
@@ -227,6 +232,7 @@ export const Header = memo(function Header({
     setQuery('');
     setTableFilter('all');
     setMobileInspectorOpen(false);
+    onNavigatePage?.('/');
   }
 
   function handleClearSearch(): void {
@@ -386,6 +392,31 @@ export const Header = memo(function Header({
             <span className={styles.brandText}>Manifest Explorer</span>
           </button>
 
+          <nav className={styles.pageNav} aria-label="Main navigation">
+            <button
+              type="button"
+              className={activePage === 'explorer' ? styles.pageNavActive : styles.pageNavLink}
+              aria-current={activePage === 'explorer' ? 'page' : undefined}
+              onClick={() => {
+                setMenu(null);
+                onNavigatePage?.('/');
+              }}
+            >
+              Explorer
+            </button>
+            <button
+              type="button"
+              className={activePage === 'history' ? styles.pageNavActive : styles.pageNavLink}
+              aria-current={activePage === 'history' ? 'page' : undefined}
+              onClick={() => {
+                setMenu(null);
+                onNavigatePage?.('/history');
+              }}
+            >
+              History
+            </button>
+          </nav>
+
           <a
             className={styles.clarityAttribution}
             href="https://d2clarity.com"
@@ -393,7 +424,7 @@ export const Header = memo(function Header({
             rel="noopener noreferrer"
             title="A Clarity project — visit d2clarity.com"
           >
-            by Clarity
+            by <ClarityWordmark height={15} aria-label="Clarity" />
           </a>
 
           <div className={styles.searchCluster}>

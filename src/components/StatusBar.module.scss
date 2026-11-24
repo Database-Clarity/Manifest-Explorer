@@ -150,12 +150,19 @@
   }
 }
 
-.barLinkAccent {
+.kofiButton {
+  gap: 0.25rem;
+  border-color: var(--kofi-bg);
+  border-radius: 999px;
+  background: var(--kofi-bg);
+  color: var(--kofi-fg);
+  font-weight: 650;
+
   @media (hover: hover) {
-    &:hover:not(:disabled) {
-      color: var(--accent-ink);
-      background: var(--pri-hover);
-      border-color: var(--accent-ink);
+    &:hover {
+      color: var(--kofi-fg);
+      background: var(--kofi-hover);
+      border-color: var(--kofi-hover);
     }
   }
 }

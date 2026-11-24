@@ -1,8 +1,11 @@
 import { memo, useMemo, useState, type ReactNode } from 'react';
 import type { DefinitionDetailPayload, DefinitionRef } from '../../types/manifest';
-import { computeJsonDiff, type DiffEntry } from '../../manifest/diff';
+import { computeJsonDiff } from '../../manifest/diff';
 import { getShortTableName } from '../../manifest/tables';
+import { JsonDiffView } from './JsonDiffView';
 import { Skeleton } from '../../ui/Skeleton';
+import { ClearSearchInput } from '../../ui/ClearSearchInput';
+import { activateOnMiddleClick, preventMiddleClickAutoScroll } from '../middleClick';
 import styles from './InspectorTabs.module.scss';
 
 export interface DiffTabProps {
@@ -12,21 +15,7 @@ export interface DiffTabProps {
   pinnedLoading: boolean;
   onPinCurrent: () => void;
   onClearPin: () => void;
-  onNavigateRef: (ref: DefinitionRef) => void;
-}
-
-function formatDiffVal(value: unknown): string {
-  if (value === undefined) {
-    return '';
-  }
-  if (typeof value === 'string') {
-    return JSON.stringify(value);
-  }
-  if (typeof value === 'object' && value !== null) {
-    const str = JSON.stringify(value);
-    return str.length > 180 ? `${str.slice(0, 177)}…` : str;
-  }
-  return String(value);
+  onNavigateRef: (ref: DefinitionRef, inNewTab?: boolean) => void;
 }
 
 export const DiffTab = memo(function DiffTab({
@@ -45,20 +34,10 @@ export const DiffTab = memo(function DiffTab({
     pinnedRef.table === current.table &&
     pinnedRef.hash === current.hash;
 
-  const entries: DiffEntry[] = useMemo(() => {
-    if (!pinnedDetail || isSame) {
-      return [];
-    }
+  const entries = useMemo(() => {
+    if (!pinnedDetail || isSame) return [];
     return computeJsonDiff(pinnedDetail.data, current.data);
   }, [pinnedDetail, current.data, isSame]);
-
-  const filtered = useMemo(() => {
-    const q = filter.trim().toLowerCase();
-    if (!q) {
-      return entries;
-    }
-    return entries.filter((e) => e.path.toLowerCase().includes(q));
-  }, [entries, filter]);
 
   if (!pinnedRef) {
     return (
@@ -118,7 +97,18 @@ export const DiffTab = memo(function DiffTab({
             <button
               type="button"
               className={styles.inlineLink}
-              onClick={() => onNavigateRef({ ...pinnedRef, label: pinnedName })}
+              onClick={(event) =>
+                onNavigateRef(
+                  { ...pinnedRef, label: pinnedName },
+                  event.ctrlKey || event.metaKey,
+                )
+              }
+              onMouseDown={preventMiddleClickAutoScroll}
+              onAuxClick={(event) =>
+                activateOnMiddleClick(event, () =>
+                  onNavigateRef({ ...pinnedRef, label: pinnedName }, true),
+                )
+              }
             >
               {pinnedName} ({pinnedRef.hash})
             </button>
@@ -128,13 +118,14 @@ export const DiffTab = memo(function DiffTab({
           </span>
         </div>
         <div className={styles.diffControls}>
-          <input
-            type="search"
+          <ClearSearchInput
             className={styles.diffFilter}
+            wrapperClassName={styles.diffFilterWrap}
             value={filter}
-            onChange={(e) => setFilter(e.target.value)}
+            onValueChange={setFilter}
             placeholder="Filter changed paths…"
             aria-label="Filter diff paths"
+            clearLabel="Clear diff filter"
           />
           <button type="button" className={styles.smallBtn} onClick={onClearPin}>
             Clear baseline
@@ -142,29 +133,14 @@ export const DiffTab = memo(function DiffTab({
         </div>
       </div>
 
-      {filtered.length === 0 ? (
-        <div className={styles.emptyState}>
-          {entries.length === 0
-            ? 'These two definitions are identical.'
-            : 'No differences match this path filter.'}
-        </div>
+      {entries.length === 0 ? (
+        <div className={styles.emptyState}>These two definitions are identical.</div>
       ) : (
-        <div className={styles.diffList}>
-          {filtered.map((entry) => (
-            <div key={entry.path} className={styles.diffItem}>
-              <div className={styles.diffPath}>
-                <span className="mono">{entry.path}</span>
-                <span className={styles.diffKind}>{entry.kind}</span>
-              </div>
-              {(entry.kind === 'removed' || entry.kind === 'changed') && (
-                <div className={styles.diffDel}>− {formatDiffVal(entry.left)}</div>
-              )}
-              {(entry.kind === 'added' || entry.kind === 'changed') && (
-                <div className={styles.diffIns}>+ {formatDiffVal(entry.right)}</div>
-              )}
-            </div>
-          ))}
-        </div>
+        <JsonDiffView
+          before={pinnedDetail.data}
+          after={current.data}
+          filter={filter}
+        />
       )}
     </div>
   );

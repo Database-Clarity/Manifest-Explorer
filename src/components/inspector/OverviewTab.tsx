@@ -25,9 +25,12 @@ import { Skeleton } from '../../ui/Skeleton';
 import {
   ChevronDownIcon,
   ChevronRightIcon,
+  ClarityLogoMark,
   ExternalLinkIcon,
 } from '../../ui/Icons';
 import { getTierColorVar } from '../../ui/rarity';
+import { ClearSearchInput } from '../../ui/ClearSearchInput';
+import { activateOnMiddleClick, preventMiddleClickAutoScroll } from '../middleClick';
 import styles from './InspectorTabs.module.scss';
 
 export type NavigateRef = (ref: DefinitionRef, inNewTab?: boolean) => void;
@@ -90,12 +93,9 @@ function RefButton({
       onClick={(event: MouseEvent<HTMLButtonElement>) =>
         onNavigate(ref, event.ctrlKey || event.metaKey)
       }
+      onMouseDown={preventMiddleClickAutoScroll}
       onAuxClick={(event: MouseEvent<HTMLButtonElement>) => {
-        if (event.button !== 1) {
-          return;
-        }
-        event.preventDefault();
-        onNavigate(ref, true);
+        activateOnMiddleClick(event, () => onNavigate(ref, true));
       }}
     >
       {children}
@@ -115,6 +115,8 @@ function RefButton({
         aria-label={`Open ${openInNewTabLabel} in new tab`}
         title={`Open ${openInNewTabLabel} in new tab`}
         onClick={() => onNavigate(ref, true)}
+        onMouseDown={preventMiddleClickAutoScroll}
+        onAuxClick={(event) => activateOnMiddleClick(event, () => onNavigate(ref, true))}
       >
         <ExternalLinkIcon size={14} />
       </button>
@@ -185,13 +187,14 @@ function PlugPool({ plugs, onNavigate }: PlugPoolProps): ReactNode {
   return (
     <div className={styles.socketPool}>
       {plugs.length > FILTERED_POOL_PLUG_COUNT ? (
-        <input
-          type="search"
+        <ClearSearchInput
           className={styles.poolFilter}
+          wrapperClassName={styles.poolFilterField}
           value={filter}
-          onChange={(event) => setFilter(event.target.value)}
+          onValueChange={setFilter}
           placeholder={`Filter ${plugs.length} plugs…`}
           aria-label={`Filter ${plugs.length} plugs`}
+          clearLabel="Clear plug filter"
           autoComplete="off"
           spellCheck={false}
         />
@@ -474,13 +477,14 @@ function SandboxPerksSection({ perks, onNavigate }: SandboxPerksSectionProps): R
       {open ? (
         <div className={styles.collapsibleContent}>
           {perks.length > FILTERED_POOL_PLUG_COUNT ? (
-            <input
-              type="search"
+            <ClearSearchInput
               className={styles.poolFilter}
+              wrapperClassName={styles.poolFilterField}
               value={filter}
-              onChange={(event) => setFilter(event.target.value)}
+              onValueChange={setFilter}
               placeholder={`Filter ${perks.length} perks…`}
               aria-label={`Filter ${perks.length} perks`}
+              clearLabel="Clear perk filter"
               autoComplete="off"
               spellCheck={false}
             />
@@ -565,13 +569,14 @@ function LinkedDefinitionsSection({
       {open ? (
         <div className={styles.collapsibleContent}>
           {linkedEntities.length > FILTERED_POOL_PLUG_COUNT ? (
-            <input
-              type="search"
+            <ClearSearchInput
               className={styles.poolFilter}
+              wrapperClassName={styles.poolFilterField}
               value={filter}
-              onChange={(event) => setFilter(event.target.value)}
+              onValueChange={setFilter}
               placeholder={`Filter ${linkedEntities.length} definitions…`}
               aria-label={`Filter ${linkedEntities.length} definitions`}
+              clearLabel="Clear definition filter"
               autoComplete="off"
               spellCheck={false}
             />
@@ -800,7 +805,13 @@ export const OverviewTab = memo(function OverviewTab({
 
       {showClarity && (clarityLoading || clarityEntry) && (
         <section className={styles.section}>
-          <h3 className={styles.sectionTitle}>Clarity community notes</h3>
+          <h3 className={styles.sectionTitle}>
+            <ClarityLogoMark
+              size={14}
+              style={{ marginRight: '0.375rem', verticalAlign: '-0.1875rem' }}
+            />
+            Clarity community notes
+          </h3>
           {clarityLoading ? (
             <div className={styles.stackGap}>
               <Skeleton height="0.875rem" width="85%" />

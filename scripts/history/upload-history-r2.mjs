@@ -16,12 +16,14 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { pipeline } from 'node:stream/promises';
+import { gunzipSync } from 'node:zlib';
 
 const PROJECT_ROOT = path.resolve(import.meta.dirname, '../..');
 const DEFAULT_SCRATCH =
   'C:\\Users\\Seleo\\.t3\\userdata\\providers\\antigravity\\ac0a3dfd6dddb20962cecff6ee5fe65e19d3923be20e52c5ab52ff877f7e4c32\\antigravity-acp\\brain\\630aad88-6d45-4bfe-a537-fe4f7107e4cf\\scratch\\history-build';
 const DEFAULT_ACCOUNT_ID = 'c5ec2772673dc72f5e58587ef4c80ff8';
 const DEFAULT_BUCKET = 'manifest-history';
+const VERSIONS_KEY = 'v1/versions.json';
 
 function parseArgs(argv) {
   const options = {
@@ -70,7 +72,11 @@ Usage:
     [--account-id <id>] [--concurrency 8] [--force] [--no-verify]
 
 The uploader sets application/json for JSON objects and gzip content-encoding
-for .json.gz objects. It invokes the project's Wrangler config with --remote.
+for .json.gz objects. It compares each local file's SHA-256 and size with the
+checkpoint and uploads only changed artifacts (buckets, snapshots, and
+v1/releases/*.json.gz), with v1/versions.json last. It refuses to upload any
+bucket that still contains the old truncated-diff marker "t". It invokes the
+project's Wrangler config with --remote.
 `);
 }
 
@@ -100,6 +106,54 @@ async function sha256File(file) {
   const hash = createHash('sha256');
   for await (const chunk of createReadStream(file)) hash.update(chunk);
   return hash.digest('hex');
+}
+
+function artifactGroup(key) {
+  if (key === VERSIONS_KEY) return 'versions';
+  if (key.startsWith('v1/buckets/')) return 'buckets';
+  if (key.startsWith('v1/latest-snapshot/')) return 'snapshots';
+  if (key.startsWith('v1/releases/')) return 'releases';
+  return 'other';
+}
+
+function megabytes(bytes) {
+  return Math.round((bytes / (1024 * 1024)) * 100) / 100;
+}
+
+/**
+ * Guard the published data set: every revision must carry all of its ops.
+ * `t` was the old truncation marker and must never appear again.
+ */
+function scanLosslessRevisions(files) {
+  let bucketFiles = 0;
+  let revisions = 0;
+  let revisionsWithOps = 0;
+  let truncatedRevisions = 0;
+  let maxDiffOps = 0;
+  for (const file of files) {
+    if (!file.relative.startsWith('buckets/') || !file.relative.endsWith('.json.gz')) continue;
+    bucketFiles += 1;
+    const bucket = JSON.parse(gunzipSync(readFileSync(file.full)).toString('utf8'));
+    for (const history of Object.values(bucket)) {
+      if (!Array.isArray(history)) continue;
+      for (const revision of history) {
+        revisions += 1;
+        if (revision && Object.prototype.hasOwnProperty.call(revision, 't')) {
+          truncatedRevisions += 1;
+        }
+        if (Array.isArray(revision?.d) && revision.d.length > 0) {
+          revisionsWithOps += 1;
+          maxDiffOps = Math.max(maxDiffOps, revision.d.length);
+        }
+      }
+    }
+  }
+  if (truncatedRevisions > 0) {
+    throw new Error(
+      `Refusing to upload: ${truncatedRevisions} revisions still contain the truncated-diff marker "t"`,
+    );
+  }
+  return { bucketFiles, revisions, revisionsWithOps, truncatedRevisions, maxDiffOps };
 }
 
 function loadCheckpoint(file, bucket, accountId) {
@@ -329,6 +383,12 @@ async function mapLimit(items, limit, worker) {
   if (failure) throw failure;
 }
 
+function readDecoded(file) {
+  const bytes = readFileSync(file);
+  const gzip = bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
+  return gzip ? gunzipSync(bytes) : bytes;
+}
+
 async function verifyObjects(options, sourceDir, versions) {
   const verifyDir = path.join(options.scratchDir, 'r2-verify');
   const versionsLocal = path.join(sourceDir, 'versions.json');
@@ -345,23 +405,59 @@ async function verifyObjects(options, sourceDir, versions) {
     'DestinyInventoryItemDefinition',
     `${hex}.json.gz`,
   );
+  const latestVersion = versions.versions.reduce(
+    (latest, version) => (version.i > latest.i ? version : latest),
+    versions.versions[0],
+  );
+  const releaseKey = `v1/releases/${latestVersion.i}.json.gz`;
+  const releaseLocal = path.join(sourceDir, 'releases', `${latestVersion.i}.json.gz`);
+  if (!existsSync(releaseLocal)) {
+    throw new Error(`Release index is missing locally: ${releaseLocal}`);
+  }
   // Wrangler's `get --pipe` decodes objects carrying Content-Encoding: gzip.
   const sunshotRemote = path.join(verifyDir, `sunshot-${hex}.json`);
+  const releaseRemote = path.join(verifyDir, `release-${latestVersion.i}.json`);
   await getObjectToFile('v1/versions.json', versionsRemote, options);
   await getObjectToFile(`v1/buckets/DestinyInventoryItemDefinition/${hex}.json.gz`, sunshotRemote, options);
+  await getObjectToFile(releaseKey, releaseRemote, options);
   const versionsMatches = (await sha256File(versionsLocal)) === (await sha256File(versionsRemote));
-  const sunshotDecodedLocal = (await import('node:zlib')).gunzipSync(readFileSync(sunshotLocal));
+  const sunshotDecodedLocal = gunzipSync(readFileSync(sunshotLocal));
   const sunshotMatches =
     createHash('sha256').update(sunshotDecodedLocal).digest('hex') ===
     (await sha256File(sunshotRemote));
+  const releaseDecodedLocal = readDecoded(releaseLocal);
+  const releaseDecodedRemote = readDecoded(releaseRemote);
+  const releaseMatches =
+    createHash('sha256').update(releaseDecodedLocal).digest('hex') ===
+    createHash('sha256').update(releaseDecodedRemote).digest('hex');
   if (!versionsMatches) throw new Error('R2 verification failed: v1/versions.json differs from local file');
   if (!sunshotMatches) throw new Error(`R2 verification failed: Sunshot bucket ${hex} differs from local file`);
+  if (!releaseMatches) throw new Error(`R2 verification failed: ${releaseKey} differs from local file`);
   const sunshot = JSON.parse(readFileSync(sunshotRemote, 'utf8'));
   if (!Object.prototype.hasOwnProperty.call(sunshot, '2907129557')) {
     throw new Error(`R2 verification failed: Sunshot was absent from bucket ${hex}`);
   }
-  console.log(`R2 verification OK: v1/versions.json and Sunshot bucket ${hex} match local artifacts.`);
-  return { versionsMatches, sunshotMatches, sunshotBucket: hex };
+  const release = JSON.parse(releaseDecodedRemote.toString('utf8'));
+  const counts = latestVersion.counts;
+  if (
+    release.v !== latestVersion.i ||
+    !counts ||
+    ['a', 'm', 'r', 'u', 'c'].some((kind) => release.totals?.[kind] !== counts[kind])
+  ) {
+    throw new Error(`R2 verification failed: ${releaseKey} totals do not match versions.json counts`);
+  }
+  console.log(
+    `R2 verification OK: v1/versions.json, Sunshot bucket ${hex}, and ${releaseKey} ` +
+      `(${release.totals.a + release.totals.m + release.totals.r} entries) match local artifacts.`,
+  );
+  return {
+    versionsMatches,
+    sunshotMatches,
+    sunshotBucket: hex,
+    releaseMatches,
+    releaseVersionIndex: latestVersion.i,
+    releaseEntries: release.totals.a + release.totals.m + release.totals.r,
+  };
 }
 
 async function main(options) {
@@ -376,6 +472,17 @@ async function main(options) {
   if (versions.schema !== 1 || !Array.isArray(versions.versions)) {
     throw new Error('Build output has an unsupported versions.json schema');
   }
+  const missingReleases = versions.versions.filter(
+    (version) =>
+      !Number.isInteger(version.i) ||
+      !existsSync(path.join(sourceDir, 'releases', `${version.i}.json.gz`)),
+  );
+  if (missingReleases.length > 0) {
+    throw new Error(
+      `Build output is missing ${missingReleases.length} release index file(s) under ` +
+        `${path.join(sourceDir, 'releases')}; run build-releases.mjs before uploading`,
+    );
+  }
   const allFiles = filesUnder(sourceDir).sort((a, b) => a.relative.localeCompare(b.relative));
   if (!allFiles.length) throw new Error(`No files found under ${sourceDir}`);
   for (const file of allFiles) {
@@ -384,40 +491,82 @@ async function main(options) {
     }
   }
 
+  // Fail before any R2 write if the build still contains truncated revisions.
+  const lossless = scanLosslessRevisions(allFiles);
+
   const checkpoint = loadCheckpoint(options.checkpointFile, options.bucket, options.accountId);
   const work = [];
+  const changedByGroup = { buckets: 0, snapshots: 0, releases: 0, versions: 0, other: 0 };
+  const unchangedByGroup = { buckets: 0, snapshots: 0, releases: 0, versions: 0, other: 0 };
+  const localByGroup = { buckets: 0, snapshots: 0, releases: 0, versions: 0, other: 0 };
+  const bytesByGroup = { buckets: 0, snapshots: 0, releases: 0, versions: 0, other: 0 };
   let skipped = 0;
-  let bytes = 0;
+  let totalBytes = 0;
+  let uploadedBytes = 0;
   for (const file of allFiles) {
     const stat = statSync(file.full);
     const hash = await sha256File(file.full);
-    const metadata = { size: stat.size, mtimeMs: stat.mtimeMs, sha256: hash };
-    bytes += stat.size;
+    const metadata = { size: stat.size, sha256: hash };
+    totalBytes += stat.size;
     const key = `v1/${file.relative}`;
+    const group = artifactGroup(key);
+    localByGroup[group] += 1;
+    bytesByGroup[group] += stat.size;
     const prior = checkpoint.objects[key];
-    if (
-      !options.force &&
-      prior?.size === metadata.size &&
-      prior?.mtimeMs === metadata.mtimeMs &&
-      prior?.sha256 === metadata.sha256
-    ) {
+    // Content hash only: a rebuild that produces identical bytes must never be
+    // re-uploaded just because the file's mtime changed.
+    if (!options.force && prior?.sha256 === metadata.sha256 && prior?.size === metadata.size) {
       skipped += 1;
+      unchangedByGroup[group] += 1;
       continue;
     }
-    work.push({ ...file, key, metadata });
+    uploadedBytes += stat.size;
+    changedByGroup[group] += 1;
+    work.push({ ...file, key, metadata, group });
   }
+
+  // Commit v1/versions.json last so the API only advertises a new version once
+  // every bucket and snapshot for it is already durable.
+  const ordered = [
+    ...work.filter((file) => file.group !== 'versions'),
+    ...work.filter((file) => file.group === 'versions'),
+  ];
   console.log(
-    `Uploading ${work.length} artifacts to ${options.bucket}; ${skipped} unchanged checkpoint entries will be skipped.`,
+    `Uploading ${ordered.length} changed artifacts to ${options.bucket} ` +
+      `(${uploadedBytes} bytes); ${skipped} unchanged artifacts will be skipped.`,
+  );
+  console.log(
+    `Changed buckets: ${changedByGroup.buckets}, snapshots: ${changedByGroup.snapshots}, ` +
+      `releases: ${changedByGroup.releases}, versions: ${changedByGroup.versions}; ` +
+      `unchanged buckets: ${unchangedByGroup.buckets}, snapshots: ${unchangedByGroup.snapshots}, ` +
+      `releases: ${unchangedByGroup.releases}.`,
   );
 
   let saveQueue = Promise.resolve();
-  await mapLimit(work, options.concurrency, async (file) => {
+  let pendingSaves = 0;
+  const queueSave = () => {
+    const snapshot = { ...checkpoint, objects: { ...checkpoint.objects } };
+    saveQueue = saveQueue.then(() => saveCheckpoint(options.checkpointFile, snapshot));
+    return saveQueue;
+  };
+  const uploadTask = async (file) => {
     await uploadOne(file.full, file.key, options);
     checkpoint.objects[file.key] = file.metadata;
-    saveQueue = saveQueue.then(() => saveCheckpoint(options.checkpointFile, checkpoint));
-    await saveQueue;
-  });
-  await saveQueue;
+    pendingSaves += 1;
+    if (pendingSaves >= 25) {
+      pendingSaves = 0;
+      await queueSave();
+    }
+  };
+  await mapLimit(
+    ordered.filter((file) => file.group !== 'versions'),
+    options.concurrency,
+    uploadTask,
+  );
+  for (const file of ordered.filter((file) => file.group === 'versions')) {
+    await uploadTask(file);
+  }
+  await queueSave();
 
   const verification = options.verify ? await verifyObjects(options, sourceDir, versions) : null;
   const info = await bucketInfo(options);
@@ -425,10 +574,19 @@ async function main(options) {
   const report = {
     bucket: options.bucket,
     accountId: options.accountId,
-    uploaded: work.length,
+    uploaded: ordered.length,
     skipped,
+    changedByGroup,
+    unchangedByGroup,
+    localByGroup,
+    localReleaseFiles: localByGroup.releases,
+    localReleaseCompressedMB: megabytes(bytesByGroup.releases),
     localObjectCount: allFiles.length,
-    localBytes: bytes,
+    localBytes: totalBytes,
+    localCompressedMB: megabytes(totalBytes),
+    uploadedBytes,
+    uploadedCompressedMB: megabytes(uploadedBytes),
+    lossless,
     remoteObjectCount: inventory.objectCount,
     objectInventory: inventory,
     bucketInfoObjectCount: Number(info.object_count),

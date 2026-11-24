@@ -9,6 +9,7 @@
  * R2 layout (shared with scripts/history/* and src/manifest/history.ts):
  *
  *   v1/versions.json                             HistoryManifestIndex
+ *   v1/releases/{versionIndex}.json.gz           Release summary for one history index
  *   v1/buckets/{table}/{bucketHex}.json.gz       { [hash]: ItemRevision[] }
  *
  * The hourly history updater runs in GitHub Actions; this Worker never writes
@@ -53,6 +54,7 @@ export interface Env {
 
 const VERSIONS_KEY = 'v1/versions.json';
 const BUCKET_PREFIX = 'v1/buckets';
+const RELEASE_PREFIX = 'v1/releases';
 
 const LITE_ITEM_TABLE = 'DestinyInventoryItemLiteDefinition';
 const FULL_ITEM_TABLE = 'DestinyInventoryItemDefinition';
@@ -62,6 +64,7 @@ const IMMUTABLE_CACHE_CONTROL = 'public, max-age=86400, immutable';
 
 const TABLE_RE = /^[A-Za-z0-9_]{1,96}$/;
 const BUCKET_RE = /^[0-9a-f]{2,3}$/;
+const RELEASE_RE = /^\d{1,6}$/;
 const CACHE_BUSTER_RE = /^\d{1,12}$/;
 
 const CORS_HEADERS: Record<string, string> = {
@@ -106,8 +109,94 @@ async function handleFetch(
     return serveBucket(url, env, ctx);
   }
 
+  if (pathname.startsWith('/api/history/release/')) {
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      return jsonError(405, 'Method not allowed');
+    }
+    return serveRelease(url, env, ctx);
+  }
+
+  if (pathname === '/history' || pathname.startsWith('/history/')) {
+    return serveHistoryPage(request, url, env);
+  }
+
   // Static assets and SPA routes are served from Cloudflare Assets.
   return env.ASSETS.fetch(request);
+}
+
+const HISTORY_PAGE_TITLE = 'Destiny 2 Manifest History';
+const HISTORY_PAGE_DESCRIPTION =
+  'Browse Destiny 2 manifest updates from 2017 to today with categorized changes and full JSON diffs.';
+const HISTORY_PAGE_IMAGE = 'https://manifest.d2clarity.com/og-history.png';
+const HISTORY_PAGE_IMAGE_ALT = 'Destiny 2 Manifest History diffs by Clarity';
+
+async function serveHistoryPage(
+  request: Request,
+  url: URL,
+  env: Env,
+): Promise<Response> {
+  // Fetch the SPA index.html from Assets and swap Open Graph / Twitter tags so
+  // link previews on Discord, Slack, and social platforms show the /history
+  // embed image and copy without needing JS execution.
+  const indexUrl = new URL('/index.html', url.origin);
+  const assetResponse = await env.ASSETS.fetch(
+    new Request(indexUrl.toString(), {
+      method: request.method === 'HEAD' ? 'HEAD' : 'GET',
+      headers: request.headers,
+    }),
+  );
+  const contentType = assetResponse.headers.get('Content-Type') ?? '';
+  if (!assetResponse.ok || !contentType.includes('text/html')) {
+    return assetResponse;
+  }
+
+  const canonicalUrl = `https://manifest.d2clarity.com${url.pathname}`;
+  const html = (await assetResponse.text())
+    .replace(/<title>[^<]*<\/title>/, `<title>${HISTORY_PAGE_TITLE}</title>`)
+    .replace(
+      /(<meta\s+name="description"\s+content=")[^"]*(")/,
+      `$1${HISTORY_PAGE_DESCRIPTION}$2`,
+    )
+    .replace(
+      /(<meta\s+property="og:title"\s+content=")[^"]*(")/,
+      `$1${HISTORY_PAGE_TITLE}$2`,
+    )
+    .replace(
+      /(<meta\s+property="og:description"\s+content=")[^"]*(")/,
+      `$1${HISTORY_PAGE_DESCRIPTION}$2`,
+    )
+    .replace(
+      /(<meta\s+property="og:url"\s+content=")[^"]*(")/,
+      `$1${canonicalUrl}$2`,
+    )
+    .replace(
+      /(<meta\s+property="og:image"\s+content=")[^"]*(")/,
+      `$1${HISTORY_PAGE_IMAGE}$2`,
+    )
+    .replace(
+      /(<meta\s+property="og:image:alt"\s+content=")[^"]*(")/,
+      `$1${HISTORY_PAGE_IMAGE_ALT}$2`,
+    )
+    .replace(
+      /(<meta\s+name="twitter:title"\s+content=")[^"]*(")/,
+      `$1${HISTORY_PAGE_TITLE}$2`,
+    )
+    .replace(
+      /(<meta\s+name="twitter:description"\s+content=")[^"]*(")/,
+      `$1${HISTORY_PAGE_DESCRIPTION}$2`,
+    )
+    .replace(
+      /(<meta\s+name="twitter:image"\s+content=")[^"]*(")/,
+      `$1${HISTORY_PAGE_IMAGE}$2`,
+    );
+
+  const headers = new Headers(assetResponse.headers);
+  headers.delete('Content-Length');
+  headers.set('Content-Type', 'text/html; charset=utf-8');
+  return new Response(request.method === 'HEAD' ? null : html, {
+    status: assetResponse.status,
+    headers,
+  });
 }
 
 export default {
@@ -268,14 +357,14 @@ async function serveBucket(
   // The UI requests the Lite item table; history is stored for the full table.
   const canonicalTable = table === LITE_ITEM_TABLE ? FULL_ITEM_TABLE : table;
 
-  // `?v=<version>` makes the bucket URL content-addressed. `format=json`
-  // versions the decoded response cache separately from older cached objects
-  // that still contain the original gzip bytes.
+  // `?v=<version>` makes the bucket URL content-addressed. The decoded-cache
+  // format suffix also separates this lossless payload from older cached
+  // responses populated before the bucket refresh.
   const requestedVersion = url.searchParams.get('v');
   const version =
     requestedVersion && CACHE_BUSTER_RE.test(requestedVersion) ? requestedVersion : null;
   const cacheControl = version ? IMMUTABLE_CACHE_CONTROL : HISTORY_CACHE_CONTROL;
-  const cacheSearch = version ? `?v=${version}&format=json` : '?format=json';
+  const cacheSearch = version ? `?v=${version}&format=json-v2` : '?format=json-v2';
 
   const cacheKey = buildCacheKey(
     url,
@@ -328,6 +417,83 @@ async function serveBucket(
         event: 'history-bucket-error',
         table: canonicalTable,
         bucket,
+        error: errorMessage(error),
+      }),
+    );
+    return jsonError(503, 'History storage unavailable');
+  }
+}
+
+async function serveRelease(
+  url: URL,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<Response> {
+  const segments = url.pathname.split('/').filter((segment) => segment.length > 0);
+  // ["api", "history", "release", versionIndex]
+  if (segments.length !== 4) {
+    return jsonError(404, 'Not found');
+  }
+
+  const versionIndex = segments[3];
+  // Validate before touching the Cache API or R2 so invalid requests are free.
+  if (!versionIndex || !RELEASE_RE.test(versionIndex)) {
+    return jsonError(400, 'Invalid history release path');
+  }
+
+  // `?v=<version>` makes the release URL content-addressed. The decoded-cache
+  // format suffix also separates refreshed release data from older responses.
+  const requestedVersion = url.searchParams.get('v');
+  const version =
+    requestedVersion && CACHE_BUSTER_RE.test(requestedVersion) ? requestedVersion : null;
+  const cacheControl = version ? IMMUTABLE_CACHE_CONTROL : HISTORY_CACHE_CONTROL;
+  const cacheSearch = version ? `?v=${version}&format=json-v2` : '?format=json-v2';
+
+  const cacheKey = buildCacheKey(
+    url,
+    `/api/history/release/${versionIndex}`,
+    cacheSearch,
+  );
+  const cached = await matchEdgeCache(cacheKey);
+  if (cached) return cached;
+
+  const key = `${RELEASE_PREFIX}/${versionIndex}.json.gz`;
+
+  try {
+    const object = await env.MANIFEST_HISTORY.get(key);
+    if (!object) {
+      return jsonError(404, 'History release not found');
+    }
+
+    // R2 stores release files as gzip-compressed JSON. Return decoded JSON
+    // here for the same reason as `serveBucket`: Cloudflare's edge can
+    // re-encode a gzip response, leaving clients with gzip bytes.
+    const compressedBody =
+      object.body ?? new Response(await object.arrayBuffer()).body;
+    const decompressor = new DecompressionStream('gzip') as unknown as ReadableWritablePair<
+      Uint8Array,
+      Uint8Array
+    >;
+    const body = compressedBody?.pipeThrough(decompressor);
+    if (!body) {
+      return jsonError(503, 'History release body unavailable');
+    }
+    const response = new Response(body, {
+      status: 200,
+      headers: {
+        ...CORS_HEADERS,
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': cacheControl,
+      },
+    });
+
+    storeInEdgeCache(cacheKey, response, ctx);
+    return response;
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: 'history-release-error',
+        versionIndex,
         error: errorMessage(error),
       }),
     );

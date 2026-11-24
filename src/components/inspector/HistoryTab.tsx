@@ -1,5 +1,9 @@
 import { memo, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { computeJsonDiff, type DiffEntry } from '../../manifest/diff';
+import type {
+  DefinitionRef,
+  ImageScalingMode,
+  ResolvedHashSummary,
+} from '../../types/manifest';
 import {
   fetchItemHistory,
   reconstructRevisionSnapshot,
@@ -7,16 +11,25 @@ import {
   type ItemHistoryResult,
   type ResolvedItemRevision,
 } from '../../manifest/history';
+import { JsonDiffView, JsonSyntaxView } from './JsonDiffView';
+import { JsonTree } from './JsonTree';
 import { Skeleton } from '../../ui/Skeleton';
+import { ClearSearchInput } from '../../ui/ClearSearchInput';
 import styles from './InspectorTabs.module.scss';
 
 type HistoryView = 'updates' | 'compare';
+type RevisionMode = 'diff' | 'pretty' | 'json';
+type CompareMode = 'diff' | 'from-json' | 'to-json';
 const CURRENT_VERSION = 'current';
 
 export interface HistoryTabProps {
   table: string;
   hash: number;
   currentData: Record<string, unknown>;
+  resolvedRefs: Record<string, ResolvedHashSummary>;
+  imageScaling: ImageScalingMode;
+  onNavigateRef: (ref: DefinitionRef, inNewTab?: boolean) => void;
+  onCopy: (text: string, label: string) => void;
 }
 
 function formatDate(date: string, includeDay = true): string {
@@ -30,32 +43,6 @@ function formatDate(date: string, includeDay = true): string {
     year: 'numeric',
     timeZone: 'UTC',
   }).format(parsed);
-}
-
-function formatDiffVal(value: unknown): string {
-  if (value === undefined) {
-    return '';
-  }
-  if (typeof value === 'string') {
-    return JSON.stringify(value);
-  }
-  if (typeof value === 'object' && value !== null) {
-    const text = JSON.stringify(value);
-    return text.length > 180 ? `${text.slice(0, 177)}…` : text;
-  }
-  return String(value);
-}
-
-function revisionEntries(revision: ResolvedItemRevision): DiffEntry[] {
-  return (revision.d ?? []).map((op) => {
-    if (op[0] === 0) {
-      return { path: op[1], kind: 'changed', left: op[2], right: op[3] };
-    }
-    if (op[0] === 1) {
-      return { path: op[1], kind: 'added', right: op[2] };
-    }
-    return { path: op[1], kind: 'removed', left: op[2] };
-  });
 }
 
 function revisionLabel(revision: ResolvedItemRevision): string {
@@ -96,47 +83,182 @@ function HistoryGap(): ReactNode {
   );
 }
 
-function DiffRows({ entries }: { entries: DiffEntry[] }): ReactNode {
-  if (entries.length === 0) {
-    return <p className={styles.historyNoFields}>No field-level changes recorded.</p>;
-  }
+function versionOptionLabel(version: HistoryVersionMeta): string {
+  const date = formatDate(version.date);
+  return `${date} · ${version.version ?? version.id}`;
+}
+
+function versionSnapshot(
+  version: string,
+  currentData: Record<string, unknown>,
+  result: ItemHistoryResult,
+): unknown {
+  return version === CURRENT_VERSION
+    ? currentData
+    : reconstructRevisionSnapshot(currentData, result.revisions, Number(version));
+}
+
+function snapshotText(snapshot: unknown): string {
+  if (snapshot === undefined) return '';
+  const json = JSON.stringify(snapshot, null, 2);
+  return json === undefined ? '' : json;
+}
+
+function downloadJson(snapshot: unknown, filename: string): void {
+  const blob = new Blob([snapshotText(snapshot)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function ModeButtons<T extends string>({
+  value,
+  options,
+  label,
+  onChange,
+}: {
+  value: T;
+  options: ReadonlyArray<{ value: T; label: string }>;
+  label: string;
+  onChange: (value: T) => void;
+}): ReactNode {
   return (
-    <div className={styles.diffList}>
-      {entries.map((entry, index) => (
-        <div key={`${entry.path}:${index}`} className={styles.diffItem}>
-          <div className={styles.diffPath}>
-            <span className="mono">{entry.path}</span>
-            <span className={styles.diffKind}>{entry.kind}</span>
-          </div>
-          {(entry.kind === 'removed' || entry.kind === 'changed') && (
-            <div className={styles.diffDel}>− {formatDiffVal(entry.left)}</div>
-          )}
-          {(entry.kind === 'added' || entry.kind === 'changed') && (
-            <div className={styles.diffIns}>+ {formatDiffVal(entry.right)}</div>
-          )}
-        </div>
+    <div className={styles.historyModeToggle} role="group" aria-label={label}>
+      {options.map((option) => (
+        <button
+          type="button"
+          key={option.value}
+          className={`${styles.historyModeButton} ${
+            value === option.value ? styles.historyModeButtonActive : ''
+          }`}
+          aria-pressed={value === option.value}
+          onClick={() => onChange(option.value)}
+        >
+          {option.label}
+        </button>
       ))}
     </div>
   );
 }
 
+function JsonSnapshot({
+  snapshot,
+  filter,
+  table,
+  hash,
+  version,
+  onCopy,
+}: {
+  snapshot: unknown;
+  filter: string;
+  table: string;
+  hash: number;
+  version: string;
+  onCopy: (text: string, label: string) => void;
+}): ReactNode {
+  const json = snapshotText(snapshot);
+  const filename = `${table}-${hash}-v${version}.json`;
+  return (
+    <div className={styles.historySnapshot}>
+      <div className={styles.historySnapshotActions}>
+        <button
+          type="button"
+          className={styles.smallBtn}
+          onClick={() => onCopy(json, 'Copied snapshot JSON')}
+        >
+          Copy JSON
+        </button>
+        <button
+          type="button"
+          className={styles.smallBtn}
+          onClick={() => downloadJson(snapshot, filename)}
+        >
+          Download .json
+        </button>
+      </div>
+      {snapshot === null ? (
+        <p className={styles.historyNoFields}>This item did not exist in this version.</p>
+      ) : (
+        <JsonSyntaxView value={snapshot} filter={filter} />
+      )}
+    </div>
+  );
+}
+
+function SnapshotPretty({
+  snapshot,
+  resolvedRefs,
+  imageScaling,
+  onNavigateRef,
+  onCopy,
+}: {
+  snapshot: unknown;
+  resolvedRefs: Record<string, ResolvedHashSummary>;
+  imageScaling: ImageScalingMode;
+  onNavigateRef: (ref: DefinitionRef, inNewTab?: boolean) => void;
+  onCopy: (text: string, label: string) => void;
+}): ReactNode {
+  if (snapshot === null || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+    return <p className={styles.historyNoFields}>This item did not exist in this version.</p>;
+  }
+  return (
+    <JsonTree
+      data={snapshot as Record<string, unknown>}
+      resolvedRefs={resolvedRefs}
+      imageScaling={imageScaling}
+      onNavigateRef={onNavigateRef}
+      onCopy={onCopy}
+    />
+  );
+}
+
 function RevisionCard({
   revision,
+  revisions,
+  currentData,
   expanded,
   onToggle,
   filter,
+  table,
+  hash,
+  resolvedRefs,
+  imageScaling,
+  onNavigateRef,
+  onCopy,
 }: {
   revision: ResolvedItemRevision;
+  revisions: readonly ResolvedItemRevision[];
+  currentData: Record<string, unknown>;
   expanded: boolean;
   onToggle: () => void;
   filter: string;
+  table: string;
+  hash: number;
+  resolvedRefs: Record<string, ResolvedHashSummary>;
+  imageScaling: ImageScalingMode;
+  onNavigateRef: (ref: DefinitionRef, inNewTab?: boolean) => void;
+  onCopy: (text: string, label: string) => void;
 }): ReactNode {
-  const entries = useMemo(() => revisionEntries(revision), [revision]);
-  const query = filter.trim().toLowerCase();
-  const filteredEntries = query
-    ? entries.filter((entry) => entry.path.toLowerCase().includes(query))
-    : entries;
+  const [mode, setMode] = useState<RevisionMode>('diff');
+  const { before, after } = useMemo(() => {
+    if (!expanded) return { before: null, after: null };
+    return {
+      before:
+        revision.k === 'a'
+          ? null
+          : reconstructRevisionSnapshot(currentData, revisions, revision.v - 1),
+      after: reconstructRevisionSnapshot(currentData, revisions, revision.v),
+    };
+  }, [currentData, expanded, revision, revisions]);
   const versionLabel = revision.version.version ?? revision.version.id;
+  const modeOptions: { value: RevisionMode; label: string }[] = [
+    { value: 'diff', label: 'Diff' },
+    { value: 'pretty', label: 'Pretty' },
+    { value: 'json', label: 'JSON' },
+  ];
 
   return (
     <article className={styles.historyCard}>
@@ -172,15 +294,38 @@ function RevisionCard({
       </button>
       {expanded && (
         <div className={styles.historyCardBody}>
-          {revision.t !== undefined && revision.t > (revision.d?.length ?? 0) && (
-            <p className={styles.historyDiffNote}>
-              Showing first {revision.d?.length ?? 0} of {revision.t} changes
-            </p>
-          )}
-          {filteredEntries.length === 0 && query ? (
-            <p className={styles.historyNoFields}>No changes match this path filter.</p>
+          <div className={styles.historyCardToolbar}>
+            <ModeButtons
+              value={mode}
+              options={modeOptions}
+              label="Revision display mode"
+              onChange={setMode}
+            />
+            {revision.t !== undefined && revision.t > (revision.d?.length ?? 0) && (
+              <p className={styles.historyDiffNote}>
+                Showing first {revision.d?.length ?? 0} of {revision.t} recorded changes
+              </p>
+            )}
+          </div>
+          {mode === 'diff' ? (
+            <JsonDiffView before={before} after={after} filter={filter} onCopy={onCopy} />
+          ) : mode === 'pretty' ? (
+            <SnapshotPretty
+              snapshot={after}
+              resolvedRefs={resolvedRefs}
+              imageScaling={imageScaling}
+              onNavigateRef={onNavigateRef}
+              onCopy={onCopy}
+            />
           ) : (
-            <DiffRows entries={filteredEntries} />
+            <JsonSnapshot
+              snapshot={after}
+              filter={filter}
+              table={table}
+              hash={hash}
+              version={String(revision.v)}
+              onCopy={onCopy}
+            />
           )}
         </div>
       )}
@@ -188,15 +333,14 @@ function RevisionCard({
   );
 }
 
-function versionOptionLabel(version: HistoryVersionMeta): string {
-  const date = formatDate(version.date);
-  return `${date} · ${version.version ?? version.id}`;
-}
-
 export const HistoryTab = memo(function HistoryTab({
   table,
   hash,
   currentData,
+  resolvedRefs,
+  imageScaling,
+  onNavigateRef,
+  onCopy,
 }: HistoryTabProps): ReactNode {
   const [result, setResult] = useState<ItemHistoryResult | null>(null);
   const [view, setView] = useState<HistoryView>('updates');
@@ -204,14 +348,13 @@ export const HistoryTab = memo(function HistoryTab({
   const [expandedVersion, setExpandedVersion] = useState<number | null>(null);
   const [fromVersion, setFromVersion] = useState<string>('');
   const [toVersion, setToVersion] = useState<string>(CURRENT_VERSION);
+  const [compareMode, setCompareMode] = useState<CompareMode>('diff');
 
   useEffect(() => {
     let mounted = true;
     setResult(null);
     void fetchItemHistory(table, hash).then((nextResult) => {
-      if (mounted) {
-        setResult(nextResult);
-      }
+      if (mounted) setResult(nextResult);
     });
     return () => {
       mounted = false;
@@ -219,13 +362,19 @@ export const HistoryTab = memo(function HistoryTab({
   }, [table, hash]);
 
   useEffect(() => {
-    if (!result?.available) {
-      return;
-    }
-    const firstRevision = result.revisions[result.revisions.length - 1];
-    const fallbackVersion = result.versions[0];
-    const initialFrom = firstRevision?.v ?? fallbackVersion?.i;
+    if (!result?.available) return;
+    const latestChange = result.revisions[0];
+    const previousVersion = latestChange
+      ? [...result.versions]
+          .filter((version) => version.i < latestChange.v)
+          .sort((a, b) => b.i - a.i)[0]
+      : undefined;
+    const previousRevision = result.revisions[1];
+    const oldestRevision = result.revisions[result.revisions.length - 1];
+    const initialFrom =
+      previousVersion?.i ?? previousRevision?.v ?? oldestRevision?.v ?? result.versions[0]?.i;
     setFromVersion(initialFrom === undefined ? '' : String(initialFrom));
+    setToVersion(CURRENT_VERSION);
     setExpandedVersion(
       result.revisions.find((revision) => revision.k === 'm')?.v ??
         result.revisions[0]?.v ??
@@ -235,49 +384,22 @@ export const HistoryTab = memo(function HistoryTab({
 
   const query = filter.trim().toLowerCase();
   const visibleRevisions = useMemo(() => {
-    if (!result) {
-      return [];
-    }
+    if (!result) return [];
     return result.revisions.filter((revision) => {
-      if (!query) {
-        return true;
-      }
-      return revisionEntries(revision).some((entry) =>
-        entry.path.toLowerCase().includes(query),
-      );
+      if (!query) return true;
+      return (revision.d ?? []).some((op) => op[1].toLowerCase().includes(query));
     });
   }, [query, result]);
 
-  const compareEntries = useMemo(() => {
+  const compareSnapshots = useMemo(() => {
     if (!result?.available || !fromVersion) {
-      return [];
+      return { from: null, to: null };
     }
-    const from =
-      fromVersion === CURRENT_VERSION
-        ? currentData
-        : reconstructRevisionSnapshot(
-            currentData,
-            result.revisions,
-            Number(fromVersion),
-          );
-    const to =
-      toVersion === CURRENT_VERSION
-        ? currentData
-        : reconstructRevisionSnapshot(
-            currentData,
-            result.revisions,
-            Number(toVersion),
-          );
-    return computeJsonDiff(from, to);
+    return {
+      from: versionSnapshot(fromVersion, currentData, result),
+      to: versionSnapshot(toVersion, currentData, result),
+    };
   }, [currentData, fromVersion, result, toVersion]);
-
-  const visibleCompareEntries = useMemo(
-    () =>
-      query
-        ? compareEntries.filter((entry) => entry.path.toLowerCase().includes(query))
-        : compareEntries,
-    [compareEntries, query],
-  );
 
   if (!result) {
     return (
@@ -295,54 +417,62 @@ export const HistoryTab = memo(function HistoryTab({
   const hasRevisions = result.revisions.length > 0;
   const oldestRevision = result.revisions[result.revisions.length - 1];
   const newestRevision = result.revisions[0];
-  const summary = oldestRevision && newestRevision
-    ? `${result.revisions.length} ${
-        result.revisions.length === 1 ? 'update' : 'updates'
-      } · ${formatDate(oldestRevision.version.date, false)} → ${formatDate(
-        newestRevision.version.date,
-        false,
-      )}`
-    : 'No recorded updates';
+  const summary =
+    oldestRevision && newestRevision
+      ? `${result.revisions.length} ${
+          result.revisions.length === 1 ? 'update' : 'updates'
+        } · ${formatDate(oldestRevision.version.date, false)} → ${formatDate(
+          newestRevision.version.date,
+          false,
+        )}`
+      : 'No recorded updates';
+  const newestFirstVersions = [...result.versions].sort((a, b) => b.i - a.i);
+  const compareOptions: { value: CompareMode; label: string }[] = [
+    { value: 'diff', label: 'Diff' },
+    { value: 'from-json', label: 'From JSON' },
+    { value: 'to-json', label: 'To JSON' },
+  ];
 
   return (
     <div className={styles.historyTab} data-inspector-scroll="true">
       <header className={styles.historyHeader}>
         <div className={styles.historyHeaderTop}>
           <p className={styles.historySummary}>{summary}</p>
-          <input
-            type="search"
+          <ClearSearchInput
             className={styles.historyFilter}
+            wrapperClassName={styles.historyFilterWrap}
             value={filter}
-            onChange={(event) => setFilter(event.target.value)}
+            onValueChange={setFilter}
             placeholder="Filter changed fields…"
             aria-label="Filter changed fields"
+            clearLabel="Clear history filter"
           />
-        </div>
-        <div
-          className={styles.historyViewToggle}
-          role="group"
-          aria-label="History view"
-        >
-          <button
-            type="button"
-            className={`${styles.historyViewButton} ${
-              view === 'updates' ? styles.historyViewButtonActive : ''
-            }`}
-            aria-pressed={view === 'updates'}
-            onClick={() => setView('updates')}
+          <div
+            className={styles.historyViewToggle}
+            role="group"
+            aria-label="History view"
           >
-            Updates
-          </button>
-          <button
-            type="button"
-            className={`${styles.historyViewButton} ${
-              view === 'compare' ? styles.historyViewButtonActive : ''
-            }`}
-            aria-pressed={view === 'compare'}
-            onClick={() => setView('compare')}
-          >
-            Compare
-          </button>
+            <button
+              type="button"
+              className={`${styles.historyViewButton} ${
+                view === 'updates' ? styles.historyViewButtonActive : ''
+              }`}
+              aria-pressed={view === 'updates'}
+              onClick={() => setView('updates')}
+            >
+              Updates
+            </button>
+            <button
+              type="button"
+              className={`${styles.historyViewButton} ${
+                view === 'compare' ? styles.historyViewButtonActive : ''
+              }`}
+              aria-pressed={view === 'compare'}
+              onClick={() => setView('compare')}
+            >
+              Compare
+            </button>
+          </div>
         </div>
       </header>
 
@@ -362,8 +492,7 @@ export const HistoryTab = memo(function HistoryTab({
             visibleRevisions.map((revision, index) => {
               const nextOlder = visibleRevisions[index + 1];
               const hasGapAfter =
-                nextOlder &&
-                gapExists(result.versions, nextOlder.v, revision.v);
+                nextOlder && gapExists(result.versions, nextOlder.v, revision.v);
               const hasGapBeforeFirst =
                 !nextOlder &&
                 oldestRevision &&
@@ -375,6 +504,8 @@ export const HistoryTab = memo(function HistoryTab({
                 <div className={styles.historyTimelineEntry} key={revision.v}>
                   <RevisionCard
                     revision={revision}
+                    revisions={result.revisions}
+                    currentData={currentData}
                     expanded={expandedVersion === revision.v}
                     onToggle={() =>
                       setExpandedVersion((current) =>
@@ -382,6 +513,12 @@ export const HistoryTab = memo(function HistoryTab({
                       )
                     }
                     filter={filter}
+                    table={table}
+                    hash={hash}
+                    resolvedRefs={resolvedRefs}
+                    imageScaling={imageScaling}
+                    onNavigateRef={onNavigateRef}
+                    onCopy={onCopy}
                   />
                   {(hasGapAfter || hasGapBeforeFirst) && <HistoryGap />}
                 </div>
@@ -399,12 +536,12 @@ export const HistoryTab = memo(function HistoryTab({
                 value={fromVersion}
                 onChange={(event) => setFromVersion(event.target.value)}
               >
-                {result.versions.map((version) => (
+                <option value={CURRENT_VERSION}>Current live</option>
+                {newestFirstVersions.map((version) => (
                   <option key={version.i} value={version.i}>
                     {versionOptionLabel(version)}
                   </option>
                 ))}
-                <option value={CURRENT_VERSION}>Current live</option>
               </select>
             </label>
             <label className={styles.historySelectLabel}>
@@ -414,23 +551,70 @@ export const HistoryTab = memo(function HistoryTab({
                 value={toVersion}
                 onChange={(event) => setToVersion(event.target.value)}
               >
-                {result.versions.map((version) => (
+                <option value={CURRENT_VERSION}>Current live</option>
+                {newestFirstVersions.map((version) => (
                   <option key={version.i} value={version.i}>
                     {versionOptionLabel(version)}
                   </option>
                 ))}
-                <option value={CURRENT_VERSION}>Current live</option>
               </select>
             </label>
           </div>
-          {visibleCompareEntries.length === 0 ? (
-            <div className={styles.emptyState}>
-              {compareEntries.length === 0
-                ? 'These two versions are identical.'
-                : 'No differences match this path filter.'}
-            </div>
+          <div className={styles.historyCompareToolbar}>
+            <ModeButtons
+              value={compareMode}
+              options={compareOptions}
+              label="Compare display mode"
+              onChange={setCompareMode}
+            />
+            {compareMode === 'from-json' && (
+              <button
+                type="button"
+                className={styles.smallBtn}
+                onClick={() =>
+                  onCopy(snapshotText(compareSnapshots.from), 'Copied From snapshot JSON')
+                }
+              >
+                Copy JSON
+              </button>
+            )}
+            {compareMode === 'to-json' && (
+              <button
+                type="button"
+                className={styles.smallBtn}
+                onClick={() =>
+                  onCopy(snapshotText(compareSnapshots.to), 'Copied To snapshot JSON')
+                }
+              >
+                Copy JSON
+              </button>
+            )}
+          </div>
+          {compareMode === 'diff' ? (
+            <JsonDiffView
+              before={compareSnapshots.from}
+              after={compareSnapshots.to}
+              filter={filter}
+              onCopy={onCopy}
+            />
           ) : (
-            <DiffRows entries={visibleCompareEntries} />
+            <div className={styles.historySnapshot}>
+              {compareMode === 'from-json' ? (
+                compareSnapshots.from === null ? (
+                  <p className={styles.historyNoFields}>
+                    This item did not exist in the selected version.
+                  </p>
+                ) : (
+                  <JsonSyntaxView value={compareSnapshots.from} filter={filter} />
+                )
+              ) : compareSnapshots.to === null ? (
+                <p className={styles.historyNoFields}>
+                  This item did not exist in the selected version.
+                </p>
+              ) : (
+                <JsonSyntaxView value={compareSnapshots.to} filter={filter} />
+              )}
+            </div>
           )}
         </div>
       )}

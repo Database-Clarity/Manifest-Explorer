@@ -19,6 +19,31 @@ export const CHANGELOG_STORAGE_KEY = 'clarity-manifest-explorer:last-seen-change
 
 export const CHANGELOG: readonly ChangelogEntry[] = [
   {
+    version: '2026.11.24-1',
+    date: 'Nov 24, 2026',
+    title: 'Manifest History page, lossless diffs & desktop polish',
+    summary: 'Browse entire manifest updates by category, read syntax-highlighted Split/Inline diffs without truncation, and enjoy a cleaner default workspace.',
+    sections: [
+      {
+        heading: 'Manifest history & diffs',
+        items: [
+          'New /history page lets you browse all 321 manifest updates (2017–2026) categorized by table and change type, opening entries in multi-tab full-page diff views.',
+          'All historical diffs are now 100% lossless and rendered with syntax highlighting, switchable Split (side-by-side) and Inline layouts, enclosing JSON key breadcrumbs, and expandable surrounding lines.',
+          'Inspect any past manifest version in full with Diff, Pretty (interactive tree), and JSON views, and newest-first Compare selectors.',
+        ],
+      },
+      {
+        heading: 'Workspace, navigation & branding',
+        items: [
+          'Desktop now opens with the collapsed table rail, 2-column card grid, fixed card borders and top spacing, and aligned 33px header bars across both panes.',
+          'Middle-click now reliably opens definition cards, rows, and resolved reference pills in a new tab without triggering browser auto-scroll.',
+          'Pretty-tab Filter and Find now match and highlight resolved hash pills (such as Stat "Reload Speed" or "Impact") and enum annotations.',
+          'Added native Fira Code monospace support (with ligatures disabled for JSON), interactive clear buttons on every search input, official Clarity logos, Ko-Fi support buttons, and a proper gear icon for Settings.',
+        ],
+      },
+    ],
+  },
+  {
     version: '2026.11.23-2',
     date: 'Nov 23, 2026',
     title: 'Item history',

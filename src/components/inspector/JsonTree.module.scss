@@ -19,10 +19,16 @@
   flex-shrink: 0;
 }
 
-.filterInput {
-  @include ctl.field;
+.filterWrap {
   flex: 1;
   min-width: 0;
+}
+
+.filterInput {
+  @include ctl.field;
+  width: 100%;
+  min-width: 0;
+  padding-inline-end: 1.75rem;
 }
 
 .searchModes {
@@ -88,6 +94,8 @@
   font-family: var(--code-font-family);
   font-size: var(--code-font-size);
   font-variant-numeric: tabular-nums;
+  font-variant-ligatures: none;
+  font-feature-settings: 'liga' 0, 'calt' 0;
   line-height: 1.5;
   color: var(--editor-text);
   overflow-wrap: anywhere;
@@ -138,10 +146,17 @@
   padding: 0;
   margin: 0;
   border: 0;
+  border-radius: 0.1875rem;
   background: transparent;
   color: inherit;
   font: inherit;
   cursor: pointer;
+
+  @media (hover: hover) {
+    &:hover:not(:disabled) {
+      background: var(--sel);
+    }
+  }
 
   &:disabled {
     cursor: default;
@@ -469,6 +484,13 @@
   cursor: pointer;
   overflow: hidden;
   display: block;
+  transition: border-color 120ms ease-out;
+
+  @media (hover: hover) {
+    &:hover {
+      border-color: var(--accent-ink);
+    }
+  }
 
   &:focus-visible {
     @include ctl.focus-ring;
@@ -507,7 +529,21 @@
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
+  padding: 0 0.125rem;
+  border-radius: 0.125rem;
   color: var(--link);
+  cursor: pointer;
+
+  @media (hover: hover) {
+    &:hover {
+      background: var(--hover);
+      text-decoration: underline;
+    }
+  }
+
+  &:focus-visible {
+    @include ctl.focus-ring;
+  }
 }
 
 @include theme.mobile-or-coarse {
@@ -519,7 +555,7 @@
 
   // Keep a readable minimum width so the compact placeholder is never clipped;
   // when Find adds its stepper the toolbar wraps instead of squeezing it away.
-  .filterInput {
+  .filterWrap {
     flex: 1 1 5rem;
     min-width: 4.5rem;
   }

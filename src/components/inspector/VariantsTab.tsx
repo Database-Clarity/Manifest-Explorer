@@ -4,6 +4,7 @@ import { BungieIcon } from '../BungieIcon';
 import { DiffIcon, ExternalLinkIcon } from '../../ui/Icons';
 import { getTierColorVar } from '../../ui/rarity';
 import { Skeleton } from '../../ui/Skeleton';
+import { activateOnMiddleClick, preventMiddleClickAutoScroll } from '../middleClick';
 import styles from './InspectorTabs.module.scss';
 
 export interface VariantsTabProps {
@@ -74,11 +75,9 @@ export const VariantsTab = memo(function VariantsTab({
                     event.ctrlKey || event.metaKey || event.shiftKey,
                   )
                 }
+                onMouseDown={preventMiddleClickAutoScroll}
                 onAuxClick={(event) => {
-                  if (event.button === 1) {
-                    event.preventDefault();
-                    onNavigateRef(itemNavRef, true);
-                  }
+                  activateOnMiddleClick(event, () => onNavigateRef(itemNavRef, true));
                 }}
               >
                 <BungieIcon
@@ -113,6 +112,10 @@ export const VariantsTab = memo(function VariantsTab({
                 aria-label={`Open ${item.name || `definition ${item.hash}`} in new tab`}
                 title={`Open ${item.name || `definition ${item.hash}`} in new tab`}
                 onClick={() => onNavigateRef(itemNavRef, true)}
+                onMouseDown={preventMiddleClickAutoScroll}
+                onAuxClick={(event) =>
+                  activateOnMiddleClick(event, () => onNavigateRef(itemNavRef, true))
+                }
               >
                 <ExternalLinkIcon size={14} />
               </button>

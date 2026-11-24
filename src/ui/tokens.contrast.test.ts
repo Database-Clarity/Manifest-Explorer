@@ -73,6 +73,9 @@ const AUDITED_TOKENS: readonly string[] = [
   '--alert-bg',
   '--on-accent',
   '--accent',
+  '--kofi-bg',
+  '--kofi-hover',
+  '--kofi-fg',
 ];
 
 interface ContrastRequirement {
@@ -210,6 +213,8 @@ function statusRequirements(): ContrastRequirement[] {
     { foreground: '--warn', background: '--warn-bg', minimum: 4.5 },
     { foreground: '--danger', background: '--alert-bg', minimum: 4.5 },
     { foreground: '--on-accent', background: '--accent', minimum: 4.5 },
+    { foreground: '--kofi-fg', background: '--kofi-bg', minimum: 4.5 },
+    { foreground: '--kofi-fg', background: '--kofi-hover', minimum: 4.5 },
   ];
 }
 

@@ -1,0 +1,376 @@
+@use '../../styles/controls' as ctl;
+@use '../../styles/variables' as theme;
+
+.viewer {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--hair);
+  background: var(--editor);
+  color: var(--editor-text);
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.375rem 0.75rem;
+  min-width: 0;
+  padding: 0.375rem 0.5rem;
+  border-bottom: 1px solid var(--hair);
+  background: var(--strip);
+  color: var(--editor-text2);
+  font-size: 0.75rem;
+}
+
+.summary {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.addedCount {
+  color: var(--ins);
+  font-weight: 700;
+}
+
+.removedCount {
+  color: var(--del-text);
+  font-weight: 700;
+}
+
+.toolbarActions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.25rem;
+
+  button {
+    @include ctl.contain-focus-rings;
+    min-height: 1.75rem;
+    padding: 0.125rem 0.375rem;
+    border: 1px solid var(--line);
+    border-radius: 0.1875rem;
+    background: var(--col);
+    color: var(--text2);
+    font: inherit;
+    cursor: pointer;
+
+    &:hover {
+      background: var(--hover);
+      color: var(--text);
+    }
+
+    &:focus-visible {
+      @include ctl.focus-ring;
+    }
+  }
+}
+
+.layoutToggle {
+  @include ctl.segmented-track;
+  font-size: 0.6875rem;
+}
+
+.layoutButton,
+.layoutButtonActive {
+  @include ctl.segmented-item;
+  min-height: 1.625rem;
+  padding: 0 0.4375rem;
+}
+
+.layoutButtonActive,
+.layoutButtonActive:hover:not(:disabled) {
+  @include ctl.segmented-active;
+}
+
+.diffViewport,
+.syntaxViewport {
+  min-width: 0;
+  max-width: 100%;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.codeRows {
+  min-width: max-content;
+  padding: 0.25rem 0;
+  font-family: var(--code-font-family);
+  font-size: var(--code-font-size);
+  line-height: 1.55;
+  font-variant-ligatures: none;
+  font-feature-settings: 'liga' 0, 'calt' 0;
+}
+
+.splitRows {
+  min-width: 56rem;
+  padding: 0.25rem 0;
+  font-family: var(--code-font-family);
+  font-size: var(--code-font-size);
+  line-height: 1.55;
+  font-variant-ligatures: none;
+  font-feature-settings: 'liga' 0, 'calt' 0;
+}
+
+.splitHeader,
+.splitRow {
+  display: grid;
+  grid-template-columns: minmax(28rem, 1fr) minmax(28rem, 1fr);
+}
+
+.splitHeader {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--strip);
+  color: var(--editor-text2);
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 0.6875rem;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.045em;
+
+  span {
+    padding: 0.375rem 0.5rem;
+  }
+
+  span + span {
+    border-left: 1px solid var(--line);
+  }
+}
+
+.splitHunk {
+  display: grid;
+}
+
+.splitRow,
+.scopeBreadcrumb {
+  grid-column: 1 / -1;
+}
+
+.splitCell {
+  display: grid;
+  grid-template-columns: 3.25rem max-content;
+  min-width: 0;
+  min-height: 1.55em;
+  color: var(--editor-text);
+}
+
+.splitCell + .splitCell {
+  border-left: 1px solid var(--hair);
+}
+
+.splitLineNumber {
+  padding: 0 0.5rem;
+  border-right: 1px solid var(--hair);
+  color: var(--editor-text2);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
+.splitPlaceholder {
+  background: var(--strip);
+  opacity: 0.62;
+}
+
+.scopeBreadcrumb {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  min-height: 1.75rem;
+  padding: 0.25rem 0.625rem;
+  border-top: 1px solid var(--hair);
+  border-bottom: 1px solid var(--hair);
+  background: var(--sel);
+  color: var(--editor-text2);
+  font-family: var(--code-font-family);
+  font-size: 0.6875rem;
+  line-height: 1.25;
+}
+
+.breadcrumbSeparator {
+  display: inline-block;
+  margin: 0 0.375rem;
+  color: var(--link);
+}
+
+.addedLine,
+.removedLine,
+.contextLine {
+  display: grid;
+  grid-template-columns: 3.25rem 3.25rem 1.25rem max-content;
+  min-height: 1.55em;
+  color: var(--editor-text);
+}
+
+.addedLine {
+  background: var(--ins-bg);
+}
+
+.removedLine {
+  background: var(--del-bg);
+  color: var(--del-text);
+}
+
+.contextLine {
+  background: var(--editor);
+}
+
+.oldLineNumber,
+.newLineNumber,
+.signGutter,
+.syntaxLineNumber {
+  user-select: none;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.oldLineNumber,
+.newLineNumber {
+  padding: 0 0.5rem;
+  color: var(--editor-text2);
+}
+
+.signGutter {
+  padding-right: 0.25rem;
+  color: var(--editor-text2);
+}
+
+.addedLine .signGutter {
+  color: var(--ins);
+}
+
+.removedLine .signGutter {
+  color: var(--del-text);
+}
+
+.codeLine {
+  display: block;
+  min-width: max-content;
+  padding-right: 1rem;
+  color: var(--editor-text);
+  font: inherit;
+  white-space: pre;
+}
+
+.syntaxRow {
+  display: grid;
+  grid-template-columns: 3.25rem max-content;
+  min-height: 1.55em;
+}
+
+.syntaxLineNumber {
+  padding: 0 0.5rem;
+  color: var(--editor-text2);
+  border-right: 1px solid var(--hair);
+}
+
+.tokenKey {
+  color: var(--syn-key);
+}
+
+.tokenString {
+  color: var(--syn-string);
+}
+
+.tokenNumber {
+  color: var(--syn-number);
+}
+
+.tokenBoolean {
+  color: var(--syn-boolean);
+}
+
+.tokenNull {
+  color: var(--syn-null);
+}
+
+.match {
+  padding: 0;
+  border-radius: 0.125rem;
+  background: var(--sel);
+  color: var(--editor-text);
+}
+
+.matchingLine {
+  outline: 1px solid color-mix(in srgb, var(--link) 42%, transparent);
+  outline-offset: -1px;
+}
+
+.nonMatchingLine {
+  opacity: 0.58;
+}
+
+.collapsedRegion {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.5rem;
+  min-height: 2rem;
+  padding: 0.25rem 0.5rem;
+  border-top: 1px solid var(--hair);
+  border-bottom: 1px solid var(--hair);
+  background: var(--col);
+  color: var(--editor-text2);
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 0.6875rem;
+  text-align: center;
+
+  button {
+    @include ctl.contain-focus-rings;
+    min-height: 1.75rem;
+    padding: 0.125rem 0.375rem;
+    border: 1px solid var(--line);
+    border-radius: 0.1875rem;
+    background: var(--strip);
+    color: var(--link);
+    font: inherit;
+    white-space: nowrap;
+    cursor: pointer;
+
+    &:hover {
+      background: var(--hover);
+    }
+
+    &:focus-visible {
+      @include ctl.focus-ring;
+    }
+  }
+}
+
+.splitCollapsedRegion {
+  grid-column: 1 / -1;
+}
+
+@include theme.mobile-or-coarse {
+  .toolbar {
+    padding: 0.25rem 0.375rem;
+  }
+
+  .addedLine,
+  .removedLine,
+  .contextLine {
+    grid-template-columns: 2.5rem 2.5rem 1rem max-content;
+  }
+
+  .syntaxRow {
+    grid-template-columns: 2.5rem max-content;
+  }
+
+  .splitCell {
+    grid-template-columns: 2.5rem max-content;
+  }
+
+  .oldLineNumber,
+  .newLineNumber,
+  .syntaxLineNumber,
+  .splitLineNumber {
+    padding-right: 0.375rem;
+    padding-left: 0.375rem;
+  }
+}

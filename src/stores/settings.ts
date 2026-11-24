@@ -13,7 +13,7 @@ export const SETTINGS_STORAGE_KEY = 'clarity-manifest-settings';
 
 export type ThemeMode = 'system' | 'dark' | 'light';
 export type TouchSize = 'compact' | 'large';
-export type CodeFontFamily = 'system' | 'cascadia' | 'consolas';
+export type CodeFontFamily = 'system' | 'fira' | 'cascadia' | 'consolas';
 
 export interface SettingsValues {
   theme: ThemeMode;
@@ -90,12 +90,12 @@ export const DEFAULT_SETTINGS: SettingsValues = {
   locale: 'en',
   bungieApiKey: '',
   showClarityDescriptions: true,
-  viewMode: 'list',
+  viewMode: 'grid',
   sortMode: 'relevance',
   imageScaling: 'sharp',
-  railCollapsed: false,
+  railCollapsed: true,
   railWidth: 224,
-  inspectorWidth: 620,
+  inspectorWidth: 1280,
   fuzzySearch: false,
   fuzziness: FUZZINESS_DEFAULT,
   queryPrecedence: 'dim',
@@ -109,17 +109,23 @@ export const CODE_FONT_SIZE_MAX = 18;
 export const RAIL_WIDTH_MIN = 168;
 export const RAIL_WIDTH_MAX = 340;
 export const INSPECTOR_WIDTH_MIN = 380;
-export const INSPECTOR_WIDTH_MAX = 1280;
+export const INSPECTOR_WIDTH_MAX = 1600;
 
 const THEME_MODES: readonly ThemeMode[] = ['system', 'dark', 'light'];
 const TOUCH_SIZES: readonly TouchSize[] = ['compact', 'large'];
-const CODE_FONT_FAMILIES: readonly CodeFontFamily[] = ['system', 'cascadia', 'consolas'];
+const CODE_FONT_FAMILIES: readonly CodeFontFamily[] = ['system', 'fira', 'cascadia', 'consolas'];
 const IMAGE_SCALING_MODES: readonly ImageScalingMode[] = ['sharp', 'integer', 'smooth'];
 const QUERY_PRECEDENCE_MODES: readonly QueryPrecedence[] = ['dim', 'standard'];
 const BUNGIE_LOCALE_CODES: readonly BungieLocale[] = BUNGIE_LOCALES.map((locale) => locale.code);
 
+/**
+ * Fira Code is listed first in the default stack so installs that already have
+ * it get its shapes automatically; the explicit `fira` option is for users who
+ * want it pinned ahead of every other installed monospace face.
+ */
 const CODE_FONT_STACKS: Record<CodeFontFamily, string> = {
-  system: "ui-monospace, 'Cascadia Code', Consolas, 'Liberation Mono', monospace",
+  system: "'Fira Code', ui-monospace, 'Cascadia Code', Consolas, 'Liberation Mono', monospace",
+  fira: "'Fira Code', 'FiraCode Nerd Font', 'Cascadia Code', ui-monospace, Consolas, 'Liberation Mono', monospace",
   cascadia: "'Cascadia Code', 'Cascadia Mono', Consolas, 'Liberation Mono', monospace",
   consolas: "Consolas, 'Cascadia Code', ui-monospace, 'Liberation Mono', monospace",
 };

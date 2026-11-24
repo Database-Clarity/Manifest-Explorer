@@ -16,7 +16,8 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { createGzip, gzipSync } from 'node:zlib';
+import { createGzip } from 'node:zlib';
+import { generateReleases } from './build-releases.mjs';
 
 const PROJECT_ROOT = path.resolve(import.meta.dirname, '../..');
 const DEFAULT_SCRATCH =
@@ -32,7 +33,6 @@ const S3_BUCKET = 'manifest-archive';
 const S3_ACCESS_KEY = 'manifest-report-readonly';
 const OMIT_TABLES = new Set(['DestinyInventoryItemLiteDefinition']);
 const SUNSHOT_HASH = 2907129557;
-const MAX_DIFF_OPS = 150;
 const STAGE_STATEMENTS = new WeakMap();
 
 const PYTHON_ARCHIVE_HELPER = String.raw`
@@ -260,6 +260,9 @@ Usage:
 
 All caches, extracted SQLite files, staging data, and output default to:
   ${DEFAULT_SCRATCH}
+
+A full build also emits one v1/releases/{versionIndex}.json.gz per version
+(from build-releases.mjs) and records exact per-version counts in versions.json.
 `);
 }
 
@@ -449,6 +452,93 @@ function decodeJson(value, table, hash) {
   }
 }
 
+function decodePointerSegment(segment) {
+  return segment.replace(/~[01]/g, (escape) => (escape === '~1' ? '/' : '~'));
+}
+
+function pointerSegments(pointer) {
+  if (!pointer.startsWith('/')) return [];
+  return pointer.slice(1).split('/').map(decodePointerSegment);
+}
+
+function arrayIndex(segment) {
+  if (!/^(0|[1-9]\d*)$/.test(segment)) return null;
+  const index = Number(segment);
+  return Number.isSafeInteger(index) ? index : null;
+}
+
+function pointerParent(root, segments) {
+  if (segments.length === 0) return null;
+  let current = root;
+  for (const segment of segments.slice(0, -1)) {
+    if (Array.isArray(current)) {
+      const index = arrayIndex(segment);
+      if (index === null || index >= current.length) return null;
+      current = current[index];
+    } else if (typeof current === 'object' && current !== null) {
+      if (!Object.prototype.hasOwnProperty.call(current, segment)) return null;
+      current = current[segment];
+    } else {
+      return null;
+    }
+  }
+  if (typeof current !== 'object' || current === null) return null;
+  return { parent: current, key: segments.at(-1) };
+}
+
+function setPointer(root, pointer, value, insertArrayValue = false) {
+  const target = pointerParent(root, pointerSegments(pointer));
+  if (!target) return;
+  const copy = structuredClone(value);
+  if (Array.isArray(target.parent)) {
+    const index = arrayIndex(target.key);
+    if (index === null) return;
+    if (insertArrayValue && index <= target.parent.length) target.parent.splice(index, 0, copy);
+    else target.parent[index] = copy;
+    return;
+  }
+  Object.defineProperty(target.parent, target.key, {
+    value: copy,
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
+}
+
+function deletePointer(root, pointer) {
+  const target = pointerParent(root, pointerSegments(pointer));
+  if (!target) return;
+  if (Array.isArray(target.parent)) {
+    const index = arrayIndex(target.key);
+    if (index !== null && index < target.parent.length) target.parent.splice(index, 1);
+    return;
+  }
+  delete target.parent[target.key];
+}
+
+/**
+ * Apply an archive diff's operations forward to a definition root. The archive
+ * is authoritative for forward changes; only its `old` payloads are incomplete,
+ * so snapshots are advanced with this function and diffs are then recomputed
+ * from the old/new states by the builder.
+ */
+function applyForwardOps(root, sourceOps, hash) {
+  const rootPath = `/${hash}`;
+  for (const operation of sourceOps) {
+    const op = operation.op;
+    let pointer = String(operation.path ?? '/');
+    if (pointer === rootPath) continue;
+    if (!pointer.startsWith(`${rootPath}/`)) {
+      throw new Error(`Unexpected modern diff path "${pointer}" for hash ${hash}`);
+    }
+    pointer = pointer.slice(rootPath.length);
+    if (op === 'add') setPointer(root, pointer, operation.new, true);
+    else if (op === 'del' || op === 'remove') deletePointer(root, pointer);
+    else if (op === 'edit' || op === 'replace') setPointer(root, pointer, operation.new);
+    else throw new Error(`Unsupported modern diff operation "${op}" for hash ${hash}`);
+  }
+}
+
 function pointerEscape(segment) {
   return String(segment).replaceAll('~', '~0').replaceAll('/', '~1');
 }
@@ -495,43 +585,10 @@ function diffValues(oldValue, newValue, pathPrefix = '', result = { ops: [], tot
 
 function addDiff(result, op) {
   if (op[1] === '/index') return;
+  // Every field-level change is retained: history buckets must be able to
+  // reconstruct any past revision exactly, so diffs are never truncated.
+  result.ops.push(op);
   result.total += 1;
-  if (result.ops.length < MAX_DIFF_OPS) result.ops.push(op);
-}
-
-function compactModernDiff(hash, itemDiff) {
-  const sourceOps = Array.isArray(itemDiff?.diff) ? itemDiff.diff : [];
-  let kind = 'm';
-  const ops = [];
-  let total = 0;
-  for (const operation of sourceOps) {
-    const op = operation.op;
-    let operationPath = String(operation.path ?? '/');
-    const rootPath = `/${hash}`;
-    const root = operationPath === rootPath;
-    if (root && op === 'add') {
-      kind = 'a';
-      continue;
-    }
-    if (root && (op === 'del' || op === 'remove')) {
-      kind = 'r';
-      continue;
-    }
-    if (operationPath.startsWith(`${rootPath}/`)) operationPath = operationPath.slice(rootPath.length);
-    else if (operationPath === rootPath) operationPath = '/';
-    if (operationPath === '/index') continue;
-
-    let compact;
-    if (op === 'edit' || op === 'replace') compact = [0, operationPath, operation.old, operation.new];
-    else if (op === 'add') compact = [1, operationPath, operation.new];
-    else if (op === 'del' || op === 'remove') compact = [2, operationPath, operation.old];
-    else throw new Error(`Unsupported modern diff operation "${op}" for hash ${hash}`);
-    total += 1;
-    if (ops.length < MAX_DIFF_OPS) ops.push(compact);
-  }
-  if (kind !== 'm') return { kind, ops: [], total: 0 };
-  if (total === 0) return null;
-  return { kind, ops, total };
 }
 
 function bucketCount(table, hashCount) {
@@ -588,6 +645,11 @@ function createStage(stagePath) {
       'INSERT INTO revisions (table_name, hash, version_index, kind, ops, total_ops) VALUES (?, ?, ?, ?, ?, ?)',
     ),
     insertHash: db.prepare('INSERT OR IGNORE INTO table_hashes (table_name, hash) VALUES (?, ?)'),
+    selectSnapshot: db.prepare('SELECT json FROM snapshot WHERE table_name = ? AND hash = ?'),
+    upsertSnapshot: db.prepare(
+      'INSERT OR REPLACE INTO snapshot (table_name, hash, json) VALUES (?, ?, ?)',
+    ),
+    deleteSnapshot: db.prepare('DELETE FROM snapshot WHERE table_name = ? AND hash = ?'),
   });
   return db;
 }
@@ -637,7 +699,16 @@ function replaceSnapshotTable(stage, versionIndex, counts, currentTables) {
     for (const row of previousRows.iterate(name)) {
       const hash = row.hash;
       if (row.new_json == null) {
-        addRevision(stage, versionIndex, name, hash, { kind: 'r', ops: [], total: 0 }, counts);
+        const oldValue = decodeJson(row.old_json, name, hash);
+        const diff = diffValues(oldValue, {});
+        addRevision(
+          stage,
+          versionIndex,
+          name,
+          hash,
+          { kind: 'r', ops: diff.ops, total: diff.total },
+          counts,
+        );
       } else if (row.old_json !== row.new_json) {
         const oldValue = decodeJson(row.old_json, name, hash);
         const newValue = decodeJson(row.new_json, name, hash);
@@ -655,12 +726,14 @@ function replaceSnapshotTable(stage, versionIndex, counts, currentTables) {
       }
     }
     for (const row of newRows.iterate(name)) {
+      const newValue = decodeJson(row.new_json, name, row.hash);
+      const diff = diffValues({}, newValue);
       addRevision(
         stage,
         versionIndex,
         name,
         row.hash,
-        { kind: 'a', ops: [], total: 0 },
+        { kind: 'a', ops: diff.ops, total: diff.total },
         counts,
       );
     }
@@ -705,7 +778,52 @@ function stageSqliteSnapshot(stage, versionIndex, sqlitePath, counts) {
   }
 }
 
-function stageModernDiff(stage, versionIndex, version, cacheDir, counts) {
+async function seedBridgeTable(stage, table, config, bridgeVersionId, seededTables) {
+  if (seededTables.has(table)) return;
+  seededTables.add(table);
+  const key = `versions/${bridgeVersionId}/tables/${table}.json`;
+  const cached = await downloadCached(
+    key,
+    path.join('tables', bridgeVersionId, `${table}.json`),
+    config,
+  );
+  const data = JSON.parse(readFileSync(cached, 'utf8'));
+  const insert = stage.prepare(
+    'INSERT OR IGNORE INTO snapshot (table_name, hash, json) VALUES (?, ?, ?)',
+  );
+  let count = 0;
+  for (const [rawHash, definition] of Object.entries(data)) {
+    const hash = (Number(rawHash) >>> 0).toString();
+    insert.run(table, hash, JSON.stringify(definition));
+    count += 1;
+  }
+  console.log(`Seeded ${table} from bridge JSON: ${count} definitions.`);
+}
+
+/**
+ * Advance the staged snapshot by one archive diff version and compute our own
+ * lossless diffs from the old/new definition states.
+ *
+ * The archive's `old` payloads are incomplete (notably array deletions use
+ * `"old": null`), so they cannot be stored as reverse-patch data. Forward
+ * application is authoritative, and recomputing the diff from the resulting
+ * states gives every revision exact, reversible ops.
+ *
+ * Some tables exist in the bridge JSON but not the bridge SQLite world content
+ * (and vice versa). When a nested op has no snapshot base, the bridge JSON table
+ * is downloaded and seeded so forward application remains exact.
+ */
+async function stageModernDiff(
+  stage,
+  versionIndex,
+  version,
+  config,
+  bridgeVersionId,
+  seededTables,
+  counts,
+) {
+  const cacheDir = config.cacheDir;
+  const statements = STAGE_STATEMENTS.get(stage);
   for (const diffFile of version.DiffFiles ?? []) {
     const table = path.posix.basename(diffFile.FileName ?? '').replace(/\.json$/i, '');
     if (!table || OMIT_TABLES.has(table)) continue;
@@ -714,8 +832,62 @@ function stageModernDiff(stage, versionIndex, version, cacheDir, counts) {
     const parsed = JSON.parse(readFileSync(localPath, 'utf8'));
     for (const [rawHash, itemDiff] of Object.entries(parsed)) {
       const hash = (Number(rawHash) >>> 0).toString();
-      const revision = compactModernDiff(hash, itemDiff);
-      if (revision) addRevision(stage, versionIndex, table, hash, revision, counts);
+      const sourceOps = Array.isArray(itemDiff?.diff) ? itemDiff.diff : [];
+      if (sourceOps.length === 0) continue;
+      const rootPath = `/${hash}`;
+      const rootOps = sourceOps.filter((operation) => String(operation.path ?? '') === rootPath);
+      if (rootOps.length > 1) {
+        throw new Error(`Multiple root operations for ${table}:${hash}@${versionIndex}`);
+      }
+      const rootOp = rootOps[0];
+      let oldRow = statements.selectSnapshot.get(table, hash);
+      let oldValue = oldRow ? JSON.parse(oldRow.json) : null;
+
+      let newValue;
+      let kind;
+      if (rootOp && (rootOp.op === 'edit' || rootOp.op === 'replace' || rootOp.op === 'add')) {
+        if (typeof rootOp.new !== 'object' || rootOp.new === null) {
+          throw new Error(`Root ${rootOp.op} without an object payload for ${table}:${hash}`);
+        }
+        newValue = structuredClone(rootOp.new);
+        applyForwardOps(newValue, sourceOps, hash);
+        kind = oldValue === null ? 'a' : 'm';
+      } else if (rootOp && (rootOp.op === 'del' || rootOp.op === 'remove')) {
+        if (oldValue === null) {
+          await seedBridgeTable(stage, table, config, bridgeVersionId, seededTables);
+          oldRow = statements.selectSnapshot.get(table, hash);
+          oldValue = oldRow ? JSON.parse(oldRow.json) : null;
+        }
+        if (oldValue === null) continue;
+        newValue = null;
+        kind = 'r';
+      } else {
+        if (oldValue === null) {
+          await seedBridgeTable(stage, table, config, bridgeVersionId, seededTables);
+          oldRow = statements.selectSnapshot.get(table, hash);
+          oldValue = oldRow ? JSON.parse(oldRow.json) : null;
+        }
+        if (oldValue === null) {
+          throw new Error(
+            `Modern diff for ${table}:${hash}@${versionIndex} has no base snapshot`,
+          );
+        }
+        newValue = structuredClone(oldValue);
+        applyForwardOps(newValue, sourceOps, hash);
+        kind = 'm';
+      }
+
+      const diff =
+        kind === 'a'
+          ? diffValues({}, newValue)
+          : kind === 'r'
+            ? diffValues(oldValue, {})
+            : diffValues(oldValue, newValue);
+      if (kind === 'm' && diff.total === 0) continue;
+
+      addRevision(stage, versionIndex, table, hash, { kind, ops: diff.ops, total: diff.total }, counts);
+      if (newValue === null) statements.deleteSnapshot.run(table, hash);
+      else statements.upsertSnapshot.run(table, hash, JSON.stringify(newValue));
     }
   }
 }
@@ -885,45 +1057,39 @@ function smokeOnly(options) {
   newValue.displayProperties.name = `${newValue.displayProperties.name ?? 'Sunshot'} (smoke)`;
   newValue.index = Number(newValue.index ?? 0) + 1;
   const diff = diffValues(oldValue, newValue);
-  const modernDiff = compactModernDiff(String(SUNSHOT_HASH), {
-    diff: [
-      {
-        op: 'edit',
-        path: `/${SUNSHOT_HASH}/displayProperties/name`,
-        old: oldValue.displayProperties?.name ?? '',
-        new: newValue.displayProperties.name,
-      },
-      {
-        op: 'edit',
-        path: `/${SUNSHOT_HASH}/index`,
-        old: oldValue.index,
-        new: newValue.index,
-      },
+
+  // Forward-apply a representative archive diff, then recompute a lossless
+  // diff from the resulting state.
+  const forwardRoot = { nested: { list: [1, 2] }, drop: 'x', index: 1 };
+  applyForwardOps(
+    forwardRoot,
+    [
+      { op: 'edit', path: '/42/nested/list/1', old: 2, new: 20 },
+      { op: 'add', path: '/42/nested/list/2', new: 3 },
+      { op: 'del', path: '/42/nested/list/0', old: null },
+      { op: 'del', path: '/42/drop', old: null },
+      { op: 'add', path: '/42/kept', new: true },
     ],
-  });
+    '42',
+  );
+  const forwardDiff = diffValues({ nested: { list: [1, 2] }, drop: 'x', index: 1 }, forwardRoot);
   const itemCount = db.prepare('SELECT COUNT(*) AS count FROM DestinyInventoryItemDefinition').get().count;
   db.close();
   if (diff.ops.some((op) => op[1] === '/index')) throw new Error('/index leaked into compact diff');
   if (!diff.ops.some((op) => op[1] === '/displayProperties/name')) {
     throw new Error('Sunshot smoke test did not capture a real definition change');
   }
-  if (
-    modernDiff?.kind !== 'm' ||
-    modernDiff.ops.length !== 1 ||
-    modernDiff.ops[0][1] !== '/displayProperties/name'
-  ) {
-    throw new Error('Modern compact-diff mapping smoke test failed');
+  if (JSON.stringify(forwardRoot.nested.list) !== '[20,3]') {
+    throw new Error('Modern forward-apply array edit/add/delete smoke test failed');
   }
-  const manyOps = compactModernDiff(String(SUNSHOT_HASH), {
-    diff: Array.from({ length: MAX_DIFF_OPS + 1 }, (_, index) => ({
-      op: 'edit',
-      path: `/${SUNSHOT_HASH}/field${index}`,
-      old: index,
-      new: index + 1,
-    })),
-  });
-  if (manyOps?.ops.length !== MAX_DIFF_OPS || manyOps.total !== MAX_DIFF_OPS + 1) {
-    throw new Error('Compact-diff truncation smoke test failed');
+  if (Object.prototype.hasOwnProperty.call(forwardRoot, 'drop') || forwardRoot.kept !== true) {
+    throw new Error('Modern forward-apply object delete/add smoke test failed');
+  }
+  if (forwardDiff.ops.some((op) => op[1] === '/index')) {
+    throw new Error('Modern forward diff leaked /index');
+  }
+  if (forwardDiff.ops.length !== forwardDiff.total) {
+    throw new Error('Lossless forward diff lost operations');
   }
   const bucket = bucketHex(String(SUNSHOT_HASH), 512);
   if (sqlBucket(String(SUNSHOT_HASH), 512) !== (SUNSHOT_HASH >>> 0) % 512) {
@@ -931,15 +1097,8 @@ function smokeOnly(options) {
   }
   console.log(
     `Smoke OK: Sunshot ${SUNSHOT_HASH} exists in ${first.version ?? first.zipDate}; ` +
-      `${itemCount} inventory definitions; /index filtered; name diff compacted; bucket ${bucket}.`,
+      `${itemCount} inventory definitions; /index filtered; forward apply + lossless diff; bucket ${bucket}.`,
   );
-}
-
-function writeJsonGzip(filePath, value) {
-  mkdirp(path.dirname(filePath));
-  const compressed = gzipSync(JSON.stringify(value), { level: 9 });
-  writeFileSync(filePath, compressed);
-  return compressed.length;
 }
 
 async function writeLatestSnapshots(sqlitePath, outputDir) {
@@ -976,13 +1135,65 @@ async function writeLatestSnapshots(sqlitePath, outputDir) {
   return { fileCount, byteCount };
 }
 
-function outputBuckets(stage, outputDir) {
+async function writeBucketGzip(filePath, rows, table, counters) {
+  mkdirp(path.dirname(filePath));
+  async function* generate() {
+    yield '{';
+    let activeHash = null;
+    let firstHash = true;
+    let firstRevision = true;
+    for (const row of rows) {
+      if (row.hash !== activeHash) {
+        if (activeHash !== null) yield ']';
+        if (!firstHash) yield ',';
+        activeHash = row.hash;
+        firstHash = false;
+        firstRevision = true;
+        yield `${JSON.stringify(activeHash)}:[`;
+      }
+      if (row.version_index == null) continue;
+      const revision = { v: row.version_index, k: row.kind };
+      if (row.ops) {
+        const ops = JSON.parse(row.ops);
+        if (ops.length !== row.total_ops) {
+          throw new Error(
+            `Lossless diff invariant failed for ${table}:${row.hash}@${row.version_index}: ` +
+              `${ops.length} stored ops but ${row.total_ops} changes`,
+          );
+        }
+        revision.d = ops;
+      } else if (row.total_ops !== 0) {
+        throw new Error(
+          `Lossy revision detected for ${table}:${row.hash}@${row.version_index}: ` +
+            `${row.total_ops} changes without stored ops`,
+        );
+      }
+      counters.revisionCount += 1;
+      if (revision.d) {
+        counters.revisionsWithOps += 1;
+        counters.maxDiffOps = Math.max(counters.maxDiffOps, revision.d.length);
+      }
+      if (!firstRevision) yield ',';
+      firstRevision = false;
+      // Stream one revision at a time: the lossless vendor shard is hundreds of
+      // megabytes of JSON and must never become a single JavaScript string.
+      yield JSON.stringify(revision);
+    }
+    if (activeHash !== null) yield ']';
+    yield '}';
+  }
+  await pipeline(Readable.from(generate()), createGzip({ level: 9 }), createWriteStream(filePath));
+  return statSync(filePath).size;
+}
+
+async function outputBuckets(stage, outputDir) {
   const tables = stage
     .prepare('SELECT table_name, COUNT(*) AS count FROM table_hashes GROUP BY table_name ORDER BY table_name')
     .all();
   const bucketInfo = {};
   let fileCount = 0;
   let byteCount = 0;
+  const counters = { revisionCount: 0, revisionsWithOps: 0, maxDiffOps: 0 };
   const tableBuckets = stage.prepare(
     `SELECT h.hash, r.version_index, r.kind, r.ops, r.total_ops
      FROM table_hashes h
@@ -994,28 +1205,26 @@ function outputBuckets(stage, outputDir) {
     const buckets = bucketCount(table, count);
     bucketInfo[table] = buckets;
     for (let id = 0; id < buckets; id += 1) {
-      const object = Object.create(null);
-      let activeHash = null;
-      let activeHistory = null;
-      for (const row of tableBuckets.iterate(table, buckets, id)) {
-        if (row.hash !== activeHash) {
-          activeHash = row.hash;
-          activeHistory = [];
-          object[row.hash] = activeHistory;
-        }
-        if (row.version_index == null) continue;
-        const revision = { v: row.version_index, k: row.kind };
-        if (row.kind === 'm' && row.ops) revision.d = JSON.parse(row.ops);
-        if (row.kind === 'm' && row.total_ops > MAX_DIFF_OPS) revision.t = row.total_ops;
-        activeHistory.push(revision);
-      }
       const hex = id.toString(16).padStart(buckets > 256 ? 3 : 2, '0');
       const target = path.join(outputDir, 'buckets', table, `${hex}.json.gz`);
-      byteCount += writeJsonGzip(target, object);
+      byteCount += await writeBucketGzip(
+        target,
+        tableBuckets.iterate(table, buckets, id),
+        table,
+        counters,
+      );
       fileCount += 1;
     }
   }
-  return { buckets: bucketInfo, fileCount, byteCount, tables: tables.length };
+  return {
+    buckets: bucketInfo,
+    fileCount,
+    byteCount,
+    tables: tables.length,
+    revisionCount: counters.revisionCount,
+    revisionsWithOps: counters.revisionsWithOps,
+    maxDiffOps: counters.maxDiffOps,
+  };
 }
 
 function roundBytes(bytes) {
@@ -1108,6 +1317,7 @@ async function build(options) {
 
   for (const item of sqliteFiles) applySnapshot(item, item.sqlitePath);
   const firstModern = modern.first;
+  const seededBridgeTables = new Set();
   applySnapshot(
     {
       id: firstModern.VersionId,
@@ -1131,7 +1341,15 @@ async function build(options) {
     const counts = { added: 0, modified: 0, removed: 0 };
     stage.exec('BEGIN');
     try {
-      stageModernDiff(stage, index, remoteVersion, cacheDir, counts);
+      await stageModernDiff(
+        stage,
+        index,
+        remoteVersion,
+        config,
+        firstModern.VersionId,
+        seededBridgeTables,
+        counts,
+      );
       stage.exec('COMMIT');
     } catch (error) {
       stage.exec('ROLLBACK');
@@ -1146,7 +1364,7 @@ async function build(options) {
     }
   }
 
-  const buckets = outputBuckets(stage, outputDir);
+  const buckets = await outputBuckets(stage, outputDir);
   writeFileSync(path.join(outputDir, 'versions.json'), JSON.stringify({
     schema: 1,
     generatedAt: new Date().toISOString(),
@@ -1154,6 +1372,9 @@ async function build(options) {
     versions,
   }, null, 2));
   const latestSnapshots = await writeLatestSnapshots(latestRemoteDb, outputDir);
+  // Releases are derived from the finished buckets + latest snapshots, so they
+  // must run after both exist. This also adds exact `counts` to versions.json.
+  const releases = await generateReleases({ sourceDir: outputDir, verify: true });
   stage.close();
 
   const fileStats = collectOutputStats(outputDir);
@@ -1172,10 +1393,20 @@ async function build(options) {
     tables: buckets.tables,
     bucketFiles: buckets.fileCount,
     latestSnapshotFiles: latestSnapshots.fileCount,
+    releaseFiles: releases.releaseFiles,
+    releaseBytes: releases.releaseBytes,
+    releaseCompressedMB: releases.releaseMB,
+    releaseEntries: releases.entries,
     outputFiles: fileStats.files,
     compressedBytes: fileStats.bytes,
     compressedMB: roundBytes(fileStats.bytes),
     sourceDiffFilesDownloaded: modern.diffCount,
+    lossless: {
+      truncatedRevisions: 0,
+      revisions: buckets.revisionCount,
+      revisionsWithDiffs: buckets.revisionsWithOps,
+      maxDiffOps: buckets.maxDiffOps,
+    },
     sunshot: {
       hash: SUNSHOT_HASH,
       bucket: sunshotBucket,

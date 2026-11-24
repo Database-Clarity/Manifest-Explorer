@@ -10,12 +10,13 @@
  * src/manifest/history.ts):
  *
  *   v1/versions.json                            HistoryManifestIndex
+ *   v1/releases/{versionIndex}.json.gz          ManifestReleaseSummary
  *   v1/buckets/{table}/{bucketHex}.json.gz      { [hash]: ItemRevision[] }
  *   v1/latest-snapshot/{table}.json.gz          { [hash]: definition }
  *
  * A run never re-downloads bucket objects it does not touch, and it writes
  * v1/versions.json last so the API only exposes a new version after every
- * table, bucket, and snapshot for it has been stored.
+ * table, bucket, snapshot, and release index for it has been stored.
  *
  * Usage:
  *   CLOUDFLARE_API_TOKEN=... node scripts/history/update-live-manifest.mjs [--dry-run]
@@ -52,12 +53,12 @@ const HISTORY_PREFIX = 'v1';
 const VERSIONS_KEY = `${HISTORY_PREFIX}/versions.json`;
 const SNAPSHOT_PREFIX = `${HISTORY_PREFIX}/latest-snapshot`;
 const BUCKET_PREFIX = `${HISTORY_PREFIX}/buckets`;
+const RELEASE_PREFIX = `${HISTORY_PREFIX}/releases`;
+
+const RELEASE_KINDS = ['a', 'm', 'r', 'u', 'c'];
 
 const LITE_ITEM_TABLE = 'DestinyInventoryItemLiteDefinition';
 const FULL_ITEM_TABLE = 'DestinyInventoryItemDefinition';
-
-/** Per-revision diff ops are capped; `t` records how many changes were found. */
-const MAX_DIFF_OPS = 150;
 
 const TABLE_RE = /^[A-Za-z0-9_]{1,96}$/;
 const MANIFEST_UUID_RE =
@@ -518,10 +519,10 @@ function escapePointerSegment(segment) {
 }
 
 function emitDiffOp(state, op) {
+  // Diffs are 100% lossless: every field change is stored so any past revision
+  // can be reconstructed by reverse-patching.
+  state.ops.push(op);
   state.total += 1;
-  if (state.ops.length < MAX_DIFF_OPS) {
-    state.ops.push(op);
-  }
 }
 
 /**
@@ -576,10 +577,71 @@ function buildRevision(versionIndex, kind, diff) {
   if (diff.ops.length > 0) {
     revision.d = diff.ops;
   }
-  if (diff.total > diff.ops.length) {
-    revision.t = diff.total;
-  }
   return revision;
+}
+
+// ---------------------------------------------------------------------------
+// Release summary metadata
+// ---------------------------------------------------------------------------
+
+function releaseText(value) {
+  return typeof value === 'string' ? value : '';
+}
+
+function releaseTierType(value) {
+  return Number.isInteger(value) && value >= 0 ? value : 0;
+}
+
+/** Extract the fields shown by v1/releases (same shape as build-releases.mjs). */
+function releaseMetadata(definition) {
+  const source = isRecord(definition) ? definition : {};
+  const display = isRecord(source.displayProperties) ? source.displayProperties : {};
+  const inventory = isRecord(source.inventory) ? source.inventory : {};
+  return {
+    name: releaseText(display.name),
+    icon: releaseText(display.icon),
+    displaySubtitle: releaseText(display.subtitle),
+    typeAndTier: releaseText(source.itemTypeAndTierDisplayName),
+    typeName: releaseText(source.itemTypeDisplayName),
+    tierType: releaseTierType(inventory.tierType),
+  };
+}
+
+function releaseSubtitle(metadata) {
+  return metadata.typeAndTier || metadata.typeName || metadata.displaySubtitle || '';
+}
+
+function releaseTuple(hash, definition, changedFields) {
+  const metadata = releaseMetadata(definition);
+  const tuple = [
+    Number(hash) >>> 0,
+    metadata.name,
+    releaseSubtitle(metadata),
+    metadata.icon,
+    metadata.tierType,
+  ];
+  if (changedFields !== undefined) tuple.push(changedFields);
+  return tuple;
+}
+
+/** Deterministic ordering shared with build-releases.mjs. */
+function compareReleaseEntries(left, right) {
+  const leftNamed = left[1].length > 0;
+  const rightNamed = right[1].length > 0;
+  if (leftNamed !== rightNamed) return leftNamed ? -1 : 1;
+  if (leftNamed) {
+    const leftKey = left[1].toLowerCase();
+    const rightKey = right[1].toLowerCase();
+    if (leftKey < rightKey) return -1;
+    if (leftKey > rightKey) return 1;
+    if (left[1] < right[1]) return -1;
+    if (left[1] > right[1]) return 1;
+  }
+  return left[0] - right[0];
+}
+
+function emptyReleaseTables() {
+  return { a: [], m: [], r: [], u: [], c: [] };
 }
 
 // ---------------------------------------------------------------------------
@@ -626,6 +688,7 @@ async function updateTable({
   }
 
   const revisions = new Map();
+  const releaseEntries = emptyReleaseTables();
   let added = 0;
   let modified = 0;
   let removed = 0;
@@ -638,9 +701,11 @@ async function updateTable({
       }
       modified += 1;
       revisions.set(hash, buildRevision(versionIndex, 'm', diff));
+      releaseEntries.m.push(releaseTuple(hash, newDefinition, diff.total));
     } else {
       added += 1;
       revisions.set(hash, buildRevision(versionIndex, 'a', diffDefinitions({}, newDefinition)));
+      releaseEntries.a.push(releaseTuple(hash, newDefinition));
     }
   }
 
@@ -650,6 +715,9 @@ async function updateTable({
     }
     removed += 1;
     revisions.set(hash, buildRevision(versionIndex, 'r', diffDefinitions(oldDefinition, {})));
+    // Removed items are absent from the new manifest, so their release tuple
+    // uses the last-known definition that still carried display metadata.
+    releaseEntries.r.push(releaseTuple(hash, oldDefinition));
   }
 
   // Queue the snapshot before touching buckets so the full table can be
@@ -706,6 +774,7 @@ async function updateTable({
     bucketCount,
     bucketWrites,
     definitionCount,
+    releaseEntries,
   };
 }
 
@@ -752,6 +821,7 @@ async function update(options) {
 
   const pendingSnapshots = [];
   const totals = { added: 0, modified: 0, removed: 0, bucketWrites: 0 };
+  const releaseTables = {};
   let processedTables = 0;
 
   for (const [table, manifestPath] of manifest.tables) {
@@ -772,6 +842,17 @@ async function update(options) {
       });
     }
 
+    const tableChanges = {};
+    for (const kind of RELEASE_KINDS) {
+      const entries = result.releaseEntries[kind];
+      if (!entries || entries.length === 0) continue;
+      entries.sort(compareReleaseEntries);
+      tableChanges[kind] = entries;
+    }
+    if (Object.keys(tableChanges).length > 0) {
+      releaseTables[table] = tableChanges;
+    }
+
     totals.added += result.added;
     totals.modified += result.modified;
     totals.removed += result.removed;
@@ -786,6 +867,30 @@ async function update(options) {
   }
 
   const date = new Date().toISOString();
+  const releaseTotals = { a: 0, m: 0, r: 0, u: 0, c: 0 };
+  for (const changes of Object.values(releaseTables)) {
+    for (const kind of RELEASE_KINDS) {
+      releaseTotals[kind] += changes[kind]?.length ?? 0;
+    }
+  }
+  if (
+    releaseTotals.a !== totals.added ||
+    releaseTotals.m !== totals.modified ||
+    releaseTotals.r !== totals.removed
+  ) {
+    throw new Error(
+      `Release totals (${JSON.stringify(releaseTotals)}) do not match revision totals ` +
+        `(+${totals.added} ~${totals.modified} -${totals.removed})`,
+    );
+  }
+  const release = {
+    v: versionIndex,
+    date,
+    version: manifest.version,
+    totals: releaseTotals,
+    tables: releaseTables,
+  };
+
   const meta = {
     i: versionIndex,
     id: manifest.uuid ?? sha256(manifest.version).slice(0, 32),
@@ -795,6 +900,7 @@ async function update(options) {
     added: totals.added,
     modified: totals.modified,
     removed: totals.removed,
+    counts: { ...releaseTotals },
   };
 
   const summary =
@@ -803,9 +909,11 @@ async function update(options) {
 
   if (options.dryRun) {
     log(
-      `Dry run complete: would write ${totals.bucketWrites} bucket objects and ` +
-        `${manifest.tables.length} snapshots, then commit ${VERSIONS_KEY}; ` +
-        `no R2 writes were made. ${summary}`,
+      `Dry run complete: would write ${totals.bucketWrites} bucket objects, ` +
+        `${manifest.tables.length} snapshots, and ` +
+        `${RELEASE_PREFIX}/${versionIndex}.json.gz ` +
+        `(${releaseTotals.a + releaseTotals.m + releaseTotals.r} entries), ` +
+        `then commit ${VERSIONS_KEY}; no R2 writes were made. ${summary}`,
     );
     return;
   }
@@ -823,8 +931,14 @@ async function update(options) {
     }
   }
 
+  // Publish the release index before v1/versions.json so readers never see a
+  // version whose change list is missing.
+  const releaseKey = `${RELEASE_PREFIX}/${versionIndex}.json.gz`;
+  await r2PutValue(releaseKey, release, { gzip: true });
+  log(`Uploaded ${releaseKey} (${releaseTotals.a + releaseTotals.m + releaseTotals.r} entries).`);
+
   // Commit last: readers keep seeing the previous version until every table,
-  // bucket, and snapshot for this version is durable.
+  // bucket, snapshot, and release index for this version is durable.
   index.schema = 1;
   index.generatedAt = date;
   index.versions.push(meta);

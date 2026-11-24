@@ -16,23 +16,26 @@
 .header {
   @include ctl.contain-focus-rings;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 0.25rem 0.5rem;
   flex-shrink: 0;
-  min-height: 1.75rem;
-  padding: 0.1875rem 0.5rem;
+  box-sizing: border-box;
+  height: var(--pane-bar-h);
+  min-height: var(--pane-bar-h);
+  padding: 0 0.5rem;
   background: var(--col);
-  border-bottom: 1px solid var(--hair);
+  border-bottom: 1px solid var(--line);
 }
 
 .headerInfo {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 0.25rem 0.5rem;
   flex: 1 1 auto;
   min-width: 0;
+  overflow: hidden;
 }
 
 .summary {
@@ -46,10 +49,11 @@
 
 .chips {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 0.25rem;
   min-width: 0;
+  overflow: hidden;
 
   @include theme.mobile {
     display: none;
@@ -120,10 +124,18 @@
 }
 
 .sort {
-  @include ctl.field;
+  @include ctl.select-field;
+  box-sizing: border-box;
   flex-shrink: 0;
+  height: 1.5rem;
+  min-height: 1.5rem;
   max-width: 8.5rem;
   padding: 0 0.25rem;
+
+  @include theme.mobile-or-coarse {
+    height: auto;
+    min-height: var(--tap);
+  }
 }
 
 // Compact mobile-only shortcut back to the open inspector tabs. It shares the
@@ -169,12 +181,13 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1.75rem;
-  min-height: 1.75rem;
+  width: 1.5rem;
+  min-height: 1.375rem;
   padding: 0;
 
   @include theme.mobile-or-coarse {
     width: var(--tap);
+    height: auto;
     min-height: var(--tap);
   }
 }
@@ -244,6 +257,10 @@
   top: 0;
   right: 0;
   left: 0;
+}
+
+.gridVirtualWindow {
+  padding-top: 0.5rem;
 }
 
 .virtualWindowContent {
@@ -525,6 +542,11 @@
   align-items: stretch;
   column-gap: 0.5rem;
   padding: 0 0.5rem 0.5rem;
+  box-sizing: border-box;
+}
+
+.gridRowEnd {
+  padding-bottom: 0;
 }
 
 .gridCell {
@@ -534,9 +556,9 @@
   gap: 0.5rem;
   min-width: 0;
   padding: 0.375rem 0.5rem;
+  box-sizing: border-box;
   background: var(--col);
   border: 1px solid var(--hair);
-  border-left: 2px solid transparent;
   border-radius: 0.1875rem;
   color: var(--text);
   cursor: pointer;
@@ -607,10 +629,15 @@
   background: var(--hover);
 }
 
-.listRow.isActive,
-.gridCell.isActive {
+.listRow.isActive {
   background: var(--sel);
   border-left-color: var(--accent-ink);
+}
+
+.gridCell.isActive {
+  background: var(--sel);
+  border-color: var(--ghost-edge);
+  box-shadow: inset 3px 0 0 var(--accent-ink);
 }
 
 .listRow.isActive .rowName,
@@ -721,6 +748,8 @@
   .header {
     flex-wrap: nowrap;
     gap: 0.375rem;
+    height: auto;
+    min-height: var(--tap);
     padding: 0.25rem var(--page-x);
   }
 
@@ -758,6 +787,17 @@
     justify-content: flex-end;
   }
 
+  .sort {
+    height: auto;
+    min-height: var(--tap);
+  }
+
+  .segment {
+    width: var(--tap);
+    height: auto;
+    min-height: var(--tap);
+  }
+
   .loadMoreBar {
     align-items: stretch;
     flex-direction: column;
@@ -785,6 +825,13 @@
 
   .loadMoreStatus {
     align-self: flex-start;
+  }
+}
+
+@include theme.mobile-or-coarse {
+  .header {
+    height: auto;
+    min-height: var(--tap);
   }
 }
 

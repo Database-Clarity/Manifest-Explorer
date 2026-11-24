@@ -40,7 +40,7 @@ export default defineConfig(({ command }) => {
       : 'dev';
 
   return {
-    base: './',
+    base: '/',
     define: {
       __APP_BUILD_ID__: JSON.stringify(buildId),
     },

@@ -4,6 +4,7 @@ import { getFriendlyTableName, getShortTableName } from '../../manifest/tables';
 import { BungieIcon } from '../BungieIcon';
 import { Skeleton } from '../../ui/Skeleton';
 import { ExternalLinkIcon } from '../../ui/Icons';
+import { activateOnMiddleClick, preventMiddleClickAutoScroll } from '../middleClick';
 import styles from './InspectorTabs.module.scss';
 
 export interface ReferencesTabProps {
@@ -115,11 +116,11 @@ export const ReferencesTab = memo(function ReferencesTab({
                           event.ctrlKey || event.metaKey || event.shiftKey,
                         )
                       }
+                      onMouseDown={preventMiddleClickAutoScroll}
                       onAuxClick={(event) => {
-                        if (event.button === 1) {
-                          event.preventDefault();
-                          onNavigateRef(definitionRef, true);
-                        }
+                        activateOnMiddleClick(event, () =>
+                          onNavigateRef(definitionRef, true),
+                        );
                       }}
                     >
                       <BungieIcon icon={ref.sourceIcon} size={28} />
@@ -140,6 +141,12 @@ export const ReferencesTab = memo(function ReferencesTab({
                       aria-label={`Open ${refName} in new tab`}
                       title={`Open ${refName} in new tab`}
                       onClick={() => onNavigateRef(definitionRef, true)}
+                      onMouseDown={preventMiddleClickAutoScroll}
+                      onAuxClick={(event) =>
+                        activateOnMiddleClick(event, () =>
+                          onNavigateRef(definitionRef, true),
+                        )
+                      }
                     >
                       <ExternalLinkIcon size={14} />
                     </button>

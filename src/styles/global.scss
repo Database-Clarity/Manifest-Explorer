@@ -63,6 +63,20 @@ pre,
 .mono {
   font-family: var(--code-font-family);
   font-variant-numeric: tabular-nums;
+  // Fira Code ships programming ligatures that visually merge literal JSON
+  // punctuation (`!=`, `->`, `=>`, `--`, `//`). Manifest data must read exactly
+  // as it is stored, so ligatures are off for every code surface.
+  font-variant-ligatures: none;
+  font-feature-settings: 'liga' 0, 'calt' 0;
+}
+
+// Chromium's native search cancel button has no pointer cursor, hover state or
+// focus ring. Search fields render a real clear button instead (see
+// src/ui/ClearSearchInput.tsx), so the native affordance is removed globally.
+input[type='search']::-webkit-search-cancel-button,
+input[type='search']::-webkit-search-decoration {
+  -webkit-appearance: none;
+  appearance: none;
 }
 
 .tabular {

@@ -1,15 +1,25 @@
 import { toSignedHash, toUnsignedHash } from './hash';
 
+export interface HistoryVersionCounts {
+  a: number;
+  m: number;
+  r: number;
+  u: number;
+  c: number;
+}
+
 export interface HistoryVersionMeta {
   i: number;
   id: string;
-  version: string | null;
+  version?: string | null;
   date: string;
-  source: 'sqlite' | 'archive-diff' | 'cron';
+  source: string;
   gapBefore?: boolean;
-  added: number;
-  modified: number;
-  removed: number;
+  counts?: HistoryVersionCounts;
+  /** Legacy totals retained for the inspector's per-item history timeline. */
+  added?: number;
+  modified?: number;
+  removed?: number;
 }
 
 export interface HistoryManifestIndex {
@@ -17,6 +27,31 @@ export interface HistoryManifestIndex {
   generatedAt: string;
   buckets: Record<string, number>;
   versions: HistoryVersionMeta[];
+}
+
+export type ReleaseItemTuple = [
+  hash: number,
+  name: string,
+  subtitle: string,
+  icon: string,
+  tierType: number,
+  changedFields?: number,
+];
+
+export interface ReleaseTableChanges {
+  a?: ReleaseItemTuple[];
+  m?: ReleaseItemTuple[];
+  r?: ReleaseItemTuple[];
+  u?: ReleaseItemTuple[];
+  c?: ReleaseItemTuple[];
+}
+
+export interface ManifestReleaseSummary {
+  v: number;
+  date: string;
+  version?: string;
+  totals: HistoryVersionCounts;
+  tables: Record<string, ReleaseTableChanges>;
 }
 
 export type CompactDiffOp =
@@ -47,11 +82,13 @@ export interface ItemHistoryResult {
 type HistoryBucket = Record<string, ItemRevision[]>;
 
 const MAX_BUCKET_CACHE = 32;
+const MAX_RELEASE_CACHE = 4;
 const LITE_ITEM_TABLE = 'DestinyInventoryItemLiteDefinition';
 const FULL_ITEM_TABLE = 'DestinyInventoryItemDefinition';
 
 let indexRequest: Promise<HistoryManifestIndex> | null = null;
 const bucketRequests = new Map<string, Promise<HistoryBucket>>();
+const releaseRequests = new Map<string, Promise<ManifestReleaseSummary>>();
 
 export function canonicalHistoryTable(table: string): string {
   return table === LITE_ITEM_TABLE ? FULL_ITEM_TABLE : table;
@@ -83,6 +120,48 @@ function isHistoryIndex(value: unknown): value is HistoryManifestIndex {
   );
 }
 
+function isHistoryCounts(value: unknown): value is HistoryVersionCounts {
+  if (typeof value !== 'object' || value === null) return false;
+  const counts = value as Partial<HistoryVersionCounts>;
+  return ['a', 'm', 'r', 'u', 'c'].every(
+    (key) => typeof counts[key as keyof HistoryVersionCounts] === 'number',
+  );
+}
+
+function isReleaseTuple(value: unknown): value is ReleaseItemTuple {
+  return (
+    Array.isArray(value) &&
+    typeof value[0] === 'number' &&
+    typeof value[1] === 'string' &&
+    typeof value[2] === 'string' &&
+    typeof value[3] === 'string' &&
+    typeof value[4] === 'number' &&
+    (value[5] === undefined || typeof value[5] === 'number')
+  );
+}
+
+function isManifestRelease(value: unknown): value is ManifestReleaseSummary {
+  if (typeof value !== 'object' || value === null) return false;
+  const release = value as Partial<ManifestReleaseSummary>;
+  if (
+    typeof release.v !== 'number' ||
+    typeof release.date !== 'string' ||
+    !isHistoryCounts(release.totals) ||
+    typeof release.tables !== 'object' ||
+    release.tables === null ||
+    Array.isArray(release.tables)
+  ) {
+    return false;
+  }
+  return Object.values(release.tables).every((table) => {
+    if (typeof table !== 'object' || table === null || Array.isArray(table)) return false;
+    return ['a', 'm', 'r', 'u', 'c'].every((kind) => {
+      const entries = (table as ReleaseTableChanges)[kind as keyof ReleaseTableChanges];
+      return entries === undefined || (Array.isArray(entries) && entries.every(isReleaseTuple));
+    });
+  });
+}
+
 function isHistoryBucket(value: unknown): value is HistoryBucket {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -110,6 +189,51 @@ function getHistoryIndex(): Promise<HistoryManifestIndex> {
     indexRequest = request;
   }
   return indexRequest;
+}
+
+/**
+ * Fetch the shared version index. The request is cached while the page is open
+ * and a failed request is allowed to retry on the next call.
+ */
+export function fetchHistoryVersionsIndex(): Promise<HistoryManifestIndex> {
+  return getHistoryIndex();
+}
+
+/**
+ * Fetch one precomputed release summary. `latestVersionIndex` is included in
+ * the URL so edge caches invalidate as soon as a newer manifest is archived.
+ */
+export async function fetchManifestRelease(
+  versionIndex: number,
+  latestVersionIndex?: number,
+): Promise<ManifestReleaseSummary> {
+  const latest =
+    latestVersionIndex ??
+    (await getHistoryIndex()).versions.reduce(
+      (maximum, version) => Math.max(maximum, version.i),
+      0,
+    );
+  const key = `${versionIndex}?v=${latest}`;
+  const cached = releaseRequests.get(key);
+  if (cached) {
+    releaseRequests.delete(key);
+    releaseRequests.set(key, cached);
+    return cached;
+  }
+
+  const request = fetchJson(
+    `/api/history/release/${encodeURIComponent(String(versionIndex))}?v=${latest}`,
+    isManifestRelease,
+  ).catch((error: unknown) => {
+    if (releaseRequests.get(key) === request) releaseRequests.delete(key);
+    throw error;
+  });
+  releaseRequests.set(key, request);
+  if (releaseRequests.size > MAX_RELEASE_CACHE) {
+    const oldestKey = releaseRequests.keys().next().value as string | undefined;
+    if (oldestKey !== undefined) releaseRequests.delete(oldestKey);
+  }
+  return request;
 }
 
 function getHistoryBucket(
@@ -295,6 +419,56 @@ function setPath(root: unknown, path: string, value: unknown, insertArrayValue =
   });
 }
 
+function setPathCreatingParents(root: Record<string, unknown>, path: string, value: unknown): void {
+  const segments = pointerSegments(path);
+  if (segments.length === 0) return;
+  let current: Record<string, unknown> | unknown[] = root;
+  for (let index = 0; index < segments.length - 1; index += 1) {
+    const segment = segments[index]!;
+    const nextSegment = segments[index + 1]!;
+    const nextIsArray = arrayIndex(nextSegment) !== null;
+    if (Array.isArray(current)) {
+      const arrayPosition = arrayIndex(segment);
+      if (arrayPosition === null) return;
+      while (current.length < arrayPosition) current.push(undefined);
+      let child = current[arrayPosition];
+      if (typeof child !== 'object' || child === null) {
+        child = nextIsArray ? [] : {};
+        current[arrayPosition] = child;
+      }
+      current = child as Record<string, unknown> | unknown[];
+    } else {
+      let child = current[segment];
+      if (typeof child !== 'object' || child === null) {
+        child = nextIsArray ? [] : {};
+        Object.defineProperty(current, segment, {
+          value: child,
+          enumerable: true,
+          configurable: true,
+          writable: true,
+        });
+      }
+      current = child as Record<string, unknown> | unknown[];
+    }
+  }
+
+  const key = segments.at(-1)!;
+  const valueCopy = cloneJsonValue(value);
+  if (Array.isArray(current)) {
+    const index = arrayIndex(key);
+    if (index === null) return;
+    if (index <= current.length) current.splice(index, 0, valueCopy);
+    else current[index] = valueCopy;
+  } else {
+    Object.defineProperty(current, key, {
+      value: valueCopy,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  }
+}
+
 function deletePath(root: unknown, path: string): void {
   const target = getPathParent(root, pointerSegments(path));
   if (!target) {
@@ -339,6 +513,18 @@ export function reconstructRevisionSnapshot(
     return snapshot;
   }
   const target = typeof targetVersion === 'number' ? targetVersion : targetVersion.i;
+  const firstAddedVersion = revisions
+    .filter((revision) => revision.k === 'a')
+    .reduce<number | null>(
+      (earliest, revision) =>
+        earliest === null ? revision.v : Math.min(earliest, revision.v),
+      null,
+    );
+  // An item has no snapshot before its first recorded Added revision. Returning
+  // null also lets callers render an all-added diff without fabricating fields.
+  if (firstAddedVersion !== null && target < firstAddedVersion) {
+    return null;
+  }
   const laterRevisions = [...revisions]
     .filter((revision) => revision.v > target)
     .sort((a, b) => b.v - a.v);
@@ -354,8 +540,33 @@ export function reconstructRevisionSnapshot(
   return snapshot;
 }
 
+/**
+ * Rebuild the JSON immediately before an item's removal from the old values
+ * stored in that removal revision. This is the only recoverable source when
+ * Bungie's current manifest no longer contains the entry.
+ */
+export function reconstructRemovedSnapshot(
+  revisions: readonly ItemRevision[],
+  targetVersion?: number | HistoryVersionMeta,
+): Record<string, unknown> | null {
+  const target = typeof targetVersion === 'number' ? targetVersion : targetVersion?.i;
+  const removal = [...revisions]
+    .filter((revision) => revision.k === 'r' && (target === undefined || revision.v === target))
+    .sort((a, b) => b.v - a.v)[0];
+  if (!removal) return null;
+
+  const snapshot: Record<string, unknown> = {};
+  for (const operation of removal.d ?? []) {
+    if (operation[0] === 2) {
+      setPathCreatingParents(snapshot, operation[1], operation[2]);
+    }
+  }
+  return snapshot;
+}
+
 /** Clear in-memory state, primarily for isolated unit tests. */
 export function clearHistoryCache(): void {
   indexRequest = null;
   bucketRequests.clear();
+  releaseRequests.clear();
 }

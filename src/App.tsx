@@ -30,6 +30,7 @@ import { ResultsPane } from './components/ResultsPane';
 import { StatusBar } from './components/StatusBar';
 import { TableRail } from './components/TableRail';
 import { DefinitionInspector } from './components/inspector/DefinitionInspector';
+import { ManifestHistoryPage } from './components/history/ManifestHistoryPage';
 import { NoticeStrip } from './ui/NoticeStrip';
 import {
   checkForAppUpdate,
@@ -122,6 +123,13 @@ function isEditableTarget(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && target.tagName === 'SELECT';
 }
 
+function getHistoryVersionFromPath(pathname: string): number | null {
+  const match = pathname.match(/^\/history\/(\d+)\/?$/);
+  if (!match?.[1]) return null;
+  const index = Number(match[1]);
+  return Number.isSafeInteger(index) && index >= 0 ? index : null;
+}
+
 function flushActiveInspectorDomScroll(): void {
   const scroller = document.querySelector<HTMLElement>(
     'aside[aria-label="Definition inspector"] [data-inspector-panel-active="true"] [data-inspector-scroll="true"]',
@@ -143,6 +151,9 @@ function cacheDefinition(payload: DefinitionDetailPayload): DefinitionDetailPayl
 
 export function App(): ReactNode {
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const [pathname, setPathname] = useState(
+    () => (typeof window === 'undefined' ? '/' : window.location.pathname),
+  );
   const searchSeqRef = useRef(0);
   const detailSeqRef = useRef(0);
   const syncingHashRef = useRef(false);
@@ -241,6 +252,36 @@ export function App(): ReactNode {
     ),
   );
   const [loadingMore, setLoadingMore] = useState(false);
+  const isHistoryRoute = pathname === '/history' || pathname.startsWith('/history/');
+  const historyVersionIndex = getHistoryVersionFromPath(pathname);
+
+  const navigatePage = useCallback((path: '/' | '/history') => {
+    const nextUrl =
+      path === '/' && window.location.pathname.startsWith('/history')
+        ? `/${useExplorerStore.getState().buildHashUrl()}`
+        : path;
+    if (window.location.pathname === path && window.location.href.endsWith(nextUrl)) return;
+    window.history.pushState(null, '', nextUrl);
+    setPathname(window.location.pathname);
+  }, []);
+
+  const selectHistoryVersion = useCallback((index: number, replace = false) => {
+    const path = `/history/${index}`;
+    if (window.location.pathname === path) return;
+    if (replace) {
+      window.history.replaceState(window.history.state, '', path);
+    } else {
+      window.history.pushState(window.history.state, '', path);
+    }
+    setPathname(window.location.pathname);
+  }, []);
+
+  const navigateExplorerDefinition = useCallback((table: string, hash: number) => {
+    const hashPath = `#/i/${encodeURIComponent(getShortTableName(table))}:${hash >>> 0}`;
+    useExplorerStore.getState().hydrateFromHashUrl(hashPath);
+    window.history.pushState(null, '', `/${hashPath}`);
+    setPathname('/');
+  }, []);
 
   const activeEntry = historyIndex >= 0 ? (history[historyIndex] ?? null) : null;
   const currentRef: DefinitionRef | null = useMemo(
@@ -282,6 +323,12 @@ export function App(): ReactNode {
   const [detailReloadCounter, setDetailReloadCounter] = useState(0);
 
   const syncBrowserHistory = useCallback((mode: 'replace' | 'push') => {
+    if (
+      window.location.pathname === '/history' ||
+      window.location.pathname.startsWith('/history/')
+    ) {
+      return;
+    }
     const st = useExplorerStore.getState();
     const nextHash =
       isNarrowLayout && !st.mobileInspectorOpen
@@ -361,7 +408,7 @@ export function App(): ReactNode {
 
   // Hydrate initial URL hash & unify browser back/forward with the tab's history/future
   useEffect(() => {
-    if (window.location.hash) {
+    if (!isHistoryRoute && window.location.hash) {
       hydrateFromHashUrl(window.location.hash);
       syncBrowserHistory('replace');
     }
@@ -369,6 +416,15 @@ export function App(): ReactNode {
     let popTimer: number | null = null;
 
     const onPopState = (event: PopStateEvent): void => {
+      setPathname(window.location.pathname);
+      if (window.location.pathname === '/history' || window.location.pathname.startsWith('/history/')) {
+        if (popTimer !== null) {
+          window.clearTimeout(popTimer);
+          popTimer = null;
+        }
+        applyingPopStateRef.current = false;
+        return;
+      }
       const isMobile = window.matchMedia('(max-width: 900px)').matches;
       if (syncingHashRef.current && !isMobile) {
         return;
@@ -439,6 +495,8 @@ export function App(): ReactNode {
 
     const onHashChange = (): void => {
       if (
+        window.location.pathname === '/history' ||
+        window.location.pathname.startsWith('/history/') ||
         syncingHashRef.current ||
         applyingPopStateRef.current ||
         window.location.hash === lastHandledHashRef.current
@@ -459,6 +517,7 @@ export function App(): ReactNode {
       window.removeEventListener('hashchange', onHashChange);
     };
   }, [
+    isHistoryRoute,
     hydrateFromHashUrl,
     restoreHistoryPoint,
     setMobileInspectorOpen,
@@ -467,6 +526,7 @@ export function App(): ReactNode {
 
   // Keep URL hash synchronized without clobbering pushed tab history entries
   useEffect(() => {
+    if (isHistoryRoute) return;
     if (applyingPopStateRef.current) {
       return;
     }
@@ -475,6 +535,7 @@ export function App(): ReactNode {
       syncBrowserHistory('replace');
     }
   }, [
+    isHistoryRoute,
     sessions,
     activeSessionIndex,
     history,
@@ -801,8 +862,18 @@ export function App(): ReactNode {
       setLoadingFull(true);
       void manifestClient
         .getDefinition(ref.table, ref.hash, true)
-        .then((payload) => {
-          const full = cacheDefinition(payload);
+        .then(async (payload) => {
+          let full = cacheDefinition(payload);
+          if (full.isLite) {
+            // A preferred-full lookup can return its Lite fallback while the
+            // item table is still streaming in the manifest worker. Wait for
+            // that shared table load, then re-read the definition so this
+            // inspector does not stay in a permanent “Loading full…” state.
+            await manifestClient.loadTable(ref.table);
+            full = cacheDefinition(
+              await manifestClient.getDefinition(ref.table, ref.hash, true),
+            );
+          }
           if (seq !== detailSeqRef.current) {
             return;
           }
@@ -1634,6 +1705,8 @@ export function App(): ReactNode {
     <div className={styles.shell}>
       <Header
         searchInputRef={searchInputRef}
+        activePage={isHistoryRoute ? 'history' : 'explorer'}
+        onNavigatePage={navigatePage}
         onCheckUpdates={handleCheckUpdates}
         onClearCache={handleClearCache}
         onLoadAllTables={handleLoadAllTables}
@@ -1667,58 +1740,68 @@ export function App(): ReactNode {
       )}
 
       <main className={styles.workspace}>
-        <TableRail
-          width={railWidth}
-          collapsed={railCollapsed}
-          onToggleCollapse={handleToggleRail}
-          onResize={handleRailResize}
-          onSelectTable={handleSelectTable}
-          onLoadTable={handleLoadTable}
-          onLoadAllTables={handleLoadAllTables}
-        />
-
-        {(isNarrowLayout
-          ? !mobileInspectorOpen
-          : !inspectorMaximized) && (
-          <ResultsPane
-            onOpenItem={handleOpenResult}
-            onRetryBoot={handleRetryBoot}
-            onLoadMore={handleLoadMore}
-            onLoadAll={handleLoadAll}
-            loadMoreStep={loadMoreStep}
-            loadingMore={loadingMore}
-            hiddenUnnamedCount={hiddenUnnamedCount}
-            scopeEntryCount={scopeEntryCount}
+        {isHistoryRoute ? (
+          <ManifestHistoryPage
+            versionIndex={historyVersionIndex}
+            onSelectVersion={selectHistoryVersion}
+            onNavigateExplorer={navigateExplorerDefinition}
           />
-        )}
+        ) : (
+          <>
+            <TableRail
+              width={railWidth}
+              collapsed={railCollapsed}
+              onToggleCollapse={handleToggleRail}
+              onResize={handleRailResize}
+              onSelectTable={handleSelectTable}
+              onLoadTable={handleLoadTable}
+              onLoadAllTables={handleLoadAllTables}
+            />
 
-        {currentRef && (!isNarrowLayout || mobileInspectorOpen) && (
-          <DefinitionInspector
-            width={inspectorWidth}
-            onResize={handleInspectorResize}
-            currentRef={currentRef}
-            detail={detail}
-            loading={detailLoading}
-            loadingFull={loadingFull}
-            error={detailError}
-            variants={variants}
-            variantsLoading={variantsLoading}
-            references={references}
-            referencesLoading={referencesLoading}
-            pinnedDetail={pinnedDetail}
-            pinnedLoading={pinnedLoading}
-            clarityEntry={clarityEntry}
-            clarityLoading={clarityLoading}
-            showClarity={showClarityDescriptions}
-            onNavigateRef={handleNavigateRef}
-            onNavigateBack={handleNavigateBack}
-            onNavigateForward={handleNavigateForward}
-            onJumpToHistoryIndex={handleJumpToHistoryIndex}
-            onSwitchSession={handleSwitchSession}
-            onLoadFullItem={handleLoadFullItem}
-            onLoadPriorityTable={handleLoadTable}
-            onRetry={handleRetryDetail}
-          />
+            {(isNarrowLayout
+              ? !mobileInspectorOpen
+              : !inspectorMaximized) && (
+              <ResultsPane
+                onOpenItem={handleOpenResult}
+                onRetryBoot={handleRetryBoot}
+                onLoadMore={handleLoadMore}
+                onLoadAll={handleLoadAll}
+                loadMoreStep={loadMoreStep}
+                loadingMore={loadingMore}
+                hiddenUnnamedCount={hiddenUnnamedCount}
+                scopeEntryCount={scopeEntryCount}
+              />
+            )}
+
+            {currentRef && (!isNarrowLayout || mobileInspectorOpen) && (
+              <DefinitionInspector
+                width={inspectorWidth}
+                onResize={handleInspectorResize}
+                currentRef={currentRef}
+                detail={detail}
+                loading={detailLoading}
+                loadingFull={loadingFull}
+                error={detailError}
+                variants={variants}
+                variantsLoading={variantsLoading}
+                references={references}
+                referencesLoading={referencesLoading}
+                pinnedDetail={pinnedDetail}
+                pinnedLoading={pinnedLoading}
+                clarityEntry={clarityEntry}
+                clarityLoading={clarityLoading}
+                showClarity={showClarityDescriptions}
+                onNavigateRef={handleNavigateRef}
+                onNavigateBack={handleNavigateBack}
+                onNavigateForward={handleNavigateForward}
+                onJumpToHistoryIndex={handleJumpToHistoryIndex}
+                onSwitchSession={handleSwitchSession}
+                onLoadFullItem={handleLoadFullItem}
+                onLoadPriorityTable={handleLoadTable}
+                onRetry={handleRetryDetail}
+              />
+            )}
+          </>
         )}
       </main>
 

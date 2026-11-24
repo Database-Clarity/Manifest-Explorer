@@ -16,6 +16,7 @@ import {
 import { RAIL_WIDTH_MAX, RAIL_WIDTH_MIN } from '../stores/settings';
 import { useExplorerStore } from '../stores/explorer';
 import { DownloadIcon, PanelLeftIcon, SearchIcon } from '../ui/Icons';
+import { ClearSearchInput } from '../ui/ClearSearchInput';
 import styles from './TableRail.module.scss';
 
 export interface TableRailProps {
@@ -280,13 +281,14 @@ export const TableRail = memo(function TableRail({
 
       <div className={styles.filterWrap}>
         <SearchIcon size={12} className={styles.filterIcon} />
-        <input
-          type="search"
+        <ClearSearchInput
           className={styles.filterInput}
+          wrapperClassName={styles.filterField}
           value={filterText}
-          onChange={(event) => setFilterText(event.target.value)}
+          onValueChange={setFilterText}
           placeholder="Filter tables…"
           aria-label="Filter tables"
+          clearLabel="Clear table filter"
           autoComplete="off"
           spellCheck={false}
         />

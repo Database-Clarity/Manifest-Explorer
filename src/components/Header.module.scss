@@ -59,12 +59,43 @@
   }
 }
 
+.pageNav {
+  @include ctl.segmented-track;
+  flex: 0 0 auto;
+  gap: 1px;
+  padding: 1px;
+  font-size: 0.6875rem;
+}
+
+.pageNavLink,
+.pageNavActive {
+  @include ctl.segmented-item;
+  min-height: 1.5rem;
+  padding: 0 0.5rem;
+}
+
+.pageNavActive,
+.pageNavActive:hover:not(:disabled) {
+  @include ctl.segmented-active;
+}
+
+@include theme.mobile-or-coarse {
+  .pageNavLink,
+  .pageNavActive {
+    min-height: var(--tap);
+    padding: 0 0.5625rem;
+  }
+}
+
 /**
  * Quiet "by Clarity" credit tucked beside the brand. It is a sibling link, not
  * part of the home button, and steps aside well before the search field would
  * feel crowded on laptops and phones.
  */
 .clarityAttribution {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
   flex: 0 0 auto;
   align-self: center;
   margin-left: -0.1875rem;
@@ -77,6 +108,7 @@
   line-height: 1;
   white-space: nowrap;
   text-decoration: none;
+  cursor: pointer;
   transition: color 120ms ease;
 
   @media (hover: hover) {
@@ -240,7 +272,7 @@
 }
 
 .locale {
-  @include ctl.field;
+  @include ctl.select-field;
   flex: 0 0 auto;
   width: 6.5rem;
   margin-left: auto;
@@ -305,6 +337,7 @@
     transition: min-height 120ms ease;
 
     .brand,
+    .pageNav,
     .clarityAttribution,
     .settingsBtn,
     .filtersBtn {

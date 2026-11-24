@@ -104,15 +104,16 @@
   pointer-events: none;
 }
 
+.filterField {
+  flex: 1;
+  min-width: 0;
+}
+
 .filterInput {
   @include ctl.field;
   width: 100%;
   padding-left: 1.375rem;
-
-  &::-webkit-search-cancel-button,
-  &::-webkit-search-decoration {
-    appearance: none;
-  }
+  padding-inline-end: 1.75rem;
 }
 
 .scroll {

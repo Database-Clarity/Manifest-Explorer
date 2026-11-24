@@ -156,6 +156,15 @@
   border: 1px solid var(--fld-edge);
   border-radius: 0.25rem;
 
+  // Native search affordances are unstyled dead zones in Chromium (no pointer
+  // cursor, hover or focus state). Every search field ships a real clear
+  // button instead — see src/ui/ClearSearchInput.tsx.
+  &[type='search']::-webkit-search-cancel-button,
+  &[type='search']::-webkit-search-decoration {
+    -webkit-appearance: none;
+    appearance: none;
+  }
+
   @include theme.mobile-or-coarse {
     font-size: var(--ctl-text);
     @include ios-field-text;
@@ -172,6 +181,23 @@
 
   &:disabled {
     opacity: 0.45;
+  }
+}
+
+// Native `<select>` shares the field surface but also needs a pointer cursor
+// and a hover edge so it reads as an actionable control, not an inert box.
+@mixin select-field {
+  @include field;
+  cursor: pointer;
+
+  @media (hover: hover) {
+    &:hover:not(:disabled) {
+      border-color: var(--ctl-hover-edge);
+    }
+  }
+
+  &:disabled {
+    cursor: default;
   }
 }
 

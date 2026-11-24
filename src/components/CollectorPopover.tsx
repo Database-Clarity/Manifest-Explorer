@@ -7,6 +7,7 @@ import { bungieAssetUrl } from '../manifest/hash';
 import { getShortTableName } from '../manifest/tables';
 import { BookmarkIcon, CheckIcon, CloseIcon, DownloadIcon, PlusIcon } from '../ui/Icons';
 import { Popover } from '../ui/Popover';
+import { activateOnMiddleClick, preventMiddleClickAutoScroll } from './middleClick';
 import styles from './CollectorPopover.module.scss';
 
 export interface CollectorPopoverProps {
@@ -214,6 +215,10 @@ function CollectorPopoverBody({ open, onClose, anchorRef }: CollectorPopoverProp
                   type="button"
                   className={styles.itemMain}
                   onClick={() => handleInspect(item)}
+                  onMouseDown={preventMiddleClickAutoScroll}
+                  onAuxClick={(event) =>
+                    activateOnMiddleClick(event, () => handleInspect(item))
+                  }
                   title={`Inspect ${item.name.length > 0 ? item.name : 'unnamed definition'}`}
                 >
                   <span className={styles.itemIcon} aria-hidden="true">

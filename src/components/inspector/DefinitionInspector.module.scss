@@ -3,8 +3,8 @@
 
 .pane {
   position: relative;
-  width: var(--inspector-w, 620px);
-  max-width: 75vw;
+  width: var(--inspector-w, 1280px);
+  max-width: min(72vw, calc(100vw - 29rem));
   min-width: 24rem;
   flex-shrink: 0;
   display: flex;
@@ -41,6 +41,9 @@
   background: var(--col);
   border-bottom: 1px solid var(--line);
   flex-shrink: 0;
+  box-sizing: border-box;
+  height: var(--pane-bar-h);
+  min-height: var(--pane-bar-h);
   min-width: 0;
 }
 
@@ -125,6 +128,7 @@
   @include ctl.field;
   min-height: 1.75rem;
   width: 100%;
+  padding-inline-end: 1.75rem;
   font-size: 0.75rem;
 }
 
@@ -279,6 +283,12 @@
     font-weight: 600;
   }
 
+  @media (hover: hover) {
+    &:hover {
+      color: var(--text);
+    }
+  }
+
   &:focus-visible {
     @include ctl.focus-ring;
   }
@@ -379,8 +389,20 @@
 }
 
 @include theme.mobile {
+  .sessionBar {
+    height: auto;
+    min-height: var(--tap);
+  }
+
   .sessionTab {
     max-width: 10.5rem;
+  }
+}
+
+@include theme.mobile-or-coarse {
+  .sessionBar {
+    height: auto;
+    min-height: var(--tap);
   }
 }
 
@@ -946,6 +968,8 @@
   color: var(--editor-text);
   font-family: var(--code-font-family);
   font-size: var(--code-font-size);
+  font-variant-ligatures: none;
+  font-feature-settings: 'liga' 0, 'calt' 0;
   line-height: 1.5;
   tab-size: 2;
   white-space: pre-wrap;

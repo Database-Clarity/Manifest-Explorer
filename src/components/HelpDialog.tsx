@@ -27,9 +27,12 @@ const SHORTCUTS: ReadonlyArray<readonly [string, string]> = [
 ];
 
 const OPERATORS: ReadonlyArray<readonly [string, string]> = [
-  ['tier:exotic damage:solar', 'Filters AND together by default'],
-  ['damage:solar or damage:arc', 'OR two alternatives — parenthesize to group them'],
-  ['(damage:solar or damage:arc) tier:exotic', 'Parentheses group an OR; other filters still AND'],
+  ['tier:exotic element:solar', 'Filters AND together by default'],
+  ['element:solar or element:arc', 'OR two alternatives — parenthesize to group them'],
+  [
+    '(element:solar or element:arc) tier:exotic',
+    'Parentheses group an OR; other filters still AND',
+  ],
   ['not is:ornament', 'Negate the next filter or group'],
   ['-source:eververse', 'Negate any term with a leading dash'],
   ['-(tier:common or tier:uncommon)', 'Negate a whole parenthesized group'],
@@ -38,7 +41,8 @@ const OPERATORS: ReadonlyArray<readonly [string, string]> = [
   ['table:artifactperks', 'Restrict results to the Artifact Perks view'],
   ['tier:exotic', 'Filter by item tier'],
   ['tier:>=legendary', 'Range comparison — legendary or higher'],
-  ['damage:solar', 'Filter by damage type'],
+  ['element:solar', 'Filter by element'],
+  ['damage:solar', 'Alias of element:solar'],
   ['class:hunter', 'Filter by guardian class'],
   ['type:weapon', 'Filter by item type'],
   ['subtype:handcannon', 'Filter by weapon subtype'],

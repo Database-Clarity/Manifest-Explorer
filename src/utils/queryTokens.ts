@@ -6,7 +6,7 @@
  *
  * Tokens follow DIM's search-bar semantics: filters AND together by default,
  * while multiple selections from one filter category are OR-joined inside
- * parentheses — `tier:exotic (damage:solar or damage:arc)` is an exotic that is
+ * parentheses — `tier:exotic (element:solar or element:arc)` is an exotic that is
  * solar OR arc. Hand-typed `or`/`and`/`not`, `-` negation (glued or spaced),
  * `not:x` shorthand, single- and smart-quoted values, range comparisons
  * (`season:>=24`), and parentheses are preserved and edited in place, never
@@ -31,7 +31,7 @@ export type FilterGroupId =
 const GROUP_KEYS: Readonly<Record<FilterGroupId, readonly string[]>> = {
   highlights: ['is', 'has'],
   tier: ['tier', 'rarity'],
-  damage: ['damage', 'element', 'el', 'dmg'],
+  damage: ['element', 'damage', 'el', 'dmg'],
   ammo: ['ammo'],
   slot: ['slot'],
   class: ['class'],
@@ -54,7 +54,7 @@ function buildKeyToGroup(): Readonly<Record<string, FilterGroupId>> {
 
 /**
  * Keys the manifest query parser recognizes as structured filters (mirrors
- * query.ts; `hash:`/`h:` stay free text so hash jumps survive clearing).
+ * query.ts). Bare hashes remain free text; `hash:`/`h:` are structured filters.
  * `not:` is DIM shorthand for `-is:` and always reads as a negated filter.
  */
 const FILTER_KEYS: ReadonlySet<string> = new Set([
@@ -81,8 +81,39 @@ const FILTER_KEYS: ReadonlySet<string> = new Set([
   'categories',
   'is',
   'has',
+  'hash',
+  'h',
   'not',
 ]);
+
+/** Stable query key used when comparing canonical tokens with their aliases. */
+const CANONICAL_GROUP_KEYS: Readonly<Record<FilterGroupId, string>> = {
+  highlights: 'flag',
+  tier: 'tier',
+  damage: 'element',
+  ammo: 'ammo',
+  slot: 'slot',
+  class: 'class',
+  type: 'type',
+  subtype: 'subtype',
+  season: 'season',
+  source: 'source',
+  category: 'category',
+};
+
+const UNGROUPED_KEY_ALIASES: Readonly<Record<string, string>> = {
+  t: 'table',
+  h: 'hash',
+};
+
+function normalizeTableValue(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '')
+    .replace(/^destiny/, '')
+    .replace(/definition$/, '')
+    .replace(/lite$/, '');
+}
 
 /**
  * Maps a structured filter token to its popover category — `damage:solar` ->
@@ -332,22 +363,28 @@ function unescapeQuotes(value: string): string {
 }
 
 /**
- * Normalizes a token for comparison: lowercase, smart quotes canonicalized,
- * quoted values unwrapped (double or single) and escaped quotes unescaped, so
- * `cat:"Hand Cannon"`, `cat:'Hand Cannon'`, and `cat:Hand Cannon` compare
- * equal. A leading `-` (negation) is kept, so `-is:enhanced` never counts as
- * `is:enhanced`.
+ * Normalizes a token for comparison: lowercase, aliases folded to their
+ * canonical key, smart quotes canonicalized, quoted values unwrapped (double
+ * or single) and escaped quotes unescaped. A leading `-` (negation) is kept.
  */
 function normalizeQueryToken(token: string): string {
   const trimmed = canonicalizeQuotes(token).trim();
   if (trimmed.length === 0) return '';
 
-  const colon = trimmed.indexOf(':');
+  const negated = trimmed.startsWith('-');
+  const body = negated ? trimmed.slice(1) : trimmed;
+  const colon = body.indexOf(':');
   if (colon <= 0) return unescapeQuotes(trimmed.toLowerCase());
 
-  const key = trimmed.slice(0, colon).toLowerCase();
-  const value = unescapeQuotes(stripMatchingQuotes(trimmed.slice(colon + 1).trim()));
-  return `${key}:${value.toLowerCase()}`;
+  const key = body.slice(0, colon).toLowerCase();
+  const value = unescapeQuotes(stripMatchingQuotes(body.slice(colon + 1).trim()));
+  const group = KEY_TO_GROUP[key];
+  const canonicalKey = group === undefined
+    ? (UNGROUPED_KEY_ALIASES[key] ?? key)
+    : CANONICAL_GROUP_KEYS[group];
+  const canonicalValue =
+    canonicalKey === 'table' ? normalizeTableValue(value) : value.toLowerCase();
+  return `${negated ? '-' : ''}${canonicalKey}:${canonicalValue}`;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -379,7 +416,7 @@ export function countQueryFilterTokens(query: string): number {
 /**
  * Removes every structured filter token (plus emptied parentheses and dangling
  * boolean operators) while keeping free-text search words — `deep:` prefixes,
- * hashes, and quoted phrases — exactly as typed.
+ * bare hashes, and quoted phrases — exactly as typed.
  */
 export function clearQueryFilterTokens(query: string): string {
   const parts = parseQueryParts(query);

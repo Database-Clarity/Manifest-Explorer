@@ -2,14 +2,19 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { useHistoryWorkspaceStore } from '../../../stores/historyWorkspace';
+import {
+  manifestReleaseSearchTerms,
+  resolveManifestReleaseName,
+} from '../../../data/manifestReleases';
 
 vi.mock('../../../manifest/history', () => ({
   fetchHistoryVersionsIndex: vi.fn(async () => ({
-    schema: 1,
-    generatedAt: '2024-01-01T00:00:00.000Z',
-    buckets: {},
-    versions: [
-      { i: 2, id: 'manifest-2', version: '2.0.0.1', date: '2024-01-01', source: 'test' },
+      schema: 1,
+      generatedAt: '2024-01-01T00:00:00.000Z',
+      buckets: {},
+      versions: [
+      { i: 2, id: 'manifest-2', version: '2.0.0.1', date: '2026-06-09', source: 'test' },
       {
         i: 1,
         id: 'manifest-1',
@@ -123,8 +128,23 @@ function openSecondEntry(host: HTMLElement): void {
   act(() => card.click());
 }
 
+describe('Destiny 2 manifest release labels', () => {
+  it('resolves archive UTC dates and exposes names as version-search terms', () => {
+    expect(resolveManifestReleaseName('2025-12-02T17:20:12.014Z')).toBe('Renegades');
+    expect(resolveManifestReleaseName('2025-07-15T17:10:05.945Z')).toBe(
+      'The Edge of Fate',
+    );
+    expect(resolveManifestReleaseName('2024-06-04')).toBe('The Final Shape');
+    expect(resolveManifestReleaseName('2025-09-09')).toBe('Ash & Iron');
+    expect(resolveManifestReleaseName('2026-06-09')).toBe('Monument of Triumph');
+    expect(manifestReleaseSearchTerms('2024-06-04')).toContain('Final Shape');
+    expect(resolveManifestReleaseName('invalid-date')).toBeNull();
+  });
+});
+
 beforeEach(() => {
   roots = [];
+  useHistoryWorkspaceStore.getState().reset();
   isMobileViewport = false;
   mockMatchMedia();
   window.history.replaceState(null, '', '/history');
@@ -137,10 +157,44 @@ afterEach(() => {
     act(() => root.unmount());
   }
   roots = [];
+  useHistoryWorkspaceStore.getState().reset();
   window.history.replaceState(null, '', '/');
 });
 
 describe('ManifestHistoryPage workspace', () => {
+  it('shows patch and release context in the picker and links the official patch notes', async () => {
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = mountPage(host);
+    await renderHistory(root);
+    await flushHistoryLoads();
+
+    const trigger = host.querySelector<HTMLButtonElement>('[role="combobox"]');
+    expect(trigger?.textContent).toContain(
+      'Jun 9, 2026 · Update 9.7.0 · Monument of Triumph',
+    );
+    expect(trigger?.title).toContain('Bungie version 2.0.0.1');
+
+    const patchNotesLink = host.querySelector<HTMLAnchorElement>(
+      'a[href="https://www.bungie.net/7/en/News/Article/destiny_update_9_7_0"]',
+    );
+    expect(patchNotesLink?.textContent).toContain('Update 9.7.0 patch notes');
+    expect(patchNotesLink?.target).toBe('_blank');
+    expect(patchNotesLink?.rel).toContain('noopener');
+
+    act(() => trigger?.click());
+    const option = document.body.querySelector<HTMLElement>(
+      '[role="option"][data-current]',
+    );
+    expect(option?.textContent).toContain('Monument of Triumph');
+    expect(option?.textContent).toContain('Update 9.7.0');
+    expect(
+      document.body.querySelector<HTMLInputElement>('[data-select-search]')?.placeholder,
+    ).toBe('Search updates, releases, dates, or builds...');
+
+    host.remove();
+  });
+
   it('does not render a Release overview tab and provides adjacent version navigation', async () => {
     const host = document.createElement('div');
     document.body.append(host);
@@ -194,6 +248,95 @@ describe('ManifestHistoryPage workspace', () => {
     expect(host.querySelector('[aria-label="History diff inspector"]')).toBeNull();
     expect(host.querySelector('[aria-label="Resize release changes pane"]')).toBeNull();
     expect(host.querySelector('[aria-label="Release changes"]')).not.toBeNull();
+
+    host.remove();
+  });
+
+  it('keeps the selected entry tab, expanded categories, filters, counts, and scroll when remounted', async () => {
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = mountPage(host);
+    await renderHistory(root);
+    expandRelease(host);
+    openTestEntry(host);
+    await flushHistoryLoads();
+
+    act(() => {
+      useHistoryWorkspaceStore.getState().updateOverview(2, {
+        kindFilter: 'a',
+        search: 'test',
+        manualBucketOverrides: { DestinyInventoryItemDefinition: true },
+        visibleCategoryCounts: { DestinyInventoryItemDefinition: 900 },
+        scrollTop: 480,
+      });
+    });
+    const initialScroller = host.querySelector<HTMLElement>(
+      '[class*="overviewScroll"]',
+    );
+    if (!initialScroller) throw new Error('Release overview scroller is missing');
+    act(() => {
+      initialScroller.scrollTop = 480;
+      initialScroller.dispatchEvent(new Event('scroll', { bubbles: true }));
+    });
+    await flushHistoryLoads();
+    act(() => root.render(null));
+
+    await renderHistory(root);
+    await flushHistoryLoads();
+
+    expect(host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain(
+      'Test Item',
+    );
+    const overviewScroll = host.querySelector<HTMLElement>('[class*="overviewScroll"]');
+    expect(overviewScroll?.scrollTop).toBe(480);
+    expect(
+      host
+        .querySelector<HTMLButtonElement>('button[class*="tableGroupSummary"]')
+        ?.getAttribute('aria-expanded'),
+    ).toBe('true');
+    expect(
+      useHistoryWorkspaceStore.getState().overviews['2'],
+    ).toMatchObject({
+      kindFilter: 'a',
+      search: 'test',
+      visibleCategoryCounts: { DestinyInventoryItemDefinition: 900 },
+    });
+
+    host.remove();
+  });
+
+  it('remembers the last viewed release when returning to /history without a version index', async () => {
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = mountPage(host);
+    const onSelectVersion = vi.fn();
+    await renderHistory(root, 1, onSelectVersion);
+    await flushHistoryLoads();
+
+    expect(useHistoryWorkspaceStore.getState().lastVersionIndex).toBe(1);
+    act(() => root.render(null));
+
+    await renderHistory(root, null as unknown as number, onSelectVersion);
+    await flushHistoryLoads();
+
+    expect(onSelectVersion).toHaveBeenLastCalledWith(1, true);
+    host.remove();
+  });
+
+  it('renders sign-free comma-formatted change counts and kind badges', async () => {
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = mountPage(host);
+    await renderHistory(root);
+    expandRelease(host);
+
+    expect(host.querySelector('[aria-label="Release change totals"]')).toBeNull();
+    expect(host.textContent).toContain('Added2');
+    expect(host.textContent).toContain('2 added');
+    expect(host.textContent).not.toMatch(/[+~−]\s*1(?:\s|$)/);
+    openTestEntry(host);
+    await flushHistoryLoads();
+    expect(host.querySelector('[class*="kindBadge"]')?.textContent).toBe('Added');
 
     host.remove();
   });

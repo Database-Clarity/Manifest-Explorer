@@ -34,6 +34,33 @@ describe('persisted sorting and grouping settings', () => {
     }
   });
 
+  it('persists the History viewer mode and diff layout with safe defaults', () => {
+    expect(DEFAULT_SETTINGS.historyEntryViewMode).toBe('diff');
+    expect(DEFAULT_SETTINGS.historyDiffLayout).toBe('split');
+
+    const current = useSettingsStore.getState();
+    const partialize = useSettingsStore.persist.getOptions().partialize;
+    const persisted = partialize?.({
+      ...current,
+      historyEntryViewMode: 'formatted',
+      historyDiffLayout: 'inline',
+    });
+    expect(persisted).toMatchObject({
+      historyEntryViewMode: 'formatted',
+      historyDiffLayout: 'inline',
+    });
+
+    expect(
+      mergePersistedSettings(
+        { historyEntryViewMode: 'invalid', historyDiffLayout: 'invalid' },
+        current,
+      ),
+    ).toMatchObject({
+      historyEntryViewMode: 'diff',
+      historyDiffLayout: 'split',
+    });
+  });
+
   it('falls back cleanly for invalid persisted values', () => {
     const current = useSettingsStore.getState();
     const merged = mergePersistedSettings(

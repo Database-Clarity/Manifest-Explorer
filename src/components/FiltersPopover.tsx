@@ -17,6 +17,7 @@ import { Popover } from '../ui/Popover';
 import {
   clearQueryFilterTokens,
   hasQueryToken,
+  toggleQueryToken,
   toggleQueryTokenInGroup,
   type FilterGroupId,
 } from '../utils/queryTokens';
@@ -36,7 +37,7 @@ interface TokenOption {
   /** Exact query token this chip toggles, e.g. `is:enhanced` or `source:"exotic mission"`. */
   token: string;
   label: string;
-  /** Element-dot colour for damage chips. */
+  /** Element-dot colour for element chips. */
   dot?: string;
   /** Item matches for this option; shown subtly inside the chip when > 0. */
   count?: number;
@@ -69,13 +70,13 @@ const TIER_OPTIONS: readonly TokenOption[] = [
   { token: 'tier:common', label: 'Common' },
 ];
 
-const DAMAGE_OPTIONS: readonly TokenOption[] = [
-  { token: 'damage:kinetic', label: 'Kinetic', dot: 'var(--el-kinetic)' },
-  { token: 'damage:arc', label: 'Arc', dot: 'var(--el-arc)' },
-  { token: 'damage:solar', label: 'Solar', dot: 'var(--el-solar)' },
-  { token: 'damage:void', label: 'Void', dot: 'var(--el-void)' },
-  { token: 'damage:stasis', label: 'Stasis', dot: 'var(--el-stasis)' },
-  { token: 'damage:strand', label: 'Strand', dot: 'var(--el-strand)' },
+const ELEMENT_OPTIONS: readonly TokenOption[] = [
+  { token: 'element:kinetic', label: 'Kinetic', dot: 'var(--el-kinetic)' },
+  { token: 'element:arc', label: 'Arc', dot: 'var(--el-arc)' },
+  { token: 'element:solar', label: 'Solar', dot: 'var(--el-solar)' },
+  { token: 'element:void', label: 'Void', dot: 'var(--el-void)' },
+  { token: 'element:stasis', label: 'Stasis', dot: 'var(--el-stasis)' },
+  { token: 'element:strand', label: 'Strand', dot: 'var(--el-strand)' },
 ];
 
 const AMMO_OPTIONS: readonly TokenOption[] = [
@@ -310,15 +311,18 @@ function FiltersPopoverBody({
       ),
     [uniqueTables],
   );
+  const querySelectedTable = uniqueTables.find((table) =>
+    hasQueryToken(query, `table:${getShortTableName(table.name)}`),
+  );
   const selectedTableKey =
     tableFilter === 'all'
-      ? 'all'
+      ? (querySelectedTable?.name ?? 'all')
       : (uniqueTables.find(
           (table) => getShortTableName(table.name) === getShortTableName(tableFilter),
         )?.name ?? tableFilter);
   const activeTableLabel =
     tableFilter === 'all'
-      ? 'All tables'
+      ? (querySelectedTable?.shortName ?? 'All tables')
       : (uniqueTables.find(
           (table) => getShortTableName(table.name) === getShortTableName(tableFilter),
         )?.shortName ?? getFriendlyTableName(tableFilter));
@@ -427,6 +431,21 @@ function FiltersPopoverBody({
     } else {
       setTableFilter(table);
     }
+  }
+
+  function toggleTableOption(table: TableStatus): void {
+    const token = `table:${getShortTableName(table.name)}`;
+    const querySelected = hasQueryToken(query, token);
+    const stateSelected =
+      tableFilter !== 'all' &&
+      getShortTableName(table.name) === getShortTableName(tableFilter);
+
+    if (querySelected) {
+      setQuery(toggleQueryToken(query, token));
+      if (stateSelected) handleSelectTable('all');
+      return;
+    }
+    handleSelectTable(table.name);
   }
 
   function toggleToken(token: string, groupId: FilterGroupId): void {
@@ -676,7 +695,7 @@ function FiltersPopoverBody({
               <div className={styles.optionList}>
                 {filteredTableOptions.map((option) => {
                   if (option.key === 'all') {
-                    const selected = tableFilter === 'all';
+                    const selected = tableFilter === 'all' && querySelectedTable === undefined;
                     return (
                       <button
                         key="all"
@@ -699,14 +718,15 @@ function FiltersPopoverBody({
                   const table = option.table;
                   if (!table) return null;
                   const selected =
-                    tableFilter !== 'all' &&
-                    getShortTableName(table.name) === getShortTableName(tableFilter);
+                    hasQueryToken(query, `table:${getShortTableName(table.name)}`) ||
+                    (tableFilter !== 'all' &&
+                      getShortTableName(table.name) === getShortTableName(tableFilter));
                   return (
                     <button
                       key={table.name}
                       type="button"
                       className={cx(styles.optionRow, selected && styles.categoryRowOn)}
-                      onClick={() => handleSelectTable(table.name)}
+                      onClick={() => toggleTableOption(table)}
                       aria-current={selected ? 'true' : undefined}
                       title={table.name}
                     >
@@ -749,7 +769,7 @@ function FiltersPopoverBody({
           <div className={styles.col}>
             {renderChipGroup('Highlights & flags', HIGHLIGHT_OPTIONS, 'highlights')}
             {renderChipGroup('Tier', TIER_OPTIONS, 'tier')}
-            {renderChipGroup('Damage', DAMAGE_OPTIONS, 'damage')}
+            {renderChipGroup('Element', ELEMENT_OPTIONS, 'damage')}
 
             <section className={styles.group}>
               <h3 className={styles.groupTitle}>Ammo &amp; slot</h3>

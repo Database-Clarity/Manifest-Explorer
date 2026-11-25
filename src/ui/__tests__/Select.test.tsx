@@ -249,6 +249,44 @@ describe('Select', () => {
     expect(document.querySelector('[data-select-popup]')).toBeNull();
   });
 
+  it('supports custom two-line options while keeping the trigger label and popup width constrained', () => {
+    const options: readonly SelectOption[] = [
+      {
+        value: 'alpha',
+        label: 'Alpha release',
+        renderOption: (option, state) => (
+          <span>
+            {state.current ? 'Current' : 'Option'}: {option.label}
+          </span>
+        ),
+      },
+      { value: 'bravo', label: 'Bravo release' },
+    ];
+    renderSelect({ options, maxPopupWidth: 220 });
+
+    Object.defineProperty(trigger(), 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({
+        x: 0,
+        y: 0,
+        left: 0,
+        right: 700,
+        top: 0,
+        bottom: 32,
+        width: 700,
+        height: 32,
+        toJSON: () => ({}),
+      }),
+    });
+    act(() => trigger().click());
+
+    expect(trigger().textContent).toBe('Alpha release');
+    expect(popup().style.width).toBe('220px');
+    expect(popup().querySelector('[role="option"]')?.textContent).toBe(
+      'Current: Alpha release',
+    );
+  });
+
   it('shows an empty search state and enables search automatically at 321 options', () => {
     const options = Array.from({ length: 321 }, (_, index) => ({
       value: `item-${index}`,

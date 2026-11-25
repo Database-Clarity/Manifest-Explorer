@@ -2,12 +2,21 @@
 @use '../../styles/variables' as theme;
 
 .viewer {
+  width: 100%;
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
   border: 1px solid var(--hair);
   background: var(--editor);
   color: var(--editor-text);
+}
+
+.viewerWithLeadingToolbar {
+  // History's scroll container reserves a native scrollbar only while the diff
+  // is visible. Include that gutter so its far-right actions stay in the same
+  // slot as Formatted, whose tree content doesn't need the outer scrollbar.
+  width: calc(100% + 10px);
+  max-width: none;
 }
 
 .toolbar {
@@ -17,11 +26,20 @@
   flex-wrap: wrap;
   gap: 0.375rem 0.75rem;
   min-width: 0;
+  min-height: 2.625rem;
   padding: 0.375rem 0.5rem;
   border-bottom: 1px solid var(--hair);
   background: var(--strip);
   color: var(--editor-text2);
   font-size: 0.75rem;
+}
+
+.toolbarInfo {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 0.5rem;
+  min-width: 0;
 }
 
 .summary {
@@ -44,7 +62,16 @@
   align-items: center;
   flex-wrap: wrap;
   justify-content: flex-end;
+  min-width: 0;
+  margin-left: auto;
   gap: 0.25rem;
+}
+
+.toolbarLeading {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  min-width: 0;
 }
 
 .layoutToggle {
@@ -480,6 +507,7 @@
 
 @include theme.mobile-or-coarse {
   .toolbar {
+    min-height: 2.25rem;
     padding: 0.25rem 0.375rem;
   }
 
@@ -535,5 +563,9 @@
 @include theme.mobile {
   .layoutToggle {
     display: none;
+  }
+
+  .viewerWithLeadingToolbar {
+    width: 100%;
   }
 }

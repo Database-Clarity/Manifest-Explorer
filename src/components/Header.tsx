@@ -496,6 +496,7 @@ export const Header = memo(function Header({
             </button>
           </nav>
 
+          {activePage !== 'history' && (
           <div className={styles.searchCluster}>
             <div className={cx(styles.searchField, searchFocused && styles.searchFieldFocused)}>
               <span className={styles.searchIconWrap} aria-hidden="true">
@@ -519,7 +520,7 @@ export const Header = memo(function Header({
                       : 'Search name/hash…'
                     : deepSearch
                       ? 'Deep search inside JSON keys & values…'
-                      : 'Search name, hash, or (damage:solar or damage:arc) tier:exotic…'
+                      : 'Search name, hash, or (element:solar or element:arc) tier:exotic…'
                 }
                 aria-label={deepSearch ? 'Deep search inside manifest JSON' : 'Search the manifest'}
                 role="combobox"
@@ -589,6 +590,7 @@ export const Header = memo(function Header({
               />
             </div>
           </div>
+          )}
 
           <Select<BungieLocale>
             align="end"

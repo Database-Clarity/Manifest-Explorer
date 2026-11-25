@@ -216,10 +216,10 @@ describe('countQueryFilterTokens', () => {
     expect(countQueryFilterTokens('-(tier:common or tier:uncommon)')).toBe(2);
   });
 
-  it('leaves free text and hashes out of the count', () => {
+  it('leaves free text and bare hashes out of the count', () => {
     expect(countQueryFilterTokens('Gjallarhorn tier:exotic')).toBe(1);
     expect(countQueryFilterTokens('deep:wolfpack 1363886209')).toBe(0);
-    expect(countQueryFilterTokens('hash:123 Gjallarhorn')).toBe(0);
+    expect(countQueryFilterTokens('hash:123 Gjallarhorn')).toBe(1);
   });
 });
 
@@ -231,7 +231,8 @@ describe('clearQueryFilterTokens', () => {
     expect(clearQueryFilterTokens('deep:wolfpack -engram tier:exotic damage:solar')).toBe(
       'deep:wolfpack -engram',
     );
-    expect(clearQueryFilterTokens('hash:123 Gjallarhorn')).toBe('hash:123 Gjallarhorn');
+    expect(clearQueryFilterTokens('hash:123 Gjallarhorn')).toBe('Gjallarhorn');
+    expect(clearQueryFilterTokens('1363886209 Gjallarhorn')).toBe('1363886209 Gjallarhorn');
   });
 
   it('removes negated filters and their groups', () => {
@@ -395,5 +396,92 @@ describe('range comparison tokens', () => {
     expect(hasQueryToken('season:>=24', 'season:24')).toBe(false);
     expect(hasQueryToken('tier:>=legendary', 'tier:legendary')).toBe(false);
     expect(hasQueryToken('season:>=24', 'season:>=24')).toBe(true);
+  });
+});
+
+describe('filter-key aliases', () => {
+  it('selects element chips through every damage-key alias', () => {
+    for (const key of ['element', 'damage', 'el', 'dmg']) {
+      expect(hasQueryToken(`${key}:solar`, 'element:solar')).toBe(true);
+      expect(toggleQueryTokenInGroup(`${key}:solar`, 'element:solar', 'damage')).toBe('');
+    }
+
+    expect(toggleQueryTokenInGroup('el:solar', 'element:arc', 'damage')).toBe(
+      '(el:solar or element:arc)',
+    );
+    expect(
+      toggleQueryTokenInGroup(
+        'damage:solar element:solar (el:solar or dmg:arc)',
+        'element:solar',
+        'damage',
+      ),
+    ).toBe('dmg:arc');
+  });
+
+  it('selects tier, category, highlight, season, and subtype chips through aliases', () => {
+    expect(hasQueryToken('rarity:exotic', 'tier:exotic')).toBe(true);
+    expect(toggleQueryTokenInGroup('rarity:exotic', 'tier:exotic', 'tier')).toBe('');
+
+    for (const key of ['cat', 'category', 'categories']) {
+      expect(hasQueryToken(`${key}:"Hand Cannon"`, 'cat:"Hand Cannon"')).toBe(true);
+      expect(
+        toggleQueryTokenInGroup(`${key}:"Hand Cannon"`, 'cat:"Hand Cannon"', 'category'),
+      ).toBe('');
+    }
+
+    expect(hasQueryToken('has:enhanced', 'is:enhanced')).toBe(true);
+    expect(toggleQueryTokenInGroup('has:enhanced', 'is:enhanced', 'highlights')).toBe('');
+    expect(hasQueryToken('s:28', 'season:28')).toBe(true);
+    expect(toggleQueryTokenInGroup('s:28', 'season:28', 'season')).toBe('');
+    expect(hasQueryToken('weapon:handcannon', 'subtype:handcannon')).toBe(true);
+    expect(toggleQueryTokenInGroup('weapon:handcannon', 'subtype:handcannon', 'subtype')).toBe('');
+  });
+
+  it('canonicalizes table and hash short keys for direct token matching', () => {
+    expect(hasQueryToken('t:InventoryItem', 'table:InventoryItem')).toBe(true);
+    expect(hasQueryToken('t:InventoryItem', 'table:DestinyInventoryItemDefinition')).toBe(true);
+    expect(toggleQueryToken('t:InventoryItem', 'table:InventoryItem')).toBe('');
+    expect(toggleQueryToken('t:InventoryItem', 'table:DestinyInventoryItemDefinition')).toBe('');
+    expect(hasQueryToken('h:123456', 'hash:123456')).toBe(true);
+  });
+
+  it('counts and clears every structured key accepted by the manifest parser', () => {
+    const aliases = [
+      'table:InventoryItem',
+      't:InventoryItem',
+      'tier:exotic',
+      'rarity:exotic',
+      'damage:solar',
+      'element:solar',
+      'el:solar',
+      'dmg:solar',
+      'class:titan',
+      'type:weapon',
+      'ammo:primary',
+      'slot:energy',
+      'subtype:bow',
+      'weapon:bow',
+      'season:28',
+      's:28',
+      'source:raid',
+      'trait:rapid',
+      'cat:weapon',
+      'category:weapon',
+      'categories:weapon',
+      'is:adept',
+      'has:lore',
+      'hash:123456',
+      'h:654321',
+      'not:adept',
+    ];
+    const query = `Gjallarhorn ${aliases.join(' ')}`;
+
+    expect(countQueryFilterTokens(query)).toBe(aliases.length);
+    expect(clearQueryFilterTokens(query)).toBe('Gjallarhorn');
+  });
+
+  it('clears the recognized not shorthand while preserving ordinary free text', () => {
+    expect(countQueryFilterTokens('not:enhanced 1363886209')).toBe(1);
+    expect(clearQueryFilterTokens('not:enhanced 1363886209')).toBe('1363886209');
   });
 });

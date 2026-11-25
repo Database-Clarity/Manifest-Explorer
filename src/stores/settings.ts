@@ -15,6 +15,8 @@ export const SETTINGS_STORAGE_KEY = 'clarity-manifest-settings';
 export type ThemeMode = 'system' | 'dark' | 'light';
 export type TouchSize = 'compact' | 'large';
 export type CodeFontFamily = 'system' | 'fira' | 'cascadia' | 'consolas';
+export type HistoryEntryViewMode = 'diff' | 'formatted';
+export type HistoryDiffLayout = 'inline' | 'split';
 
 export interface SettingsValues {
   theme: ThemeMode;
@@ -35,6 +37,8 @@ export interface SettingsValues {
   fuzziness: number;
   queryPrecedence: QueryPrecedence;
   groupBy: GroupBy;
+  historyEntryViewMode: HistoryEntryViewMode;
+  historyDiffLayout: HistoryDiffLayout;
 }
 
 export interface SettingsActions {
@@ -56,6 +60,8 @@ export interface SettingsActions {
   setFuzziness: (value: number) => void;
   setQueryPrecedence: (mode: QueryPrecedence) => void;
   setGroupBy: (groupBy: GroupBy) => void;
+  setHistoryEntryViewMode: (mode: HistoryEntryViewMode) => void;
+  setHistoryDiffLayout: (layout: HistoryDiffLayout) => void;
   resetSettings: () => void;
 }
 
@@ -103,6 +109,8 @@ export const DEFAULT_SETTINGS: SettingsValues = {
   fuzziness: FUZZINESS_DEFAULT,
   queryPrecedence: 'dim',
   groupBy: 'none',
+  historyEntryViewMode: 'diff',
+  historyDiffLayout: 'split',
 };
 
 export const UI_SCALE_MIN = 85;
@@ -278,6 +286,16 @@ export function mergePersistedSettings(
       QUERY_PRECEDENCE_MODES,
       currentState.queryPrecedence,
     ),
+    historyEntryViewMode: readEnum(
+      persistedState.historyEntryViewMode,
+      ['diff', 'formatted'] as const,
+      currentState.historyEntryViewMode,
+    ),
+    historyDiffLayout: readEnum(
+      persistedState.historyDiffLayout,
+      ['inline', 'split'] as const,
+      currentState.historyDiffLayout,
+    ),
   };
 }
 
@@ -310,6 +328,9 @@ export const useSettingsStore = create<SettingsState>()(
         setFuzziness: (fuzziness) => commit({ fuzziness: normalizeFuzziness(fuzziness) }),
         setQueryPrecedence: (queryPrecedence) => commit({ queryPrecedence }),
         setGroupBy: (groupBy) => commit({ groupBy }),
+        setHistoryEntryViewMode: (historyEntryViewMode) =>
+          commit({ historyEntryViewMode }),
+        setHistoryDiffLayout: (historyDiffLayout) => commit({ historyDiffLayout }),
         resetSettings: () => {
           set(DEFAULT_SETTINGS);
           applySettingsToDom(get());
@@ -339,6 +360,8 @@ export const useSettingsStore = create<SettingsState>()(
         fuzziness: state.fuzziness,
         queryPrecedence: state.queryPrecedence,
         groupBy: state.groupBy,
+        historyEntryViewMode: state.historyEntryViewMode,
+        historyDiffLayout: state.historyDiffLayout,
       }),
       merge: mergePersistedSettings,
       onRehydrateStorage: () => (state) => {

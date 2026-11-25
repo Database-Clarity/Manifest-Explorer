@@ -14,6 +14,11 @@ export interface JsonDiffViewProps {
   onCopy?: (text: string, label: string) => void;
   /** Prefer split on desktop while allowing the view to adapt on narrow screens. */
   defaultLayout?: 'inline' | 'split';
+  /** Controlled layout for consumers that own the diff toolbar state. */
+  layout?: 'inline' | 'split';
+  onLayoutChange?: (layout: 'inline' | 'split') => void;
+  /** Optional controls shown immediately before the layout toggle. */
+  toolbarLeading?: ReactNode;
   onStats?: (stats: JsonDiffStats) => void;
 }
 
@@ -421,10 +426,13 @@ export const JsonDiffView = memo(function JsonDiffView({
   filter = '',
   onCopy,
   defaultLayout = 'inline',
+  layout: controlledLayout,
+  onLayoutChange,
+  toolbarLeading,
   onStats,
 }: JsonDiffViewProps): ReactNode {
   const userSelectedLayoutRef = useRef(false);
-  const [layout, setLayout] = useState<'inline' | 'split'>(() =>
+  const [internalLayout, setInternalLayout] = useState<'inline' | 'split'>(() =>
     defaultLayout === 'split' &&
     typeof window !== 'undefined' &&
     typeof window.matchMedia === 'function' &&
@@ -432,6 +440,7 @@ export const JsonDiffView = memo(function JsonDiffView({
       ? 'split'
       : 'inline',
   );
+  const layout = controlledLayout ?? internalLayout;
   const [isMobile, setIsMobile] = useState(
     () =>
       typeof window !== 'undefined' &&
@@ -493,14 +502,14 @@ export const JsonDiffView = memo(function JsonDiffView({
     if (defaultLayout !== 'split' || typeof window.matchMedia !== 'function') return;
     const media = window.matchMedia('(min-width: 900px)');
     const updateLayout = (): void => {
-      if (!userSelectedLayoutRef.current) {
-        setLayout(media.matches ? 'split' : 'inline');
+      if (!userSelectedLayoutRef.current && controlledLayout === undefined) {
+        setInternalLayout(media.matches ? 'split' : 'inline');
       }
     };
     media.addEventListener('change', updateLayout);
     updateLayout();
     return () => media.removeEventListener('change', updateLayout);
-  }, [defaultLayout]);
+  }, [controlledLayout, defaultLayout]);
 
   useEffect(() => {
     if (typeof window.matchMedia !== 'function') return;
@@ -518,11 +527,26 @@ export const JsonDiffView = memo(function JsonDiffView({
   );
 
   const revealLines = (start: number, end: number): void => {
+    const rowsThroughReveal = segments.reduce((total, segment) => {
+      if (segment.start >= end) return total;
+      const visibleEnd = Math.min(end, segment.end);
+      const visibleStart =
+        segment.type === 'collapsed'
+          ? Math.max(start, segment.start)
+          : segment.start;
+      return total + Math.max(0, visibleEnd - visibleStart);
+    }, 0);
     setExpandedLines((current) => {
       const next = new Set(current);
       for (let index = start; index < end; index += 1) next.add(index);
       return next;
     });
+    if (rowsThroughReveal > visibleLineLimit) {
+      setLineLimitState({
+        lines: diff.lines,
+        limit: Math.min(diff.lines.length, rowsThroughReveal),
+      });
+    }
   };
 
   const copyDiff = (): void => {
@@ -549,17 +573,26 @@ export const JsonDiffView = memo(function JsonDiffView({
 
   return (
     <section
-      className={`${styles.viewer} ${wrap ? '' : styles.unwrapped} ${
+      className={`${styles.viewer} ${
+        toolbarLeading !== undefined && toolbarLeading !== null
+          ? styles.viewerWithLeadingToolbar
+          : ''
+      } ${wrap ? '' : styles.unwrapped} ${
         visibleLayout === 'split' ? styles.splitLayout : ''
       }`}
       aria-label="JSON diff"
     >
       <div className={styles.toolbar}>
-        <span className={styles.summary}>
-          <strong className={styles.addedCount}>+{diff.added}</strong>
-          <span aria-hidden="true"> / </span>
-          <strong className={styles.removedCount}>−{diff.removed}</strong> lines
-        </span>
+        <div className={styles.toolbarInfo}>
+          {toolbarLeading !== undefined && toolbarLeading !== null ? (
+            <div className={styles.toolbarLeading}>{toolbarLeading}</div>
+          ) : null}
+          <span className={styles.summary}>
+            <strong className={styles.addedCount}>+{diff.added}</strong>
+            <span aria-hidden="true"> / </span>
+            <strong className={styles.removedCount}>−{diff.removed}</strong> lines
+          </span>
+        </div>
         <div className={styles.toolbarActions}>
           <div className={styles.layoutToggle} role="group" aria-label="Diff layout">
             {(['inline', 'split'] as const).map((mode) => (
@@ -572,7 +605,8 @@ export const JsonDiffView = memo(function JsonDiffView({
                 aria-pressed={layout === mode}
                 onClick={() => {
                   userSelectedLayoutRef.current = true;
-                  setLayout(mode);
+                  if (controlledLayout === undefined) setInternalLayout(mode);
+                  onLayoutChange?.(mode);
                 }}
               >
                 {mode === 'inline' ? 'Inline' : 'Split'}
@@ -595,9 +629,13 @@ export const JsonDiffView = memo(function JsonDiffView({
             type="button"
             className={styles.toolbarBtn}
             onClick={() => {
+              const nextExpandAll = !expandAll;
               setExpandedLines(new Set());
-              setExpandAll((expanded) => !expanded);
-              setLineLimitState({ lines: diff.lines, limit: 400 });
+              setExpandAll(nextExpandAll);
+              setLineLimitState({
+                lines: diff.lines,
+                limit: nextExpandAll ? diff.lines.length : 400,
+              });
             }}
           >
             {expandAll ? 'Collapse unchanged' : 'Expand all'}

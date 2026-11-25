@@ -131,7 +131,7 @@ export interface DefinitionInspectorProps {
 type InspectorViewTab = InspectorTab | 'history';
 
 const TABS: ReadonlyArray<{ id: InspectorViewTab; label: string; shortLabel: string }> = [
-  { id: 'pretty', label: 'Pretty', shortLabel: 'Pretty' },
+  { id: 'pretty', label: 'Formatted', shortLabel: 'Formatted' },
   { id: 'overview', label: 'Overview', shortLabel: 'Info' },
   { id: 'variants', label: 'Variants', shortLabel: 'Vars' },
   { id: 'references', label: 'References', shortLabel: 'Refs' },

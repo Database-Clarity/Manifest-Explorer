@@ -103,6 +103,7 @@ interface RefButtonProps {
   ref: DefinitionRef;
   className: string | undefined;
   title?: string;
+  stopPropagation?: boolean;
   onNavigate: NavigateRef;
   openInNewTabLabel?: string;
   children: ReactNode;
@@ -117,6 +118,7 @@ function RefButton({
   ref,
   className,
   title,
+  stopPropagation = false,
   onNavigate,
   openInNewTabLabel,
   children,
@@ -126,11 +128,13 @@ function RefButton({
       type="button"
       className={className}
       title={title}
-      onClick={(event: MouseEvent<HTMLButtonElement>) =>
-        onNavigate(ref, event.ctrlKey || event.metaKey)
-      }
+      onClick={(event: MouseEvent<HTMLButtonElement>) => {
+        if (stopPropagation) event.stopPropagation();
+        onNavigate(ref, event.ctrlKey || event.metaKey);
+      }}
       onMouseDown={preventMiddleClickAutoScroll}
       onAuxClick={(event: MouseEvent<HTMLButtonElement>) => {
+        if (stopPropagation) event.stopPropagation();
         activateOnMiddleClick(event, () => onNavigate(ref, true));
       }}
     >
@@ -191,6 +195,131 @@ function itemRef(hash: number, label?: string, icon?: string): DefinitionRef {
 
 function totalPlugs(category: OverviewSocketCategory): number {
   return category.sockets.reduce((sum, socket) => sum + socket.plugs.length, 0);
+}
+
+interface PlugSetOverviewItem {
+  hash: number;
+  name: string;
+  subtitle: string;
+  icon?: string;
+  tierType?: number;
+  currentlyCanRoll?: boolean;
+}
+
+function getPlugSetOverviewItems(detail: DefinitionDetailPayload): PlugSetOverviewItem[] {
+  const rawItems = detail.data.reusablePlugItems;
+  if (!Array.isArray(rawItems)) return [];
+  return rawItems.flatMap((rawItem) => {
+    if (typeof rawItem !== 'object' || rawItem === null) return [];
+    const item = rawItem as Record<string, unknown>;
+    const hash = item.plugItemHash;
+    if (typeof hash !== 'number' || !Number.isSafeInteger(hash) || hash <= 0) {
+      return [];
+    }
+    const summary =
+      detail.resolvedRefs[`DestinyInventoryItemDefinition:${hash}`] ??
+      detail.resolvedRefs[String(hash)];
+    return [
+      {
+        hash,
+        name: summary?.name || `Item ${hash}`,
+        subtitle:
+          summary?.subtitle ||
+          (typeof item.itemTypeDisplayName === 'string'
+            ? item.itemTypeDisplayName
+            : 'Inventory Item'),
+        ...(summary?.icon ? { icon: summary.icon } : {}),
+        ...(summary?.tierType !== undefined ? { tierType: summary.tierType } : {}),
+        ...(typeof item.currentlyCanRoll === 'boolean'
+          ? { currentlyCanRoll: item.currentlyCanRoll }
+          : {}),
+      },
+    ];
+  });
+}
+
+function PlugSetOverview({
+  detail,
+  onNavigate,
+}: {
+  detail: DefinitionDetailPayload;
+  onNavigate: NavigateRef;
+}): ReactNode {
+  const [filter, setFilter] = useState('');
+  const items = useMemo(() => getPlugSetOverviewItems(detail), [detail]);
+  const needle = filter.trim().toLowerCase();
+  const visible = useMemo(
+    () =>
+      needle
+        ? items.filter((item) =>
+            `${item.name} ${item.subtitle} ${item.hash}`.toLowerCase().includes(needle),
+          )
+        : items,
+    [items, needle],
+  );
+  const hasRollStatus = items.some((item) => item.currentlyCanRoll !== undefined);
+  const rollableCount = items.filter((item) => item.currentlyCanRoll === true).length;
+  const retiredCount = items.filter((item) => item.currentlyCanRoll === false).length;
+
+  return (
+    <section className={`${styles.section} ${styles.plugSetOverview}`}>
+      <div className={styles.sectionHead}>
+        <h3 className={styles.sectionTitle}>PlugSet Overview</h3>
+        <span className={styles.plugSetSummary}>
+          {items.length.toLocaleString()} {items.length === 1 ? 'plug' : 'plugs'}
+          {hasRollStatus
+            ? ` · ${rollableCount.toLocaleString()} rollable · ${retiredCount.toLocaleString()} retired`
+            : ''}
+        </span>
+      </div>
+      {items.length > 12 ? (
+        <ClearSearchInput
+          className={styles.poolFilter}
+          wrapperClassName={styles.plugSetFilter}
+          value={filter}
+          onValueChange={setFilter}
+          placeholder={`Filter ${items.length.toLocaleString()} plugs…`}
+          aria-label={`Filter PlugSet ${detail.hash} plugs`}
+          clearLabel="Clear PlugSet filter"
+          autoComplete="off"
+          spellCheck={false}
+        />
+      ) : null}
+      {visible.length === 0 ? (
+        <p className={styles.poolEmpty}>
+          {items.length === 0
+            ? 'This PlugSet contains no reusable plug items.'
+            : `No plugs match “${filter.trim()}”.`}
+        </p>
+      ) : (
+        <div className={styles.entityList}>
+          {visible.map((item) => (
+            <RefButton
+              key={item.hash}
+              ref={itemRef(item.hash, item.name, item.icon)}
+              className={styles.entityRow}
+              title={`Open ${item.name}`}
+              onNavigate={onNavigate}
+            >
+              <BungieIcon icon={item.icon} size={28} />
+              <span className={styles.entityText}>
+                <span className={styles.entityName}>
+                  {item.name}
+                  {item.currentlyCanRoll === false ? (
+                    <span className={styles.plugSetRetired}>Retired</span>
+                  ) : null}
+                </span>
+                <span className={styles.entitySub} style={tierStyle(item.tierType)}>
+                  {item.subtitle || 'Inventory Item'}
+                </span>
+              </span>
+              <span className={styles.entityHash}>{item.hash}</span>
+            </RefButton>
+          ))}
+        </div>
+      )}
+    </section>
+  );
 }
 
 function categoryStartsExpanded(category: OverviewSocketCategory): boolean {
@@ -273,67 +402,89 @@ function PlugPool({ plugs, onNavigate }: PlugPoolProps): ReactNode {
 
 interface SocketSlotProps {
   socket: OverviewSocket;
+  open: boolean;
+  plugSetHashes: number[];
+  onToggle: () => void;
   onNavigate: NavigateRef;
 }
 
-function SocketSlot({ socket, onNavigate }: SocketSlotProps): ReactNode {
-  const [open, setOpen] = useState(socket.plugs.length <= LARGE_SOCKET_PLUG_COUNT);
+function PlugSetLinks({
+  hashes,
+  onNavigate,
+}: {
+  hashes: number[];
+  onNavigate: NavigateRef;
+}): ReactNode {
+  if (hashes.length === 0) return null;
+  return (
+    <span className={styles.plugSetLinks}>
+      {hashes.map((hash) => (
+        <RefButton
+          key={hash}
+          ref={{ table: 'DestinyPlugSetDefinition', hash }}
+          className={styles.inlineLink}
+          title={`Open PlugSet ${hash}`}
+          stopPropagation
+          onNavigate={onNavigate}
+        >
+          PlugSet {hash}
+        </RefButton>
+      ))}
+    </span>
+  );
+}
 
+function SocketSlot({
+  socket,
+  open,
+  plugSetHashes,
+  onToggle,
+  onNavigate,
+}: SocketSlotProps): ReactNode {
   const plugs = socket.plugs;
   const primaryPlug =
     socket.singleInitialPlug ?? plugs.find((plug) => plug.isDefault) ?? plugs[0];
-  const plugSetRef: DefinitionRef | null =
-    socket.plugSetHash === undefined
-      ? null
-      : { table: 'DestinyPlugSetDefinition', hash: socket.plugSetHash };
-  const plugSetLabel =
-    socket.plugSetHash === undefined ? null : `PlugSet ${socket.plugSetHash}`;
 
   if (plugs.length <= 1) {
     return (
       <div className={styles.socketSlot}>
         {primaryPlug ? (
-          <RefButton
-            ref={itemRef(primaryPlug.hash, primaryPlug.name, primaryPlug.icon)}
-            className={styles.entityRow}
-            title={primaryPlug.description || primaryPlug.name}
-            onNavigate={onNavigate}
-          >
-            <BungieIcon
-              icon={primaryPlug.icon}
-              isEnhanced={primaryPlug.isEnhanced}
-              size={DEFAULT_ICON_SIZE}
-            />
-            <span className={styles.entityText}>
-              <span className={styles.entityName}>
-                {primaryPlug.name || `Item ${primaryPlug.hash}`}
-                {primaryPlug.isDefault ? (
-                  <span className={styles.tagMuted}> (default)</span>
-                ) : null}
-                {primaryPlug.currentlyCanRoll === false ? (
-                  <span className={styles.tagMuted}> (retired)</span>
+          <div className={styles.socketPlugRow}>
+            <RefButton
+              ref={itemRef(primaryPlug.hash, primaryPlug.name, primaryPlug.icon)}
+              className={styles.entityRow}
+              title={primaryPlug.description || primaryPlug.name}
+              onNavigate={onNavigate}
+            >
+              <BungieIcon
+                icon={primaryPlug.icon}
+                isEnhanced={primaryPlug.isEnhanced}
+                size={DEFAULT_ICON_SIZE}
+              />
+              <span className={styles.entityText}>
+                <span className={styles.entityName}>
+                  {primaryPlug.name || `Item ${primaryPlug.hash}`}
+                  {primaryPlug.isDefault ? (
+                    <span className={styles.tagMuted}> (default)</span>
+                  ) : null}
+                  {primaryPlug.currentlyCanRoll === false ? (
+                    <span className={styles.tagMuted}> (retired)</span>
+                  ) : null}
+                </span>
+                {primaryPlug.itemTypeDisplayName ? (
+                  <span className={styles.entitySub} style={tierStyle(primaryPlug.tierType)}>
+                    {primaryPlug.itemTypeDisplayName}
+                  </span>
                 ) : null}
               </span>
-              {primaryPlug.itemTypeDisplayName ? (
-                <span className={styles.entitySub} style={tierStyle(primaryPlug.tierType)}>
-                  {primaryPlug.itemTypeDisplayName}
-                </span>
-              ) : null}
-            </span>
-            <span className={styles.entityHash}>{primaryPlug.hash}</span>
-          </RefButton>
+              <span className={styles.entityHash}>{primaryPlug.hash}</span>
+            </RefButton>
+            <PlugSetLinks hashes={plugSetHashes} onNavigate={onNavigate} />
+          </div>
         ) : (
           <div className={styles.socketEmptyRow}>
             <span>{socket.socketTypeName || `Socket ${socket.socketIndex}`}</span>
-            {plugSetRef && plugSetLabel ? (
-              <RefButton
-                ref={plugSetRef}
-                className={styles.inlineLink}
-                onNavigate={onNavigate}
-              >
-                {plugSetLabel}
-              </RefButton>
-            ) : null}
+            <PlugSetLinks hashes={plugSetHashes} onNavigate={onNavigate} />
           </div>
         )}
       </div>
@@ -350,7 +501,7 @@ function SocketSlot({ socket, onNavigate }: SocketSlotProps): ReactNode {
           type="button"
           className={styles.slotToggle}
           aria-expanded={open}
-          onClick={() => setOpen((current) => !current)}
+          onClick={onToggle}
         >
           {open ? <ChevronDownIcon size={12} /> : <ChevronRightIcon size={12} />}
           <BungieIcon
@@ -366,16 +517,7 @@ function SocketSlot({ socket, onNavigate }: SocketSlotProps): ReactNode {
             ) : null}
           </span>
         </button>
-        {plugSetRef && plugSetLabel ? (
-          <RefButton
-            ref={plugSetRef}
-            className={styles.inlineLink}
-            title={`Open PlugSet ${socket.plugSetHash}`}
-            onNavigate={onNavigate}
-          >
-            {plugSetLabel}
-          </RefButton>
-        ) : null}
+        <PlugSetLinks hashes={plugSetHashes} onNavigate={onNavigate} />
       </div>
 
       {open ? <PlugPool plugs={plugs} onNavigate={onNavigate} /> : null}
@@ -383,26 +525,57 @@ function SocketSlot({ socket, onNavigate }: SocketSlotProps): ReactNode {
   );
 }
 
+function socketPlugSetHashesForSocket(
+  socket: OverviewSocket,
+  socketEntries: unknown[],
+): number[] {
+  const rawSocket = socketEntries[socket.socketIndex];
+  const rawSocketRecord =
+    typeof rawSocket === 'object' && rawSocket !== null
+      ? (rawSocket as Record<string, unknown>)
+      : {};
+  const rawHash = (value: unknown): number | undefined =>
+    typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+      ? value
+      : undefined;
+  const hashes = [
+    rawHash(rawSocketRecord.reusablePlugSetHash) ?? socket.plugSetHash,
+    rawHash(rawSocketRecord.randomizedPlugSetHash),
+  ];
+  return hashes.filter(
+    (hash, index): hash is number =>
+      hash !== undefined && hashes.indexOf(hash) === index,
+  );
+}
+
 interface SocketsSectionProps {
   categories: OverviewSocketCategory[];
+  socketEntries: unknown[];
   onNavigate: NavigateRef;
 }
 
 const SocketsSection = memo(function SocketsSection({
   categories,
+  socketEntries,
   onNavigate,
 }: SocketsSectionProps): ReactNode {
   const [overrides, setOverrides] = useState<Record<number, boolean>>({});
+  const [socketOverrides, setSocketOverrides] = useState<Record<string, boolean>>({});
 
   const isExpanded = (category: OverviewSocketCategory): boolean =>
     overrides[category.categoryHash] ?? categoryStartsExpanded(category);
 
   const setAll = (expanded: boolean): void => {
     const next: Record<number, boolean> = {};
+    const nextSockets: Record<string, boolean> = {};
     for (const category of categories) {
       next[category.categoryHash] = expanded;
+      for (const socket of category.sockets) {
+        nextSockets[`${category.categoryHash}:${socket.socketIndex}`] = expanded;
+      }
     }
     setOverrides(next);
+    setSocketOverrides(nextSockets);
   };
 
   return (
@@ -461,13 +634,30 @@ const SocketsSection = memo(function SocketsSection({
 
               {expanded ? (
                 <div className={styles.socketList}>
-                  {category.sockets.map((socket) => (
-                    <SocketSlot
-                      key={`${socket.socketIndex}:${socket.plugs.length}`}
-                      socket={socket}
-                      onNavigate={onNavigate}
-                    />
-                  ))}
+                  {category.sockets.map((socket) => {
+                    const socketKey = `${category.categoryHash}:${socket.socketIndex}`;
+                    const socketOpen =
+                      socketOverrides[socketKey] ??
+                      socket.plugs.length <= LARGE_SOCKET_PLUG_COUNT;
+                    return (
+                      <SocketSlot
+                        key={`${socket.socketIndex}:${socket.plugs.length}`}
+                        socket={socket}
+                        open={socketOpen}
+                        plugSetHashes={socketPlugSetHashesForSocket(
+                          socket,
+                          socketEntries,
+                        )}
+                        onToggle={() =>
+                          setSocketOverrides((current) => ({
+                            ...current,
+                            [socketKey]: !socketOpen,
+                          }))
+                        }
+                        onNavigate={onNavigate}
+                      />
+                    );
+                  })}
                 </div>
               ) : null}
             </section>
@@ -728,6 +918,13 @@ export const OverviewTab = memo(function OverviewTab({
   }, [detail]);
 
   const hasContent = hasOverviewContent || Boolean(clarityEntry);
+  const isPlugSetDefinition = detail.table === 'DestinyPlugSetDefinition';
+  const socketEntries = useMemo(() => {
+    const sockets = detail.data.sockets;
+    if (typeof sockets !== 'object' || sockets === null) return [];
+    const rawEntries = (sockets as Record<string, unknown>).socketEntries;
+    return Array.isArray(rawEntries) ? rawEntries : [];
+  }, [detail.data.sockets]);
 
   return (
     <div className={styles.scrollBody} data-inspector-scroll="true">
@@ -745,6 +942,10 @@ export const OverviewTab = memo(function OverviewTab({
           )}
         </div>
       )}
+
+      {isPlugSetDefinition ? (
+        <PlugSetOverview detail={detail} onNavigate={handleNavigateRef} />
+      ) : null}
 
       {overview?.screenshot && (
         <button
@@ -959,6 +1160,7 @@ export const OverviewTab = memo(function OverviewTab({
         <SocketsSection
           key={`sockets:${detail.table}:${detail.hash}`}
           categories={socketCategories}
+          socketEntries={socketEntries}
           onNavigate={handleNavigateRef}
         />
       )}
@@ -1027,9 +1229,9 @@ export const OverviewTab = memo(function OverviewTab({
         />
       )}
 
-      {!hasContent && !detail.isLite && (
+      {!hasContent && !detail.isLite && !isPlugSetDefinition && (
         <div className={styles.emptyState}>
-          No structured overview fields for this definition type. Inspect the Pretty JSON
+          No structured overview fields for this definition type. Inspect the Formatted JSON
           tab for raw fields.
         </div>
       )}

@@ -113,32 +113,40 @@ export const VariantsTab = memo(function VariantsTab({
                     {item.subtitle}
                   </span>
                 </span>
+              </button>
+              <div className={styles.variantMeta}>
                 <span className={styles.entityHash}>{item.hash}</span>
-              </button>
-              <button
-                type="button"
-                className={styles.openInNewTabBtn}
-                aria-label={`Open ${item.name || `definition ${item.hash}`} in new tab`}
-                title={`Open ${item.name || `definition ${item.hash}`} in new tab`}
-                onClick={() => onNavigateRef(itemNavRef, true)}
-                onMouseDown={preventMiddleClickAutoScroll}
-                onAuxClick={(event) =>
-                  activateOnMiddleClick(event, () => onNavigateRef(itemNavRef, true))
-                }
-              >
-                <ExternalLinkIcon size={14} />
-              </button>
-              {!isCurrent && (
-                <button
-                  type="button"
-                  className={styles.smallBtn}
-                  onClick={() => onDiffVariant({ table: item.table, hash: item.hash })}
-                  title="Compare fields against current definition"
-                >
-                  <DiffIcon size={13} />
-                  Diff
-                </button>
-              )}
+                <div className={styles.variantActions}>
+                  <button
+                    type="button"
+                    className={styles.openInNewTabBtn}
+                    aria-label={`Open ${item.name || `definition ${item.hash}`} in new tab`}
+                    title={`Open ${item.name || `definition ${item.hash}`} in new tab`}
+                    onClick={() => onNavigateRef(itemNavRef, true)}
+                    onMouseDown={preventMiddleClickAutoScroll}
+                    onAuxClick={(event) =>
+                      activateOnMiddleClick(event, () => onNavigateRef(itemNavRef, true))
+                    }
+                  >
+                    <ExternalLinkIcon size={14} />
+                  </button>
+                  {isCurrent ? (
+                    <span className={styles.variantActionPlaceholder} aria-hidden="true" />
+                  ) : (
+                    <button
+                      type="button"
+                      className={styles.smallBtn}
+                      onClick={() =>
+                        onDiffVariant({ table: item.table, hash: item.hash })
+                      }
+                      title="Compare fields against current definition"
+                    >
+                      <DiffIcon size={13} />
+                      Diff
+                    </button>
+                  )}
+                </div>
+              </div>
             </div>
           );
         })}

@@ -18,22 +18,31 @@ import { JsonTree } from './JsonTree';
 import { Skeleton } from '../../ui/Skeleton';
 import { ClearSearchInput } from '../../ui/ClearSearchInput';
 import { Select } from '../../ui/Select';
+import {
+  manifestReleaseSearchTerms,
+  resolveManifestReleaseName,
+} from '../../data/manifestReleases';
+import {
+  manifestPatchNoteSearchTerms,
+  resolveManifestPatchNote,
+} from '../../data/manifestPatchNotes';
+import { ExternalLinkIcon } from '../../ui/Icons';
 import styles from './InspectorTabs.module.scss';
 
 type HistoryView = 'updates' | 'compare';
-type RevisionMode = 'diff' | 'pretty';
-type CompareMode = 'diff' | 'pretty';
+type RevisionMode = 'diff' | 'formatted';
+type CompareMode = 'diff' | 'formatted';
 type SnapshotPairLookup = (version: number) => RevisionSnapshotPair;
 const CURRENT_VERSION = 'current';
 
 const REVISION_MODES: ReadonlyArray<{ value: RevisionMode; label: string }> = [
   { value: 'diff', label: 'Diff' },
-  { value: 'pretty', label: 'Pretty' },
+  { value: 'formatted', label: 'Formatted' },
 ];
 
 const COMPARE_MODES: ReadonlyArray<{ value: CompareMode; label: string }> = [
   { value: 'diff', label: 'Diff' },
-  { value: 'pretty', label: 'Pretty' },
+  { value: 'formatted', label: 'Formatted' },
 ];
 
 const DATE_FORMATTER = new Intl.DateTimeFormat('en-US', {
@@ -106,7 +115,10 @@ function HistoryGap(): ReactNode {
 
 function versionOptionLabel(version: HistoryVersionMeta): string {
   const date = formatDate(version.date);
-  return `${date} · ${version.version ?? version.id}`;
+  const releaseName = resolveManifestReleaseName(version.date);
+  const patchNote = resolveManifestPatchNote(version.date);
+  if (!releaseName && !patchNote) return `${date} · ${version.version ?? version.id}`;
+  return [date, patchNote?.label, releaseName].filter(Boolean).join(' · ');
 }
 
 function ModeButtons<T extends string>({
@@ -139,9 +151,10 @@ function ModeButtons<T extends string>({
   );
 }
 
-function SnapshotPretty({
+function SnapshotFormatted({
   snapshot,
   diffBefore,
+  toolbarLeading,
   resolvedRefs,
   imageScaling,
   onNavigateRef,
@@ -149,6 +162,7 @@ function SnapshotPretty({
 }: {
   snapshot: unknown;
   diffBefore?: unknown;
+  toolbarLeading?: ReactNode;
   resolvedRefs: Record<string, ResolvedHashSummary>;
   imageScaling: ImageScalingMode;
   onNavigateRef: (ref: DefinitionRef, inNewTab?: boolean) => void;
@@ -169,7 +183,9 @@ function SnapshotPretty({
       imageScaling={imageScaling}
       onNavigateRef={onNavigateRef}
       onCopy={onCopy}
+      toolbarLeading={toolbarLeading}
       embedded
+      hideSearch
     />
   );
 }
@@ -204,54 +220,82 @@ const RevisionCard = memo(function RevisionCard({
     return getSnapshotPair(revision.v);
   }, [expanded, getSnapshotPair, revision.v]);
   const versionLabel = revision.version.version ?? revision.version.id;
+  const releaseName = resolveManifestReleaseName(revision.version.date);
+  const patchNote = resolveManifestPatchNote(revision.version.date);
+  const modeToggle = (
+    <ModeButtons
+      value={mode}
+      options={REVISION_MODES}
+      label="Revision display mode"
+      onChange={setMode}
+    />
+  );
 
   return (
     <article className={styles.historyCard}>
-      <button
-        type="button"
-        className={styles.historyCardToggle}
-        aria-expanded={expanded}
-        onClick={() => onToggle(revision.v)}
-      >
-        <span className={styles.historyCardTitle}>
-          <span className={styles.historyDate}>{formatDate(revision.version.date)}</span>
-          <span
-            className={styles.historyVersion}
-            title={`Manifest version ${versionLabel}`}
-          >
-            {versionLabel}
-          </span>
-        </span>
-        <span
-          className={`${styles.historyBadge} ${
-            revision.k === 'a'
-              ? styles.historyBadgeAdded
-              : revision.k === 'r'
-                ? styles.historyBadgeRemoved
-                : ''
-          }`}
+      <div className={styles.historyCardHeader}>
+        <button
+          type="button"
+          className={styles.historyCardToggle}
+          aria-expanded={expanded}
+          onClick={() => onToggle(revision.v)}
         >
-          {revisionLabel(revision)}
-        </span>
-        <span className={styles.historyChevron} aria-hidden="true">
-          {expanded ? '−' : '+'}
-        </span>
-      </button>
+          <span className={styles.historyCardTitle}>
+            <span className={styles.historyDate}>{formatDate(revision.version.date)}</span>
+            <span
+              className={styles.historyVersion}
+              title={`Manifest version ${versionLabel}`}
+            >
+              {versionLabel}
+            </span>
+            {(releaseName || patchNote) && (
+              <span className={styles.historyContextBadges}>
+                {releaseName && (
+                  <span className={styles.historyReleaseBadge}>{releaseName}</span>
+                )}
+                {patchNote && (
+                  <span className={styles.historyPatchBadge}>{patchNote.label}</span>
+                )}
+              </span>
+            )}
+          </span>
+          <span
+            className={`${styles.historyBadge} ${
+              revision.k === 'a'
+                ? styles.historyBadgeAdded
+                : revision.k === 'r'
+                  ? styles.historyBadgeRemoved
+                  : ''
+            }`}
+          >
+            {revisionLabel(revision)}
+          </span>
+          <span className={styles.historyChevron} aria-hidden="true">
+            {expanded ? '−' : '+'}
+          </span>
+        </button>
+        {patchNote && (
+          <a
+            className={styles.historyPatchNotesLink}
+            href={patchNote.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label={`Open ${patchNote.label} patch notes on Bungie.net`}
+          >
+            <span>Patch notes</span>
+            <ExternalLinkIcon size={12} />
+          </a>
+        )}
+      </div>
       {expanded && (
         <div className={styles.historyCardBody}>
-          <div className={styles.historyCardToolbar}>
-            <ModeButtons
-              value={mode}
-              options={REVISION_MODES}
-              label="Revision display mode"
-              onChange={setMode}
-            />
-            {revision.t !== undefined && revision.t > (revision.d?.length ?? 0) && (
+          {revision.t !== undefined && revision.t > (revision.d?.length ?? 0) && (
+            <div className={styles.historyCardToolbar}>
               <p className={styles.historyDiffNote}>
                 Showing first {revision.d?.length ?? 0} of {revision.t} recorded changes
               </p>
-            )}
-          </div>
+            </div>
+          )}
           {mode === 'diff' ? (
             <JsonDiffView
               before={before}
@@ -259,11 +303,13 @@ const RevisionCard = memo(function RevisionCard({
               filter={filter}
               onCopy={onCopy}
               defaultLayout="inline"
+              toolbarLeading={modeToggle}
             />
-          ) : mode === 'pretty' ? (
-            <SnapshotPretty
+          ) : mode === 'formatted' ? (
+            <SnapshotFormatted
               snapshot={after}
               diffBefore={before}
+              toolbarLeading={modeToggle}
               resolvedRefs={resolvedRefs}
               imageScaling={imageScaling}
               onNavigateRef={onNavigateRef}
@@ -327,7 +373,7 @@ export const HistoryTab = memo(function HistoryTab({
 
   // One cache per `(table, hash, currentData, revisions)` scope. Snapshots are
   // detached clones from the history module, so they are safe to share between
-  // the Diff/Pretty views. Reconstructing a revision pair populates both
+  // the Diff/Formatted views. Reconstructing a revision pair populates both
   // `v` and `v - 1` at once, which halves patch work per expanded card.
   const { getSnapshot, getSnapshotPair } = useMemo(() => {
     const prefix = `${table}:${hash}:`;
@@ -384,7 +430,15 @@ export const HistoryTab = memo(function HistoryTab({
       ...newestFirstVersions.map((version) => ({
         value: String(version.i),
         label: versionOptionLabel(version),
-        keywords: `${version.date} ${version.version ?? ''} ${version.id} ${version.i}`,
+        keywords: [
+          formatDate(version.date),
+          version.date,
+          version.version ?? '',
+          version.id,
+          version.i,
+          manifestReleaseSearchTerms(version.date),
+          manifestPatchNoteSearchTerms(version.date),
+        ].join(' '),
       })),
     ],
     [newestFirstVersions],
@@ -399,6 +453,14 @@ export const HistoryTab = memo(function HistoryTab({
       to: toVersion === CURRENT_VERSION ? currentData : getSnapshot(Number(toVersion)),
     };
   }, [currentData, fromVersion, getSnapshot, result, toVersion]);
+  const compareModeToggle = (
+    <ModeButtons
+      value={compareMode}
+      options={COMPARE_MODES}
+      label="Compare display mode"
+      onChange={setCompareMode}
+    />
+  );
 
   if (!result) {
     return (
@@ -538,25 +600,19 @@ export const HistoryTab = memo(function HistoryTab({
               />
             </label>
           </div>
-          <div className={styles.historyCompareToolbar}>
-            <ModeButtons
-              value={compareMode}
-              options={COMPARE_MODES}
-              label="Compare display mode"
-              onChange={setCompareMode}
-            />
-          </div>
           {compareMode === 'diff' ? (
             <JsonDiffView
               before={compareSnapshots.from}
               after={compareSnapshots.to}
               filter={filter}
               onCopy={onCopy}
+              toolbarLeading={compareModeToggle}
             />
           ) : (
-            <SnapshotPretty
+            <SnapshotFormatted
               snapshot={compareSnapshots.to}
               diffBefore={compareSnapshots.from}
+              toolbarLeading={compareModeToggle}
               resolvedRefs={resolvedRefs}
               imageScaling={imageScaling}
               onNavigateRef={onNavigateRef}

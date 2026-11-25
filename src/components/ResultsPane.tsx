@@ -65,10 +65,11 @@ const GRID_ROW_REM = 5;
 const GRID_ROW_REM_COARSE = 5.5;
 const GRID_ROW_DEEP_REM = 6;
 const GRID_ROW_DEEP_REM_COARSE = 6.5;
-const GRID_MIN_CELL_PX = 210;
+const GRID_MIN_CELL_PX = 280;
 const GRID_SIDE_PAD_REM = 0.5;
 const GRID_GUTTER_REM = 0.5;
 const GRID_TOP_PAD_REM = 0.5;
+const GRID_GROUP_GAP_PX = 8;
 const GROUP_HEADER_REM = 2;
 const GROUP_HEADER_COARSE_REM = 2.25;
 const MAX_VIRTUAL_HEIGHT = 10_000_000;
@@ -364,6 +365,7 @@ interface ResultRowProps {
   collectMode: boolean;
   showTableColumn: boolean;
   showInlineTable: boolean;
+  showGridTable?: boolean;
   dateDisplay: ResultDateDisplay | null;
   positionStyle?: CSSProperties;
   onActivate: (item: SearchResultItem, index: number) => void;
@@ -398,7 +400,6 @@ const ListRow = memo(function ListRow({
     parentArtifactName !== undefined &&
     (artifactPerksCategory || (isArtifactPerk && (showTableColumn || showInlineTable)));
   const tableBadgeLabel = isArtifactPerk ? 'Artifact Perk' : getShortTableName(item.table);
-
   return (
     <div
       id={`results-option-${index}`}
@@ -544,7 +545,7 @@ const GridCell = memo(function GridCell({
   cursor,
   collected,
   collectMode,
-  showInlineTable,
+  showGridTable = false,
   dateDisplay,
   artifactPerksCategory,
   onActivate,
@@ -555,7 +556,6 @@ const GridCell = memo(function GridCell({
   const parentArtifactTitle = parentArtifactName
     ? `Legendary Artifact Perk · ${parentArtifactName}`
     : undefined;
-  const tableBadgeLabel = isArtifactPerk ? 'Artifact Perk' : getShortTableName(item.table);
 
   return (
     <div
@@ -617,38 +617,35 @@ const GridCell = memo(function GridCell({
               {itemSubtitle(item)}
             </span>
           )}
-          {showInlineTable ? (
+        </span>
+        <span className={styles.gridMeta}>
+          {item.deepMatch ? (
             <span
-              className={styles.rowTableInline}
-              title={
-                isArtifactPerk ? 'Legendary Artifact Perk' : getFriendlyTableName(item.table)
-              }
+              className={styles.gridDeepMatch}
+              title={`${item.deepMatch.path}: ${item.deepMatch.preview}`}
             >
-              {tableBadgeLabel}
+              {item.deepMatch.path}
+            </span>
+          ) : (
+            <span className={styles.gridHash}>
+              {dateDisplay ? (
+                <time dateTime={dateDisplay.dateTime} title={dateDisplay.title}>
+                  {dateDisplay.label}
+                </time>
+              ) : (
+                item.hash
+              )}
+            </span>
+          )}
+          {showGridTable ? (
+            <span
+              className={styles.gridTableName}
+              title={getFriendlyTableName(item.table)}
+            >
+              {getFriendlyTableName(item.table)}
             </span>
           ) : null}
         </span>
-        {item.deepMatch ? (
-          <span
-            className={styles.gridDeepMatch}
-            title={`${item.deepMatch.path}: ${item.deepMatch.preview}`}
-          >
-            {item.deepMatch.path}
-          </span>
-        ) : (
-          <span className={styles.gridHash}>
-            {dateDisplay ? (
-              <time
-                dateTime={dateDisplay.dateTime}
-                title={dateDisplay.title}
-              >
-                {dateDisplay.label}
-              </time>
-            ) : (
-              item.hash
-            )}
-          </span>
-        )}
       </span>
       {collectMode && collected ? <CollectedBadge /> : null}
     </div>
@@ -868,14 +865,11 @@ export const ResultsPane = memo(function ResultsPane({
   const gridGutter = remPx * GRID_GUTTER_REM;
   const columns =
     viewMode === 'grid'
-      ? Math.min(
-          2,
-          Math.max(
-            1,
-            Math.floor(
-              (viewportWidth - 2 * gridSidePad + gridGutter) /
-                (GRID_MIN_CELL_PX + gridGutter),
-            ),
+      ? Math.max(
+          1,
+          Math.floor(
+            (viewportWidth - 2 * gridSidePad + gridGutter) /
+              (GRID_MIN_CELL_PX + gridGutter),
           ),
         )
       : 1;
@@ -930,6 +924,11 @@ export const ResultsPane = memo(function ResultsPane({
     viewportWidth > 0 &&
     viewportWidth <= NARROW_TABLE_BADGE_PX &&
     (filters.table === 'all' || filters.table === ARTIFACT_PERKS_TABLE);
+  const showGridTable =
+    viewMode === 'grid' &&
+    !groupingActive &&
+    filters.table === 'all' &&
+    !hasPositiveTableScopeInQuery(query);
 
   useEffect(() => {
     if (groupBy !== 'table' && Object.keys(collapsedResultGroups).length > 0) {
@@ -1048,16 +1047,18 @@ export const ResultsPane = memo(function ResultsPane({
   const groupHeaderHeight = remPx * (isCoarse ? GROUP_HEADER_COARSE_REM : GROUP_HEADER_REM);
   const groupSections = useMemo<ResultSection[]>(() => {
     let startIndex = 0;
-    let top = gridTopPad;
+    let top = 0;
     return resultGroups.map((group) => {
       const loaded = Math.min(
         Math.max(0, Math.floor(group.loaded)),
         Math.max(0, results.length - startIndex),
       );
       const itemRows = viewMode === 'grid' ? Math.ceil(loaded / columns) : loaded;
-      const itemTop = top + groupHeaderHeight;
       const visibleCount = collapsedResultGroups[group.key] ? 0 : itemRows;
-      const height = groupHeaderHeight + visibleCount * rowHeight;
+      const itemGap =
+        viewMode === 'grid' && visibleCount > 0 ? GRID_GROUP_GAP_PX : 0;
+      const itemTop = top + groupHeaderHeight + itemGap;
+      const height = groupHeaderHeight + itemGap + visibleCount * rowHeight;
       const end = top + height;
       const section: ResultSection = {
         group,
@@ -1077,7 +1078,6 @@ export const ResultsPane = memo(function ResultsPane({
   }, [
     columns,
     collapsedResultGroups,
-    gridTopPad,
     groupHeaderHeight,
     resultGroups,
     results.length,
@@ -1086,8 +1086,8 @@ export const ResultsPane = memo(function ResultsPane({
   ]);
   const groupedRowsHeight =
     groupSections.length > 0
-      ? (groupSections[groupSections.length - 1]?.end ?? gridTopPad)
-      : gridTopPad;
+      ? (groupSections[groupSections.length - 1]?.end ?? 0)
+      : 0;
   const rawRowsHeight = groupingActive
     ? groupedRowsHeight
     : totalRows * rowHeight + gridTopPad;
@@ -1220,7 +1220,8 @@ export const ResultsPane = memo(function ResultsPane({
       ? groupSections[sectionIndexAt(groupSections, logicalScrollTop)]
       : undefined;
   const stickyGroupSection =
-    activeGroupSection && activeGroupSection.itemTop <= logicalScrollTop
+    activeGroupSection &&
+    activeGroupSection.top + groupHeaderHeight <= logicalScrollTop
       ? activeGroupSection
       : undefined;
 
@@ -1536,6 +1537,7 @@ export const ResultsPane = memo(function ResultsPane({
                 collectMode={collectMode}
                 showTableColumn={false}
                 showInlineTable={false}
+                showGridTable={false}
                 dateDisplay={resultDateDisplay(item, sortMode, versionDates)}
                 artifactPerksCategory={artifactPerksCategory}
                 onActivate={handleActivate}
@@ -1549,10 +1551,7 @@ export const ResultsPane = memo(function ResultsPane({
           nextRows.push(
             <div
               key={`grid-group-row-${section.group.key}-${rowIndex}`}
-              className={joinClasses(
-                styles.gridRow,
-                rowIndex === section.visibleCount - 1 ? styles.gridRowEnd : '',
-              )}
+              className={styles.gridRow}
               data-group-row={section.group.key}
               style={{
                 position: 'absolute',
@@ -1622,6 +1621,7 @@ export const ResultsPane = memo(function ResultsPane({
             collectMode={collectMode}
             showTableColumn={false}
             showInlineTable={showInlineTable}
+            showGridTable={showGridTable}
             dateDisplay={resultDateDisplay(item, sortMode, versionDates)}
             artifactPerksCategory={artifactPerksCategory}
             onActivate={handleActivate}
@@ -1674,6 +1674,7 @@ export const ResultsPane = memo(function ResultsPane({
     rowHeight,
     sortMode,
     showInlineTable,
+    showGridTable,
     showTableColumn,
     toggleResultGroup,
     totalRows,

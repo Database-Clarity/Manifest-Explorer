@@ -19,7 +19,7 @@ export interface SearchSuggestion {
   label: string;
   /** Matching items, when the manifest gives us a live count. */
   count?: number;
-  /** Element-dot colour for damage values. */
+  /** Element-dot colour for element values. */
   dot?: string;
   /** True when accepting should append a space (completed `key:value` tokens). */
   completesValue: boolean;
@@ -126,7 +126,7 @@ const TIER_OPTIONS: readonly ValueOption[] = [
   { value: 'common', label: 'Common' },
 ];
 
-const DAMAGE_OPTIONS: readonly ValueOption[] = [
+const ELEMENT_OPTIONS: readonly ValueOption[] = [
   { value: 'kinetic', label: 'Kinetic', dot: 'var(--el-kinetic)' },
   { value: 'arc', label: 'Arc', dot: 'var(--el-arc)' },
   { value: 'solar', label: 'Solar', dot: 'var(--el-solar)' },
@@ -202,7 +202,7 @@ const STATIC_VALUE_OPTIONS: Readonly<Record<StaticValueGroup, readonly ValueOpti
   is: IS_OPTIONS,
   has: HAS_OPTIONS,
   tier: TIER_OPTIONS,
-  damage: DAMAGE_OPTIONS,
+  damage: ELEMENT_OPTIONS,
   ammo: AMMO_OPTIONS,
   slot: SLOT_OPTIONS,
   class: CLASS_OPTIONS,
@@ -241,10 +241,10 @@ const OPERATOR_SPECS: readonly OperatorSpec[] = [
   { key: 'has', description: 'Has · lore, watermark, flavor…' },
   { key: 'tier', description: 'Rarity · exotic, legendary, rare…' },
   { key: 'rarity', description: 'Rarity · alias of tier' },
-  { key: 'damage', description: 'Element · kinetic, arc, solar…' },
-  { key: 'element', description: 'Element · alias of damage' },
-  { key: 'dmg', description: 'Element · alias of damage' },
-  { key: 'el', description: 'Element · alias of damage' },
+  { key: 'element', description: 'Element · kinetic, arc, solar…' },
+  { key: 'damage', description: 'Alias of element' },
+  { key: 'dmg', description: 'Alias of element' },
+  { key: 'el', description: 'Alias of element' },
   { key: 'ammo', description: 'Ammo · primary, special, heavy' },
   { key: 'slot', description: 'Equip slot · kinetic, energy, power…' },
   { key: 'class', description: 'Class · titan, hunter, warlock' },
@@ -309,8 +309,8 @@ interface ScoredCandidate {
 
 /**
  * Splits a query into token spans while keeping quoted segments together and
- * treating parentheses as group delimiters. `(damage:so` therefore completes
- * only `damage:so`, leaving both parentheses untouched. Quotes that are still
+ * treating parentheses as group delimiters. `(element:so` therefore completes
+ * only `element:so`, leaving both parentheses untouched. Quotes that are still
  * open swallow the rest of the query, which is exactly how the parser reads a
  * partial phrase.
  */
@@ -557,12 +557,16 @@ function operatorSuggestions(typedKey: string, negated: boolean): SearchSuggesti
   const candidates: RankedCandidate[] = [];
 
   for (const operator of OPERATOR_SPECS) {
+    const suggestionKey =
+      operator.key === 'damage' || operator.key === 'dmg' || operator.key === 'el'
+        ? 'element'
+        : operator.key;
     candidates.push({
       match: [operator.key],
       suggestion: {
         id: `operator:${operator.key}`,
-        insert: `${prefix}${operator.key}:`,
-        token: `${prefix}${operator.key}:`,
+        insert: `${prefix}${suggestionKey}:`,
+        token: `${prefix}${suggestionKey}:`,
         label: operator.description,
         completesValue: false,
       },
@@ -718,7 +722,7 @@ export function buildSearchSuggestions(
         : EMPTY_NORMALIZED_CATALOG;
     return valueSuggestions(
       group,
-      token.key,
+      group === 'damage' ? 'element' : token.key,
       token.negated,
       typed,
       normalizedCatalog,

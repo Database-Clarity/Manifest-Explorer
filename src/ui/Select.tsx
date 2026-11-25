@@ -21,6 +21,11 @@ export interface SelectOption<T extends string = string> {
   /** Optional secondary text or search keywords (for example, a version id). */
   keywords?: string;
   disabled?: boolean;
+  /** Custom popup content; the closed trigger continues to use `label`. */
+  renderOption?: (
+    option: SelectOption<T>,
+    state: { active: boolean; current: boolean },
+  ) => ReactNode;
 }
 
 export interface SelectGroup<T extends string = string> {
@@ -49,6 +54,8 @@ export interface SelectProps<T extends string = string> {
   align?: 'start' | 'end';
   /** Minimum popup width in CSS pixels or a CSS length such as `15rem`. */
   minPopupWidth?: number | string;
+  /** Maximum popup width in CSS pixels. */
+  maxPopupWidth?: number;
   /** Defaults to enabled for lists with 321 or more options. */
   searchable?: boolean;
   searchPlaceholder?: string;
@@ -119,6 +126,7 @@ export function Select<T extends string = string>({
   disabled = false,
   align = 'start',
   minPopupWidth,
+  maxPopupWidth,
   searchable,
   searchPlaceholder = 'Search options',
   emptySearchText = 'No matching options',
@@ -222,7 +230,10 @@ export function Select<T extends string = string>({
     const triggerRect = trigger.getBoundingClientRect();
     const area = visibleArea(window);
     const requestedWidth = minimumWidthInPixels(minPopupWidth);
-    const naturalWidth = Math.max(triggerRect.width, requestedWidth);
+    const naturalWidth = Math.min(
+      Math.max(triggerRect.width, requestedWidth),
+      maxPopupWidth === undefined ? Number.POSITIVE_INFINITY : Math.max(0, maxPopupWidth),
+    );
     const searchHeight =
       popup.querySelector<HTMLElement>('[data-select-search-wrap]')?.offsetHeight ?? 0;
     const listHeight = listRef.current?.scrollHeight ?? 0;
@@ -237,7 +248,7 @@ export function Select<T extends string = string>({
     });
     applyPlacement(popup, placement);
     popup.style.visibility = 'visible';
-  }, [align, minPopupWidth]);
+  }, [align, maxPopupWidth, minPopupWidth]);
 
   useLayoutEffect(() => {
     if (!open) return;
@@ -446,17 +457,20 @@ export function Select<T extends string = string>({
   const renderOption = (option: SelectOption<T>): ReactNode => {
     const index = rowIndex;
     rowIndex += 1;
+    const current = option.value === value;
+    const active = index === highlight.index;
     return (
       <li
         key={option.value}
         id={`${baseId}-option-${index}`}
         role="option"
-        aria-selected={option.value === value}
+        aria-selected={current}
         aria-disabled={option.disabled || undefined}
         data-value={option.value}
-        data-active={index === highlight.index || undefined}
-        data-current={option.value === value || undefined}
-        className={styles.option}
+        data-active={active || undefined}
+        data-current={current || undefined}
+        data-custom-option={option.renderOption ? '' : undefined}
+        className={option.renderOption ? `${styles.option} ${styles.customOption}` : styles.option}
         onMouseDown={(event) => event.preventDefault()}
         onMouseMove={() => {
           if (!option.disabled && index !== highlight.index) {
@@ -465,7 +479,13 @@ export function Select<T extends string = string>({
         }}
         onClick={() => choose(index)}
       >
-        <span className={styles.label}>{option.label}</span>
+        {option.renderOption ? (
+          <span className={styles.customContent}>
+            {option.renderOption(option, { active, current })}
+          </span>
+        ) : (
+          <span className={styles.label}>{option.label}</span>
+        )}
       </li>
     );
   };

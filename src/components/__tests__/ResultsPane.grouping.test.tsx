@@ -310,7 +310,7 @@ describe('ResultsPane table grouping', () => {
     document.body.append(host);
     const root = createPaneRoot(host);
     renderPane(root);
-    setViewport(getScroller(host), 500, 500);
+    setViewport(getScroller(host), 600, 500);
 
     const inventoryRows = host.querySelectorAll(
       '[data-group-row="DestinyInventoryItemDefinition"]',
@@ -322,14 +322,36 @@ describe('ResultsPane table grouping', () => {
     expect(inventoryRows[1]?.querySelectorAll('[role="option"]')).toHaveLength(1);
     expect(activityRows[0]?.querySelectorAll('[role="option"]')).toHaveLength(2);
     expect(activityRows[1]?.querySelectorAll('[role="option"]')).toHaveLength(1);
+    const inventoryHeader = host.querySelector<HTMLElement>(
+      '[data-group-header=""][data-group-key="DestinyInventoryItemDefinition"]',
+    );
+    const firstInventoryRow = inventoryRows[0] as HTMLElement | undefined;
+    if (!inventoryHeader || !firstInventoryRow) {
+      throw new Error('Grid group header or row did not render');
+    }
+    expect(Number.parseFloat(inventoryHeader.style.top)).toBe(0);
+    expect(
+      Number.parseFloat(firstInventoryRow.style.top) -
+        Number.parseFloat(inventoryHeader.style.top) -
+        Number.parseFloat(inventoryHeader.style.height),
+    ).toBe(8);
+    expect((inventoryRows[1] as HTMLElement | undefined)?.className).not.toContain('gridRowEnd');
+    dispatchScroll(
+      getScroller(host),
+      Number.parseFloat(inventoryHeader.style.top) +
+        Number.parseFloat(inventoryHeader.style.height) +
+        1,
+    );
+    expect(
+      host
+        .querySelector('[data-sticky-group-indicator]')
+        ?.getAttribute('aria-hidden'),
+    ).toBe('false');
 
     const activityHeader = host.querySelector<HTMLElement>(
       '[data-group-key="DestinyActivityDefinition"]',
     );
-    const inventoryHeader = host.querySelector<HTMLButtonElement>(
-      '[data-group-header=""][data-group-key="DestinyInventoryItemDefinition"]',
-    );
-    if (!activityHeader || !inventoryHeader) throw new Error('Grid group headers did not render');
+    if (!activityHeader) throw new Error('Grid group headers did not render');
     const activityTopBefore = Number.parseFloat(activityHeader.style.top);
     act(() => inventoryHeader.click());
     expect(inventoryHeader.getAttribute('aria-expanded')).toBe('false');
@@ -345,6 +367,58 @@ describe('ResultsPane table grouping', () => {
     expect(Number.parseFloat(activityHeaderAfter?.style.top ?? '')).toBeLessThan(
       activityTopBefore,
     );
+    host.remove();
+  });
+
+  it('uses responsive grid columns and keeps table names in card metadata', () => {
+    useSettingsStore.setState({ viewMode: 'grid', groupBy: 'none' });
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createPaneRoot(host);
+    renderPane(root);
+    const scroller = getScroller(host);
+    const firstGridRow = (): HTMLElement | undefined =>
+      [...host.querySelectorAll<HTMLElement>('[role="presentation"]')].find(
+        (element) => element.style.gridTemplateColumns.length > 0,
+      );
+
+    setViewport(scroller, 390, 500);
+    expect(firstGridRow()?.style.gridTemplateColumns).toBe('repeat(1, minmax(0, 1fr))');
+    const firstCard = host.querySelector<HTMLElement>('[role="option"]');
+    expect(firstCard?.textContent).toContain('Weapon');
+    expect(firstCard?.querySelector('span[title="Inventory Item"]')?.textContent).toBe(
+      'Inventory Item',
+    );
+
+    setViewport(scroller, 1920, 500);
+    expect(firstGridRow()?.style.gridTemplateColumns).toBe('repeat(6, minmax(0, 1fr))');
+
+    act(() => {
+      useExplorerStore.setState({
+        filters: { ...createDefaultFilters(), table: 'DestinyInventoryItemDefinition' },
+      });
+    });
+    expect(host.querySelector('span[title="Inventory Item"]')).toBeNull();
+    host.remove();
+  });
+
+  it('includes the grouped grid gap when scrolling a selected result into view', () => {
+    useSettingsStore.setState({ groupBy: 'table', viewMode: 'grid' });
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createPaneRoot(host);
+    renderPane(root);
+    const scroller = getScroller(host);
+    setViewport(scroller, 600, 100);
+
+    const activityHeader = host.querySelector<HTMLElement>(
+      '[data-group-header=""][data-group-key="DestinyActivityDefinition"]',
+    );
+    if (!activityHeader) throw new Error('Activity group header did not render');
+    const headerTop = Number.parseFloat(activityHeader.style.top);
+
+    act(() => useExplorerStore.getState().setSelectedResultIndex(3));
+    expect(scroller.scrollTop).toBe(headerTop + 32 + 8 + 80 - 100);
     host.remove();
   });
 

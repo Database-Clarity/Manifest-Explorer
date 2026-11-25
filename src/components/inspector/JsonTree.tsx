@@ -42,6 +42,7 @@ import {
   activateOnMiddleClick,
   preventMiddleClickAutoScroll,
 } from '../middleClick';
+import { BungieIcon } from '../BungieIcon';
 import {
   selectFilteredChildren,
   type FilterChildCandidate,
@@ -59,7 +60,7 @@ const LazyImageLightbox = lazy(() =>
 
 export interface JsonTreeProps {
   data: Record<string, unknown>;
-  /** Previous snapshot. When supplied, Pretty opens in a change-focused diff view. */
+  /** Previous snapshot. When supplied, Formatted JSON opens in a change-focused diff view. */
   diffBefore?: unknown;
   resolvedRefs: Record<string, ResolvedHashSummary>;
   onNavigateRef: (ref: DefinitionRef, inNewTab?: boolean) => void;
@@ -73,6 +74,10 @@ export interface JsonTreeProps {
   imageScaling?: ImageScalingMode;
   /** Let the containing History page own vertical scrolling. */
   embedded?: boolean;
+  /** Hide the Filter/Find input and its mode toggle. */
+  hideSearch?: boolean;
+  /** Optional controls rendered at the leading edge of the tree toolbar. */
+  toolbarLeading?: ReactNode;
 }
 
 interface ColorSwatch {
@@ -469,6 +474,11 @@ interface JsonNodeDiff {
 interface JsonTreeDiff {
   data: Record<string, unknown>;
   nodes: ReadonlyMap<string, JsonNodeDiff>;
+  stats: {
+    added: number;
+    changed: number;
+    removed: number;
+  };
 }
 
 function isTreeContainer(value: unknown): value is Record<string, unknown> | unknown[] {
@@ -485,6 +495,7 @@ function createJsonTreeDiff(
   after: Record<string, unknown>,
 ): JsonTreeDiff {
   const nodes = new Map<string, JsonNodeDiff>();
+  const stats = { added: 0, changed: 0, removed: 0 };
 
   const markSubtree = (
     path: string,
@@ -493,13 +504,18 @@ function createJsonTreeDiff(
   ): void => {
     nodes.set(path, { kind, hasChanges: true });
     if (Array.isArray(value)) {
+      if (value.length === 0) stats[kind === 'added' ? 'added' : 'removed'] += 1;
       value.forEach((child, index) =>
         markSubtree(treeChildPath(path, String(index), true), child, kind),
       );
     } else if (typeof value === 'object' && value !== null) {
-      Object.entries(value as Record<string, unknown>).forEach(([key, child]) =>
+      const entries = Object.entries(value as Record<string, unknown>);
+      if (entries.length === 0) stats[kind === 'added' ? 'added' : 'removed'] += 1;
+      entries.forEach(([key, child]) =>
         markSubtree(treeChildPath(path, key, false), child, kind),
       );
+    } else {
+      stats[kind === 'added' ? 'added' : 'removed'] += 1;
     }
   };
 
@@ -595,6 +611,7 @@ function createJsonTreeDiff(
       return newValue;
     }
 
+    stats.changed += 1;
     nodes.set(path, { kind: 'changed', hasChanges: true, oldValue });
     if (isTreeContainer(newValue)) {
       markDescendants(path, newValue, 'added');
@@ -606,6 +623,7 @@ function createJsonTreeDiff(
   return {
     data: (merged ?? {}) as Record<string, unknown>,
     nodes,
+    stats,
   };
 }
 
@@ -742,9 +760,12 @@ interface NodeProps {
   expandGeneration: { mode: 'default' | 'expand' | 'collapse'; seq: number };
   filterCache: FilterCache;
   diffMode: boolean;
+  fullMode: boolean;
   diffNodes: ReadonlyMap<string, JsonNodeDiff> | null;
+  revealedContextPaths: ReadonlySet<string>;
   expansionStore: ExpansionStore;
   onTogglePath: (path: string, nextOpen: boolean) => void;
+  onToggleContextPath: (path: string) => void;
   selectedActionPath: string | null;
   onRowClick: (path: string, event: MouseEvent<HTMLDivElement>) => void;
   onDismissRowActions: () => void;
@@ -768,7 +789,42 @@ type JsonTreeRenderSegment =
       type: 'omitted';
       hiddenCount: number;
       jumpPath: string;
+    }
+  | {
+      type: 'context';
+      hiddenCount: number;
+      path: string;
+      isArray: boolean;
+      expanded: boolean;
     };
+
+function UnchangedContextControl({
+  hiddenCount,
+  isArray,
+  expanded,
+  onClick,
+}: {
+  hiddenCount: number;
+  isArray: boolean;
+  expanded: boolean;
+  onClick: () => void;
+}): ReactNode {
+  const unit = isArray ? 'item' : 'field';
+  return (
+    <div className={styles.unchangedContextControl}>
+      <button
+        type="button"
+        className={styles.unchangedContextButton}
+        aria-expanded={expanded}
+        onClick={onClick}
+      >
+        ⋯ {expanded ? 'Hide' : 'Show'} {hiddenCount.toLocaleString()} unchanged{' '}
+        {unit}
+        {hiddenCount === 1 ? '' : 's'}
+      </button>
+    </div>
+  );
+}
 
 function FilterContextLimit({
   hiddenCount,
@@ -857,6 +913,13 @@ function PreviousScalarValue({
             }
             title={`${resolvedRef.table}:${resolvedRef.hash}${resolvedRef.subtitle ? ` — ${resolvedRef.subtitle}` : ''}`}
           >
+            {resolvedRef.icon ? (
+              <BungieIcon
+                icon={resolvedRef.icon}
+                size={16}
+                className={styles.refIcon}
+              />
+            ) : null}
             <span className={styles.refTable}>{getShortTableName(resolvedRef.table)}</span>
             <span className={styles.refName}>
               &quot;{resolvedRef.name || 'Unnamed'}&quot;
@@ -891,9 +954,12 @@ const JsonNode = memo(function JsonNode({
   expandGeneration,
   filterCache,
   diffMode,
+  fullMode,
   diffNodes,
+  revealedContextPaths,
   expansionStore,
   onTogglePath,
+  onToggleContextPath,
   selectedActionPath,
   onRowClick,
   onDismissRowActions,
@@ -954,14 +1020,14 @@ const JsonNode = memo(function JsonNode({
   const isExpanded =
     manualOpen !== undefined
       ? manualOpen
-      : isAutoExpandedForSearch
+      : expandGeneration.mode === 'expand'
         ? true
-        : diffMode && diffHasChanges && !isContextSibling
-          ? true
-          : expandGeneration.mode === 'expand'
-            ? depth < 6
-            : expandGeneration.mode === 'collapse'
-              ? false
+        : expandGeneration.mode === 'collapse'
+          ? false
+          : isAutoExpandedForSearch
+            ? true
+            : diffMode && diffHasChanges && !isContextSibling
+              ? true
               : defaultExpanded;
 
   if (isObject) {
@@ -979,9 +1045,15 @@ const JsonNode = memo(function JsonNode({
       ];
     };
     const filterActive = searchMode === 'filter' && filterLower.length > 0;
-    const chunkChildren = isExpanded && count > CHILDREN_CHUNK_SIZE && !filterActive;
+    const chunkChildren =
+      isExpanded &&
+      count > CHILDREN_CHUNK_SIZE &&
+      !filterActive &&
+      expandGeneration.mode !== 'expand';
     let renderSegments: JsonTreeRenderSegment[] | null = null;
     let remainingChildren = 0;
+    let unchangedChildCount = 0;
+    const showContextSiblings = fullMode || revealedContextPaths.has(path);
     if (isExpanded) {
       renderSegments = [];
       if (filterActive && !preserveSubtree) {
@@ -1031,21 +1103,49 @@ const JsonNode = memo(function JsonNode({
         );
       } else if (diffMode) {
         let changedCount = 0;
+        let renderedChangedCount = 0;
         for (let index = 0; index < count; index += 1) {
           const entry = readChild(index);
           const childPath = treeChildPath(path, entry[0], isArray);
           if (diffNodes?.get(childPath)?.hasChanges) {
-            if (changedCount < childLimit) {
+            if (
+              changedCount < childLimit ||
+              expandGeneration.mode === 'expand'
+            ) {
               renderSegments.push({
                 type: 'child',
                 entry,
                 isContextSibling: false,
               });
+              renderedChangedCount += 1;
             }
             changedCount += 1;
+          } else {
+            unchangedChildCount += 1;
+            if (showContextSiblings) {
+              renderSegments.push({
+                type: 'child',
+                entry,
+                isContextSibling: true,
+              });
+            }
           }
         }
-        remainingChildren = Math.max(0, changedCount - renderSegments.length);
+        remainingChildren = Math.max(0, changedCount - renderedChangedCount);
+        if (
+          !fullMode &&
+          !filterActive &&
+          diffHasChanges &&
+          unchangedChildCount > 0
+        ) {
+          renderSegments.push({
+            type: 'context',
+            hiddenCount: unchangedChildCount,
+            path,
+            isArray,
+            expanded: revealedContextPaths.has(path),
+          });
+        }
       } else if (chunkChildren) {
         const revealFindMatches = searchMode === 'find' && filterLower.length > 0;
         if (!revealFindMatches) {
@@ -1187,9 +1287,16 @@ const JsonNode = memo(function JsonNode({
                 onMouseDown={preventMiddleClickAutoScroll}
                 onAuxClick={handleObjectRefAuxClick}
                 title={`Click to inspect · Ctrl+Click or middle-click for new tab (${objectKeyRef.table}:${objectKeyRef.hash}${objectKeyRef.subtitle ? ` — ${objectKeyRef.subtitle}` : ''})`}
-              >
-                <span className={styles.refTable}>
-                  {highlightText(
+          >
+            {objectKeyRef.icon ? (
+              <BungieIcon
+                icon={objectKeyRef.icon}
+                size={16}
+                className={styles.refIcon}
+              />
+            ) : null}
+            <span className={styles.refTable}>
+              {highlightText(
                     getShortTableName(objectKeyRef.table),
                     filterLower,
                     isActiveMatch,
@@ -1296,6 +1403,17 @@ const JsonNode = memo(function JsonNode({
                   />
                 );
               }
+              if (segment.type === 'context') {
+                return (
+                  <UnchangedContextControl
+                    key={`context:${segment.path}`}
+                    hiddenCount={segment.hiddenCount}
+                    isArray={segment.isArray}
+                    expanded={segment.expanded}
+                    onClick={() => onToggleContextPath(segment.path)}
+                  />
+                );
+              }
               const [childKey, childValue] = segment.entry;
               const childPath = treeChildPath(path, childKey, isArray);
               return (
@@ -1314,9 +1432,12 @@ const JsonNode = memo(function JsonNode({
                   expandGeneration={expandGeneration}
                   filterCache={filterCache}
                   diffMode={diffMode}
+                  fullMode={fullMode}
                   diffNodes={diffNodes}
+                  revealedContextPaths={revealedContextPaths}
                   expansionStore={expansionStore}
                   onTogglePath={onTogglePath}
+                  onToggleContextPath={onToggleContextPath}
                   selectedActionPath={selectedActionPath}
                   onRowClick={onRowClick}
                   onDismissRowActions={onDismissRowActions}
@@ -1448,6 +1569,26 @@ const JsonNode = memo(function JsonNode({
           </span>
           <span className={styles.colon}>:</span>
         </span>
+        {diffKind && diffKind !== 'same' && (
+          <span
+            className={`${styles.diffStatus} ${
+              diffKind === 'added'
+                ? styles.diffStatusAdded
+                : diffKind === 'removed'
+                  ? styles.diffStatusRemoved
+                  : styles.diffStatusChanged
+            }`}
+            aria-label={
+              diffKind === 'added'
+                ? 'Added'
+                : diffKind === 'removed'
+                  ? 'Removed'
+                  : 'Changed'
+            }
+          >
+            {diffKind === 'added' ? '+' : diffKind === 'removed' ? '−' : '~'}
+          </span>
+        )}
 
         {diffKind === 'changed' && !isTreeContainer(diffNode?.oldValue) && (
           <PreviousScalarValue
@@ -1516,6 +1657,13 @@ const JsonNode = memo(function JsonNode({
               onAuxClick={handleRefAuxClick}
               title={`Click to inspect · Ctrl+Click or middle-click for new tab (${resolvedRef.table}:${resolvedRef.hash}${resolvedRef.subtitle ? ` — ${resolvedRef.subtitle}` : ''})`}
             >
+              {resolvedRef.icon ? (
+                <BungieIcon
+                  icon={resolvedRef.icon}
+                  size={16}
+                  className={styles.refIcon}
+                />
+              ) : null}
               <span className={styles.refTable}>
                 {highlightText(
                   getShortTableName(resolvedRef.table),
@@ -1672,8 +1820,8 @@ const FILTER_PERSIST_DEBOUNCE_MS = 200;
 const COMPACT_TOOLBAR_QUERY = '(max-width: 700px)';
 
 const SEARCH_PLACEHOLDERS = {
-  filter: { full: 'Filter keys or values…', compact: 'Filter…' },
-  find: { full: 'Find in JSON…', compact: 'Find…' },
+  filter: { full: 'Filter keys or values…', compact: 'Filter JSON…' },
+  find: { full: 'Find in JSON…', compact: 'Find JSON…' },
 } as const;
 
 let compactToolbarQuery: MediaQueryList | null | undefined;
@@ -1717,11 +1865,16 @@ export const JsonTree = memo(function JsonTree({
   onExpandedChange,
   imageScaling = 'sharp',
   embedded = false,
+  hideSearch = false,
+  toolbarLeading,
 }: JsonTreeProps): ReactNode {
   const [filter, setFilter] = useState(initialFilter ?? '');
   const [searchMode, setSearchMode] = useState<'filter' | 'find'>('filter');
   const [activeMatchIndex, setActiveMatchIndex] = useState(0);
-  const [showDiff, setShowDiff] = useState(true);
+  const [fullMode, setFullMode] = useState(false);
+  const [revealedContextPaths, setRevealedContextPaths] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const [selectedActionPath, setSelectedActionPath] = useState<string | null>(null);
   const [expandGeneration, setExpandGeneration] = useState<{
     mode: 'default' | 'expand' | 'collapse';
@@ -1741,7 +1894,7 @@ export const JsonTree = memo(function JsonTree({
         : {};
     return createJsonTreeDiff(beforeRecord, data);
   }, [data, diffBefore]);
-  const diffMode = diffTree !== null && showDiff;
+  const diffMode = diffTree !== null;
   const viewData = diffMode ? diffTree.data : data;
   const diffNodes = diffMode ? diffTree.nodes : null;
 
@@ -1864,16 +2017,35 @@ export const JsonTree = memo(function JsonTree({
   }, [selectedActionPath]);
 
   useEffect(() => {
-    setShowDiff(true);
+    setFullMode(false);
+    setRevealedContextPaths(new Set());
   }, [data, diffBefore]);
 
   const resetExpansion = useCallback(
-    (mode: 'expand' | 'collapse'): void => {
+    (mode: 'default' | 'expand' | 'collapse'): void => {
       const next = expansionStore.reset();
       onExpandedChangeRef.current?.(next);
       setExpandGeneration((prev) => ({ mode, seq: prev.seq + 1 }));
     },
     [expansionStore],
+  );
+
+  const toggleContextPath = useCallback((path: string): void => {
+    setRevealedContextPaths((current) => {
+      const next = new Set(current);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  }, []);
+
+  const resetDiffContext = useCallback(
+    (nextFullMode: boolean): void => {
+      setFullMode(nextFullMode);
+      setRevealedContextPaths(new Set());
+      resetExpansion('default');
+    },
+    [resetExpansion],
   );
 
   const filterLower = filter.trim().toLowerCase();
@@ -1942,15 +2114,34 @@ export const JsonTree = memo(function JsonTree({
   }, [activeMatchPath, searchMode]);
 
   const rootSegments = useMemo<JsonTreeRenderSegment[]>(() => {
-    const entries = Object.entries(viewData).filter(
-      ([key]) => !diffMode || (diffNodes?.get(key)?.hasChanges ?? false),
+    const allEntries = Object.entries(viewData);
+    const rootContextShown = fullMode || revealedContextPaths.has('');
+    const entries = allEntries.filter(
+      ([key]) =>
+        !diffMode ||
+        rootContextShown ||
+        (diffNodes?.get(key)?.hasChanges ?? false),
     );
     if (searchMode !== 'filter' || !deferredFilterLower) {
-      return entries.map((entry) => ({
+      const segments: JsonTreeRenderSegment[] = entries.map((entry) => ({
         type: 'child',
         entry,
-        isContextSibling: false,
+        isContextSibling:
+          diffMode && !(diffNodes?.get(entry[0])?.hasChanges ?? false),
       }));
+      const unchangedCount = allEntries.length - allEntries.filter(
+        ([key]) => diffNodes?.get(key)?.hasChanges ?? false,
+      ).length;
+      if (diffMode && !fullMode && unchangedCount > 0) {
+        segments.push({
+          type: 'context',
+          hiddenCount: unchangedCount,
+          path: '',
+          isArray: false,
+          expanded: revealedContextPaths.has(''),
+        });
+      }
+      return segments;
     }
 
     const candidates: FilterChildCandidate<readonly [string, unknown]>[] =
@@ -1987,7 +2178,10 @@ export const JsonTree = memo(function JsonTree({
         : {
             type: 'child' as const,
             entry: segment.entry.value,
-            isContextSibling: segment.isContextSibling,
+            isContextSibling:
+              segment.isContextSibling ||
+              (diffMode &&
+                !(diffNodes?.get(segment.entry.value[0])?.hasChanges ?? false)),
           },
     );
   }, [
@@ -1995,6 +2189,8 @@ export const JsonTree = memo(function JsonTree({
     diffMode,
     diffNodes,
     filterCache,
+    fullMode,
+    revealedContextPaths,
     resolvedRefs,
     searchMode,
     viewData,
@@ -2003,6 +2199,22 @@ export const JsonTree = memo(function JsonTree({
     (total, segment) => total + (segment.type === 'child' ? 1 : 0),
     0,
   );
+  const hasUnchangedNodes = useMemo(
+    () => Array.from(diffNodes?.values() ?? []).some((node) => !node.hasChanges),
+    [diffNodes],
+  );
+  const expandedAll =
+    fullMode && expandGeneration.mode === 'expand';
+  const totalDiffChanges = diffTree
+    ? diffTree.stats.added + diffTree.stats.changed + diffTree.stats.removed
+    : 0;
+  const diffSummary = diffTree
+    ? [
+        diffTree.stats.added > 0 ? `+${diffTree.stats.added}` : null,
+        diffTree.stats.changed > 0 ? `~${diffTree.stats.changed}` : null,
+        diffTree.stats.removed > 0 ? `−${diffTree.stats.removed}` : null,
+      ].filter((part): part is string => part !== null)
+    : [];
 
   const stepMatch = useCallback(
     (direction: -1 | 1) => {
@@ -2052,6 +2264,21 @@ export const JsonTree = memo(function JsonTree({
     onCopyRef.current(text, label);
   }, []);
 
+  const copySnapshot = (): void => {
+    onCopy(JSON.stringify(data, null, 2), 'Copied JSON snapshot');
+  };
+
+  const downloadSnapshot = (): void => {
+    const text = JSON.stringify(data, null, 2);
+    const blob = new Blob([text], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'snapshot.json';
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
   const searchPlaceholder = compactToolbar
     ? SEARCH_PLACEHOLDERS[searchMode].compact
     : SEARCH_PLACEHOLDERS[searchMode].full;
@@ -2059,105 +2286,181 @@ export const JsonTree = memo(function JsonTree({
   return (
     <div
       className={
-        embedded ? `${styles.wrapper} ${styles.embeddedWrapper}` : styles.wrapper
+        `${styles.wrapper} ${embedded ? styles.embeddedWrapper : ''} ${
+          diffMode ? styles.diffWrapper : ''
+        }`
       }
     >
-      <div className={styles.toolbar}>
-        <ClearSearchInput
-          className={styles.filterInput}
-          wrapperClassName={styles.filterWrap}
-          value={filter}
-          onValueChange={handleFilterChange}
-          onBlur={flushFilterPersist}
-          onKeyDown={handleSearchKeyDown}
-          placeholder={searchPlaceholder}
-          aria-label={searchMode === 'filter' ? 'Filter JSON keys or values' : 'Find in JSON'}
-          clearLabel={searchMode === 'filter' ? 'Clear JSON filter' : 'Clear JSON find'}
-        />
-        <div className={styles.searchModes} role="group" aria-label="JSON search mode">
+      {diffMode ? (
+        <div className={`${styles.toolbar} ${styles.diffToolbar}`}>
+          <div className={styles.toolbarInfo}>
+            {toolbarLeading !== undefined && toolbarLeading !== null ? (
+              <div className={styles.toolbarLeading}>{toolbarLeading}</div>
+            ) : null}
+            <span className={styles.diffSummary} aria-label="Formatted field changes">
+              {diffSummary.length === 0 ? (
+                '0 changes'
+              ) : (
+                <>
+                  {diffSummary.map((part, index) => (
+                    <span
+                      className={
+                        part.startsWith('+')
+                          ? styles.summaryAdded
+                          : part.startsWith('−')
+                            ? styles.summaryRemoved
+                            : styles.summaryChanged
+                      }
+                      key={part}
+                    >
+                      {index > 0 && <span className={styles.summarySeparator}> / </span>}
+                      {part}
+                    </span>
+                  ))}
+                  <span> {totalDiffChanges === 1 ? 'change' : 'changes'}</span>
+                </>
+              )}
+            </span>
+          </div>
+          <div className={styles.diffToolbarActions}>
+            <div className={styles.diffModes} role="group" aria-label="Formatted context">
+              <button
+                type="button"
+                className={styles.diffModeButton}
+                aria-pressed={!fullMode}
+                onClick={() => resetDiffContext(false)}
+              >
+                Changes
+              </button>
+              <button
+                type="button"
+                className={styles.diffModeButton}
+                aria-pressed={fullMode}
+                onClick={() => resetDiffContext(true)}
+              >
+                Full
+              </button>
+            </div>
+            <button
+              type="button"
+              className={styles.diffToolbarButton}
+              onClick={() => {
+                if (expandedAll) {
+                  setFullMode(false);
+                  setRevealedContextPaths(new Set());
+                  resetExpansion(hasUnchangedNodes ? 'default' : 'collapse');
+                } else {
+                  setFullMode(true);
+                  setRevealedContextPaths(new Set());
+                  resetExpansion('expand');
+                }
+              }}
+            >
+              {expandedAll
+                ? hasUnchangedNodes
+                  ? 'Collapse unchanged'
+                  : 'Collapse all'
+                : 'Expand all'}
+            </button>
+            <button
+              type="button"
+              className={styles.diffToolbarButton}
+              onClick={copySnapshot}
+            >
+              Copy
+            </button>
+            <button
+              type="button"
+              className={styles.diffToolbarButton}
+              onClick={downloadSnapshot}
+            >
+              Download .json
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className={styles.toolbar}>
+          {toolbarLeading}
+          {!hideSearch ? (
+            <>
+              <ClearSearchInput
+                className={styles.filterInput}
+                wrapperClassName={styles.filterWrap}
+                value={filter}
+                onValueChange={handleFilterChange}
+                onBlur={flushFilterPersist}
+                onKeyDown={handleSearchKeyDown}
+                placeholder={searchPlaceholder}
+                aria-label={searchMode === 'filter' ? 'Filter JSON keys or values' : 'Find in JSON'}
+                clearLabel={searchMode === 'filter' ? 'Clear JSON filter' : 'Clear JSON find'}
+              />
+              <div className={styles.searchModes} role="group" aria-label="JSON search mode">
+                <button
+                  type="button"
+                  className={styles.searchModeBtn}
+                  aria-pressed={searchMode === 'filter'}
+                  title="Filter — show only matching fields and matched dropdown sections"
+                  onClick={() => setSearchMode('filter')}
+                >
+                  Filter
+                </button>
+                <button
+                  type="button"
+                  className={styles.searchModeBtn}
+                  aria-pressed={searchMode === 'find'}
+                  title="Find — keep full JSON visible and step through every highlighted match"
+                  onClick={() => setSearchMode('find')}
+                >
+                  Find
+                </button>
+              </div>
+              {searchMode === 'find' && deferredFilterLower.length > 0 && (
+                <div className={styles.findControls} role="group" aria-label="Find matches">
+                  <button
+                    type="button"
+                    className={styles.findStepBtn}
+                    onClick={() => stepMatch(-1)}
+                    disabled={findMatches.length === 0}
+                    title="Previous match (Shift+Enter / Shift+Tab)"
+                    aria-label="Previous match"
+                  >
+                    <ArrowUpIcon size={14} />
+                  </button>
+                  <span className={styles.matchCount} aria-live="polite">
+                    {findMatches.length === 0
+                      ? '0 / 0'
+                      : `${clampedActiveMatchIndex + 1} / ${findMatches.length}${findMatchesTruncated ? '+' : ''}`}
+                  </span>
+                  <button
+                    type="button"
+                    className={styles.findStepBtn}
+                    onClick={() => stepMatch(1)}
+                    disabled={findMatches.length === 0}
+                    title="Next match (Enter / Tab)"
+                    aria-label="Next match"
+                  >
+                    <ArrowDownIcon size={14} />
+                  </button>
+                </div>
+              )}
+            </>
+          ) : null}
           <button
             type="button"
-            className={styles.searchModeBtn}
-            aria-pressed={searchMode === 'filter'}
-            title="Filter — show only matching fields and matched dropdown sections"
-            onClick={() => setSearchMode('filter')}
+            className={styles.toolBtn}
+            onClick={() => resetExpansion('expand')}
           >
-            Filter
+            Expand
           </button>
           <button
             type="button"
-            className={styles.searchModeBtn}
-            aria-pressed={searchMode === 'find'}
-            title="Find — keep full JSON visible and step through every highlighted match"
-            onClick={() => setSearchMode('find')}
+            className={styles.toolBtn}
+            onClick={() => resetExpansion('collapse')}
           >
-            Find
+            Collapse
           </button>
         </div>
-        {diffBefore !== undefined && (
-          <div className={styles.diffModes} role="group" aria-label="Pretty display mode">
-            <button
-              type="button"
-              className={styles.diffModeButton}
-              aria-pressed={showDiff}
-              onClick={() => setShowDiff(true)}
-            >
-              Diff
-            </button>
-            <button
-              type="button"
-              className={styles.diffModeButton}
-              aria-pressed={!showDiff}
-              onClick={() => setShowDiff(false)}
-            >
-              Snapshot
-            </button>
-          </div>
-        )}
-        {searchMode === 'find' && deferredFilterLower.length > 0 && (
-          <div className={styles.findControls} role="group" aria-label="Find matches">
-            <button
-              type="button"
-              className={styles.findStepBtn}
-              onClick={() => stepMatch(-1)}
-              disabled={findMatches.length === 0}
-              title="Previous match (Shift+Enter / Shift+Tab)"
-              aria-label="Previous match"
-            >
-              <ArrowUpIcon size={14} />
-            </button>
-            <span className={styles.matchCount} aria-live="polite">
-              {findMatches.length === 0
-                ? '0 / 0'
-                : `${clampedActiveMatchIndex + 1} / ${findMatches.length}${findMatchesTruncated ? '+' : ''}`}
-            </span>
-            <button
-              type="button"
-              className={styles.findStepBtn}
-              onClick={() => stepMatch(1)}
-              disabled={findMatches.length === 0}
-              title="Next match (Enter / Tab)"
-              aria-label="Next match"
-            >
-              <ArrowDownIcon size={14} />
-            </button>
-          </div>
-        )}
-        <button
-          type="button"
-          className={styles.toolBtn}
-          onClick={() => resetExpansion('expand')}
-        >
-          Expand
-        </button>
-        <button
-          type="button"
-          className={styles.toolBtn}
-          onClick={() => resetExpansion('collapse')}
-        >
-          Collapse
-        </button>
-      </div>
+      )}
 
       <div
         className={embedded ? `${styles.tree} ${styles.embeddedTree}` : styles.tree}
@@ -2168,7 +2471,8 @@ export const JsonTree = memo(function JsonTree({
       >
         {searchMode === 'filter' && deferredFilterLower && rootVisibleCount === 0 ? (
           <div className={styles.empty}>No fields match &quot;{filter}&quot;.</div>
-        ) : rootVisibleCount === 0 ? (
+        ) : rootVisibleCount === 0 &&
+          !rootSegments.some((segment) => segment.type === 'context') ? (
           <div className={styles.empty}>
             {diffMode ? 'No changes to show.' : 'No fields in this snapshot.'}
           </div>
@@ -2182,6 +2486,17 @@ export const JsonTree = memo(function JsonTree({
                   isArray={false}
                   jumpPath={segment.jumpPath}
                   onViewInFind={handleViewInFind}
+                />
+              );
+            }
+            if (segment.type === 'context') {
+              return (
+                <UnchangedContextControl
+                  key={`context:${segment.path}`}
+                  hiddenCount={segment.hiddenCount}
+                  isArray={segment.isArray}
+                  expanded={segment.expanded}
+                  onClick={() => toggleContextPath(segment.path)}
                 />
               );
             }
@@ -2201,9 +2516,12 @@ export const JsonTree = memo(function JsonTree({
                 expandGeneration={expandGeneration}
                 filterCache={filterCache}
                 diffMode={diffMode}
+                fullMode={fullMode}
                 diffNodes={diffNodes}
+                revealedContextPaths={revealedContextPaths}
                 expansionStore={expansionStore}
                 onTogglePath={handleTogglePath}
+                onToggleContextPath={toggleContextPath}
                 selectedActionPath={selectedActionPath}
                 onRowClick={handleRowClick}
                 onDismissRowActions={dismissRowActions}

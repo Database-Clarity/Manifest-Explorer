@@ -30,6 +30,20 @@ import {
 import { getFriendlyTableName } from '../../manifest/tables';
 import type { DefinitionRef, DefinitionDetailPayload } from '../../types/manifest';
 import { useSettingsStore } from '../../stores/settings';
+import {
+  createHistoryOverviewWorkspace,
+  useHistoryWorkspaceStore,
+  type HistoryOverviewWorkspace,
+  type HistoryWorkspaceEntry,
+} from '../../stores/historyWorkspace';
+import {
+  manifestReleaseSearchTerms,
+  resolveManifestReleaseName,
+} from '../../data/manifestReleases';
+import {
+  manifestPatchNoteSearchTerms,
+  resolveManifestPatchNote,
+} from '../../data/manifestPatchNotes';
 import { BungieIcon } from '../BungieIcon';
 import { JsonDiffView } from '../inspector/JsonDiffView';
 import { JsonTree } from '../inspector/JsonTree';
@@ -47,7 +61,6 @@ import { getTierColorVar } from '../../ui/rarity';
 import { activateOnMiddleClick, preventMiddleClickAutoScroll } from '../middleClick';
 import { scrollTabIntoView } from '../../utils/scrollTabIntoView';
 import {
-  formatBucketDiffLabel,
   formatBucketEntryCount,
   isBucketExpanded,
 } from './historyBuckets';
@@ -60,27 +73,7 @@ export interface ManifestHistoryPageProps {
 }
 
 type ChangeKind = keyof ReleaseTableChanges;
-type EntryMode = 'diff' | 'pretty';
-
-interface ChangedEntry {
-  key: string;
-  table: string;
-  hash: number;
-  name: string;
-  subtitle: string;
-  icon: string;
-  tierType: number;
-  changedFields?: number;
-  kind: ChangeKind;
-  versionIndex: number;
-  date: string;
-  version?: string;
-}
-
-interface EntryTabState {
-  activeKey: string | null;
-  tabs: ChangedEntry[];
-}
+type ChangedEntry = HistoryWorkspaceEntry;
 
 const CHANGE_KINDS: ReadonlyArray<{ value: ChangeKind | 'all'; label: string }> = [
   { value: 'all', label: 'All' },
@@ -97,14 +90,6 @@ const KIND_NAMES: Record<ChangeKind, string> = {
   r: 'Removed',
   u: 'Unclassified',
   c: 'Reclassified',
-};
-
-const KIND_SIGNS: Record<ChangeKind, string> = {
-  a: '+',
-  m: '~',
-  r: '−',
-  u: '?',
-  c: '↻',
 };
 
 function friendlyTableName(table: string): string {
@@ -137,6 +122,17 @@ function formatDate(date: string, includeYear = true): string {
 function versionLabel(version: HistoryVersionMeta): string {
   return `${formatDate(version.date)} · ${version.version ?? version.id}`;
 }
+
+function formatCount(value: number): string {
+  return value.toLocaleString('en-US');
+}
+
+function formatKindCount(kind: ChangeKind, count: number): string {
+  return `${formatCount(count)} ${KIND_NAMES[kind].toLowerCase()}`;
+}
+
+const EMPTY_OVERVIEW_WORKSPACE: HistoryOverviewWorkspace =
+  createHistoryOverviewWorkspace();
 
 const RELEASE_KINDS: readonly ChangeKind[] = ['a', 'm', 'r', 'u', 'c'];
 const releaseTupleSearchText = new WeakMap<ReleaseItemTuple, Map<string, string>>();
@@ -231,7 +227,6 @@ function copyText(text: string): void {
 function KindBadge({ kind }: { kind: ChangeKind }): ReactNode {
   return (
     <span className={`${styles.kindBadge} ${styles[`kind${kind.toUpperCase()}`]}`}>
-      <span aria-hidden="true">{KIND_SIGNS[kind]}</span>
       {KIND_NAMES[kind]}
     </span>
   );
@@ -272,7 +267,7 @@ const EntryCard = memo(function EntryCard({
         <KindBadge kind={entry.kind} />
         {typeof entry.changedFields === 'number' && (
           <span className={styles.fieldCount}>
-            {entry.changedFields} {entry.changedFields === 1 ? 'field' : 'fields'}
+            {formatCount(entry.changedFields)} {entry.changedFields === 1 ? 'field' : 'fields'}
           </span>
         )}
       </span>
@@ -294,44 +289,36 @@ const ReleaseOverview = memo(function ReleaseOverview({
   isActive: boolean;
 }): ReactNode {
   const releaseDate = activeVersion?.date ?? release.date;
+  const patchNote = resolveManifestPatchNote(releaseDate);
   const overviewScrollRef = useRef<HTMLDivElement | null>(null);
-  const overviewScrollTopRef = useRef(0);
-  const [kindFilter, setKindFilter] = useState<ChangeKind | 'all'>('all');
-  const [search, setSearch] = useState('');
+  const overviewScrollTopRef = useRef<number | null>(null);
+  const savedOverview = useHistoryWorkspaceStore(
+    (state) => state.overviews[String(release.v)],
+  );
+  const overviewWorkspace = savedOverview ?? EMPTY_OVERVIEW_WORKSPACE;
+  const updateOverview = useHistoryWorkspaceStore((state) => state.updateOverview);
+  const kindFilter = overviewWorkspace.kindFilter;
+  const search = overviewWorkspace.search;
+  const searchKey = useDeferredValue(search).trim();
   // Typing must stay instant on releases with 61k entries: the cheap input
   // update renders immediately while the expensive tuple filtering below runs
   // at a lower priority against the deferred query.
-  const deferredSearch = useDeferredValue(search);
-  const searchKey = deferredSearch.trim();
+  const deferredSearch = searchKey;
   const isSearching = searchKey.length > 0;
-  const [manualBucketsState, setManualBucketsState] = useState<{
-    versionIndex: number;
-    overrides: Record<string, boolean>;
-  }>(() => ({ versionIndex: release.v, overrides: {} }));
-  const [searchBucketsState, setSearchBucketsState] = useState<{
-    versionIndex: number;
-    query: string;
-    overrides: Record<string, boolean>;
-  }>(() => ({ versionIndex: release.v, query: searchKey, overrides: {} }));
-  useEffect(() => {
-    setManualBucketsState({ versionIndex: release.v, overrides: {} });
-  }, [release.v]);
-  useEffect(() => {
-    setSearchBucketsState({ versionIndex: release.v, query: searchKey, overrides: {} });
-  }, [release.v, searchKey]);
-  const manualBucketOverrides =
-    manualBucketsState.versionIndex === release.v ? manualBucketsState.overrides : {};
+  const manualBucketOverrides = overviewWorkspace.manualBucketOverrides;
   const searchBucketOverrides =
-    searchBucketsState.versionIndex === release.v && searchBucketsState.query === searchKey
-      ? searchBucketsState.overrides
+    overviewWorkspace.searchBucketState.query === searchKey
+      ? overviewWorkspace.searchBucketState.overrides
       : {};
+  useEffect(() => {
+    if (overviewWorkspace.searchBucketState.query !== searchKey) {
+      updateOverview(release.v, {
+        searchBucketState: { query: searchKey, overrides: {} },
+      });
+    }
+  }, [overviewWorkspace.searchBucketState.query, release.v, searchKey, updateOverview]);
   const openBucketOverrides = isSearching ? searchBucketOverrides : manualBucketOverrides;
-  const [showCountsState, setShowCountsState] = useState<{
-    versionIndex: number;
-    counts: Record<string, number>;
-  }>(() => ({ versionIndex: release.v, counts: {} }));
-  const showCounts =
-    showCountsState.versionIndex === release.v ? showCountsState.counts : {};
+  const showCounts = overviewWorkspace.visibleCategoryCounts;
   const allKindCounts = useMemo(() => countReleaseKinds(release.tables), [release]);
   const allEntryCount = RELEASE_KINDS.reduce(
     (total, kind) => total + allKindCounts[kind],
@@ -382,27 +369,29 @@ const ReleaseOverview = memo(function ReleaseOverview({
   const setBucketOpen = useCallback(
     (table: string, open: boolean) => {
       if (isSearching) {
-        setSearchBucketsState((current) => ({
-          versionIndex: release.v,
-          query: searchKey,
-          overrides: {
-            ...(current.versionIndex === release.v && current.query === searchKey
-              ? current.overrides
-              : {}),
-            [table]: open,
+        updateOverview(release.v, (current) => ({
+          ...current,
+          searchBucketState: {
+            query: searchKey,
+            overrides: {
+              ...(current.searchBucketState.query === searchKey
+                ? current.searchBucketState.overrides
+                : {}),
+              [table]: open,
+            },
           },
         }));
       } else {
-        setManualBucketsState((current) => ({
-          versionIndex: release.v,
-          overrides: {
-            ...(current.versionIndex === release.v ? current.overrides : {}),
+        updateOverview(release.v, (current) => ({
+          ...current,
+          manualBucketOverrides: {
+            ...current.manualBucketOverrides,
             [table]: open,
           },
         }));
       }
     },
-    [isSearching, release.v, searchKey],
+    [isSearching, release.v, searchKey, updateOverview],
   );
 
   const setVisibleGroupsOpen = useCallback(
@@ -411,27 +400,29 @@ const ReleaseOverview = memo(function ReleaseOverview({
         groups.map((group) => [group.table, open]),
       );
       if (isSearching) {
-        setSearchBucketsState((current) => ({
-          versionIndex: release.v,
-          query: searchKey,
-          overrides: {
-            ...(current.versionIndex === release.v && current.query === searchKey
-              ? current.overrides
-              : {}),
-            ...visibleOverrides,
+        updateOverview(release.v, (current) => ({
+          ...current,
+          searchBucketState: {
+            query: searchKey,
+            overrides: {
+              ...(current.searchBucketState.query === searchKey
+                ? current.searchBucketState.overrides
+                : {}),
+              ...visibleOverrides,
+            },
           },
         }));
       } else {
-        setManualBucketsState((current) => ({
-          versionIndex: release.v,
-          overrides: {
-            ...(current.versionIndex === release.v ? current.overrides : {}),
+        updateOverview(release.v, (current) => ({
+          ...current,
+          manualBucketOverrides: {
+            ...current.manualBucketOverrides,
             ...visibleOverrides,
           },
         }));
       }
     },
-    [groups, isSearching, release.v, searchKey],
+    [groups, isSearching, release.v, searchKey, updateOverview],
   );
 
   const handleOverviewScroll = useCallback(() => {
@@ -451,9 +442,26 @@ const ReleaseOverview = memo(function ReleaseOverview({
 
   useLayoutEffect(() => {
     if (isActive && overviewScrollRef.current) {
-      overviewScrollRef.current.scrollTop = overviewScrollTopRef.current;
+      const scrollTop = overviewScrollTopRef.current ?? overviewWorkspace.scrollTop;
+      overviewScrollTopRef.current = scrollTop;
+      overviewScrollRef.current.scrollTop = scrollTop;
     }
-  }, [isActive]);
+  }, [isActive, release.v]);
+
+  useEffect(
+    () => () => {
+      const scrollTop =
+        overviewScrollRef.current?.scrollTop ??
+        overviewScrollTopRef.current ??
+        overviewWorkspace.scrollTop;
+      if (scrollTop !== undefined) {
+        updateOverview(release.v, {
+          scrollTop,
+        });
+      }
+    },
+    [overviewWorkspace.scrollTop, release.v, updateOverview],
+  );
 
   return (
     <div
@@ -463,21 +471,33 @@ const ReleaseOverview = memo(function ReleaseOverview({
     >
       <header className={styles.releaseHeader}>
         <div>
-          <span className={styles.eyebrow}>Manifest release</span>
-          <h2>{formatDate(releaseDate)}</h2>
-          <p>{release.version ? `Bungie version ${release.version}` : `Version index ${release.v}`}</p>
+          <h2 className={styles.releaseHeading}>
+            <span>{formatDate(releaseDate)}</span>
+            {resolveManifestReleaseName(releaseDate) && (
+              <span className={styles.releaseBadge}>
+                {resolveManifestReleaseName(releaseDate)}
+              </span>
+            )}
+          </h2>
+          <div className={styles.releaseMetadata}>
+            <p>{release.version ? `Bungie version ${release.version}` : `Version index ${release.v}`}</p>
+            {patchNote && (
+              <a
+                className={styles.patchNotesLink}
+                href={patchNote.url}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <span>{patchNote.label} patch notes</span>
+                <ExternalLinkIcon size={12} />
+              </a>
+            )}
+          </div>
           {activeVersion?.gapBefore && (
             <div className={styles.archiveGapNotice} role="note">
               This release follows a gap in the archived manifest history.
             </div>
           )}
-        </div>
-        <div className={styles.totalCounts} aria-label="Release change totals">
-          <span className={styles.countAdded}>+{release.totals.a} Added</span>
-          <span className={styles.countModified}>~{release.totals.m} Modified</span>
-          <span className={styles.countRemoved}>−{release.totals.r} Removed</span>
-          <span>{release.totals.u} Unclassified</span>
-          <span>{release.totals.c} Reclassified</span>
         </div>
       </header>
 
@@ -489,13 +509,13 @@ const ReleaseOverview = memo(function ReleaseOverview({
               key={value}
               className={kindFilter === value ? styles.kindFilterActive : styles.kindFilter}
               aria-pressed={kindFilter === value}
-              onClick={() => setKindFilter(value)}
+              onClick={() => updateOverview(release.v, { kindFilter: value })}
             >
               {label}
               <span>
                 {value === 'all'
-                  ? allEntryCount
-                  : allKindCounts[value]}
+                  ? formatCount(allEntryCount)
+                  : formatCount(allKindCounts[value])}
               </span>
             </button>
           ))}
@@ -514,7 +534,9 @@ const ReleaseOverview = memo(function ReleaseOverview({
             className={styles.entrySearch}
             wrapperClassName={styles.entrySearchField}
             value={search}
-            onValueChange={setSearch}
+            onValueChange={(nextSearch) =>
+              updateOverview(release.v, { search: nextSearch })
+            }
             placeholder="Search name, subtitle, hash, or table…"
             aria-label="Search changed entries"
             clearLabel="Clear entry search"
@@ -528,7 +550,7 @@ const ReleaseOverview = memo(function ReleaseOverview({
         <div className={styles.tableGroups}>
           {groups.map((group) => {
             const { table } = group;
-            const showLimit = showCounts[table] ?? 60;
+            const showLimit = showCounts[table] ?? 120;
             const isOpen = isBucketExpanded(table, openBucketOverrides, isSearching);
             const shown: ChangedEntry[] = [];
             if (isOpen) {
@@ -573,7 +595,7 @@ const ReleaseOverview = memo(function ReleaseOverview({
                             key={kind}
                             className={`${styles.tableKindCount} ${styles[`tableKindCount${kind.toUpperCase()}`]}`}
                           >
-                            {formatBucketDiffLabel(kind, count)}
+                            {formatKindCount(kind, count)}
                           </span>
                         ) : null;
                       })}
@@ -614,22 +636,40 @@ const ReleaseOverview = memo(function ReleaseOverview({
                         ))}
                       </div>
                       {group.count > shown.length && (
-                        <button
-                          type="button"
-                          className={styles.showMore}
-                          onClick={() =>
-                            setShowCountsState((current) => ({
-                              versionIndex: release.v,
-                              counts: {
-                                ...(current.versionIndex === release.v ? current.counts : {}),
-                                [table]: Math.min(group.count, showLimit + 60),
-                              },
-                            }))
-                          }
-                        >
-                          Show {Math.min(60, group.count - shown.length)} more
-                          <span> · {group.count - shown.length} remaining</span>
-                        </button>
+                        <div className={styles.showMoreActions}>
+                          {group.count - shown.length > 250 && (
+                            <button
+                              type="button"
+                              className={styles.showMore}
+                              onClick={() =>
+                                updateOverview(release.v, (current) => ({
+                                  ...current,
+                                  visibleCategoryCounts: {
+                                    ...current.visibleCategoryCounts,
+                                    [table]: Math.min(group.count, showLimit + 250),
+                                  },
+                                }))
+                              }
+                            >
+                              Show 250 more
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            className={styles.showMore}
+                            onClick={() =>
+                              updateOverview(release.v, (current) => ({
+                                ...current,
+                                visibleCategoryCounts: {
+                                  ...current.visibleCategoryCounts,
+                                  [table]: group.count,
+                                },
+                              }))
+                            }
+                          >
+                            Show all ({formatCount(group.count - shown.length)} remaining)
+                          </button>
+                        </div>
                       )}
                     </>
                   )}
@@ -650,7 +690,9 @@ const EntryDiffPanel = memo(function EntryDiffPanel({
   entry: ChangedEntry;
   onNavigateExplorer: (table: string, hash: number) => void;
 }): ReactNode {
-  const [mode, setMode] = useState<EntryMode>('diff');
+  const mode = useSettingsStore((state) => state.historyEntryViewMode);
+  const setDiffLayout = useSettingsStore((state) => state.setHistoryDiffLayout);
+  const diffLayout = useSettingsStore((state) => state.historyDiffLayout);
   const [definition, setDefinition] = useState<DefinitionDetailPayload | null>(null);
   const [revisions, setRevisions] = useState<ItemRevision[]>([]);
   const [loading, setLoading] = useState(true);
@@ -680,7 +722,7 @@ const EntryDiffPanel = memo(function EntryDiffPanel({
 
   // One reconstruction per `(table, hash, versionIndex)` per fetched revision
   // set. `readSnapshot` is stable for as long as the tab stays open, so
-  // switching Diff/Pretty/JSON or moving between open entry tabs is a lookup.
+  // switching Diff/Formatted/JSON or moving between open entry tabs is a lookup.
   const snapshotCache = useMemo(() => new Map<string, unknown>(), [definition, revisions]);
   const readSnapshot = useCallback(
     <T,>(key: string, build: () => T): T => {
@@ -766,6 +808,7 @@ const EntryDiffPanel = memo(function EntryDiffPanel({
     (ref: DefinitionRef) => onNavigateExplorer(ref.table, ref.hash),
     [onNavigateExplorer],
   );
+  const entryModeToggle = <EntryModeToggle />;
 
   return (
     <div className={styles.entryPanel}>
@@ -793,19 +836,6 @@ const EntryDiffPanel = memo(function EntryDiffPanel({
           <ExternalLinkIcon size={13} />
           Open in Explorer
         </button>
-        <div className={styles.entryModes} role="group" aria-label="Entry view">
-          {(['diff', 'pretty'] as const).map((view) => (
-            <button
-              type="button"
-              key={view}
-              aria-pressed={mode === view}
-              className={mode === view ? styles.entryModeActive : styles.entryMode}
-              onClick={() => setMode(view)}
-            >
-              {view === 'diff' ? 'Diff' : 'Pretty'}
-            </button>
-          ))}
-        </div>
       </header>
 
       {loading ? (
@@ -821,10 +851,13 @@ const EntryDiffPanel = memo(function EntryDiffPanel({
             before={snapshots.before}
             after={snapshots.after}
             defaultLayout="split"
+            layout={diffLayout}
+            onLayoutChange={setDiffLayout}
+            toolbarLeading={entryModeToggle}
             onCopy={(text) => copyText(text)}
           />
         </div>
-      ) : mode === 'pretty' ? (
+      ) : mode === 'formatted' ? (
         <div className={styles.entryContent}>
           <JsonTree
             data={treeData}
@@ -834,9 +867,31 @@ const EntryDiffPanel = memo(function EntryDiffPanel({
             imageScaling={imageScaling}
             embedded
             diffBefore={snapshots.before}
+            hideSearch
+            toolbarLeading={entryModeToggle}
           />
         </div>
       ) : null}
+    </div>
+  );
+});
+
+const EntryModeToggle = memo(function EntryModeToggle(): ReactNode {
+  const mode = useSettingsStore((state) => state.historyEntryViewMode);
+  const setMode = useSettingsStore((state) => state.setHistoryEntryViewMode);
+  return (
+    <div className={styles.entryModes} role="group" aria-label="Entry view">
+      {(['diff', 'formatted'] as const).map((view) => (
+        <button
+          type="button"
+          key={view}
+          aria-pressed={mode === view}
+          className={mode === view ? styles.entryModeActive : styles.entryMode}
+          onClick={() => setMode(view)}
+        >
+          {view === 'diff' ? 'Diff' : 'Formatted'}
+        </button>
+      ))}
     </div>
   );
 });
@@ -936,10 +991,26 @@ export const ManifestHistoryPage = memo(function ManifestHistoryPage({
   const [release, setRelease] = useState<ManifestReleaseSummary | null>(null);
   const [releaseError, setReleaseError] = useState<string | null>(null);
   const [releaseLoading, setReleaseLoading] = useState(false);
-  const [tabState, setTabState] = useState<EntryTabState>({ activeKey: null, tabs: [] });
-  const [mobileInspectorOpen, setMobileInspectorOpen] = useState(false);
-  const [inspectorMaximized, setInspectorMaximized] = useState(false);
-  const [overviewWidth, setOverviewWidth] = useState<number | null>(null);
+  const lastVersionIndex = useHistoryWorkspaceStore((state) => state.lastVersionIndex);
+  const setLastVersionIndex = useHistoryWorkspaceStore((state) => state.setLastVersionIndex);
+  const tabs = useHistoryWorkspaceStore((state) => state.tabs);
+  const activeKey = useHistoryWorkspaceStore((state) => state.activeKey);
+  const setWorkspaceTabs = useHistoryWorkspaceStore((state) => state.setTabs);
+  const mobileInspectorOpen = useHistoryWorkspaceStore(
+    (state) => state.mobileInspectorOpen,
+  );
+  const setMobileInspectorOpen = useHistoryWorkspaceStore(
+    (state) => state.setMobileInspectorOpen,
+  );
+  const inspectorMaximized = useHistoryWorkspaceStore(
+    (state) => state.inspectorMaximized,
+  );
+  const setInspectorMaximized = useHistoryWorkspaceStore(
+    (state) => state.setInspectorMaximized,
+  );
+  const overviewWidth = useHistoryWorkspaceStore((state) => state.overviewWidth);
+  const setOverviewWidth = useHistoryWorkspaceStore((state) => state.setOverviewWidth);
+  const tabState = { tabs, activeKey };
   const [workspaceWidth, setWorkspaceWidth] = useState(0);
   const [isMobile, setIsMobile] = useState(
     () =>
@@ -957,7 +1028,12 @@ export const ManifestHistoryPage = memo(function ManifestHistoryPage({
     [index],
   );
   const activeVersionIndex =
-    versions.find((version) => version.i === versionIndex)?.i ?? versions[0]?.i ?? null;
+    versions.find((version) => version.i === versionIndex)?.i ??
+    (versionIndex === null
+      ? versions.find((version) => version.i === lastVersionIndex)?.i
+      : undefined) ??
+    versions[0]?.i ??
+    null;
   const activeVersion = versions.find((version) => version.i === activeVersionIndex) ?? null;
   const activeVersionPosition = versions.findIndex((version) => version.i === activeVersionIndex);
   const olderVersion = versions[activeVersionPosition + 1] ?? null;
@@ -1061,6 +1137,12 @@ export const ManifestHistoryPage = memo(function ManifestHistoryPage({
   }, []);
 
   useEffect(() => {
+    if (activeVersionIndex !== null) {
+      setLastVersionIndex(activeVersionIndex);
+    }
+  }, [activeVersionIndex, setLastVersionIndex]);
+
+  useEffect(() => {
     if (!versions.length) return;
     if (activeVersionIndex !== null && activeVersionIndex !== versionIndex) {
       onSelectVersion(activeVersionIndex, true);
@@ -1092,42 +1174,49 @@ export const ManifestHistoryPage = memo(function ManifestHistoryPage({
 
   const openEntry = useCallback(
     (entry: ChangedEntry, focus = true) => {
-      setTabState((current) => {
-        const existing = current.tabs.find((tab) => tab.key === entry.key);
-        return {
-          activeKey: focus ? entry.key : current.activeKey ?? entry.key,
-          tabs: existing ? current.tabs : [...current.tabs, entry],
-        };
-      });
+      const alreadyOpen = tabs.some((tab) => tab.key === entry.key);
+      setWorkspaceTabs(
+        alreadyOpen ? tabs : [...tabs, entry],
+        focus ? entry.key : activeKey ?? entry.key,
+      );
       if (focus && isMobile) setMobileInspectorOpen(true);
     },
-    [isMobile],
+    [activeKey, isMobile, setMobileInspectorOpen, setWorkspaceTabs, tabs],
   );
 
-  const closeEntry = useCallback((key: string) => {
-    setTabState((current) => {
-      const index = current.tabs.findIndex((entry) => entry.key === key);
-      const tabs = current.tabs.filter((entry) => entry.key !== key);
-      const activeKey =
-        current.activeKey === key
-          ? tabs[Math.max(0, index - 1)]?.key ?? null
-          : current.activeKey;
-      return { activeKey, tabs };
-    });
-    if (tabState.tabs.length <= 1) {
-      const currentState = window.history.state;
-      if (isMobile && isRecord(currentState) && currentState.historyDiffSheet === true) {
-        window.history.back();
+  const closeEntry = useCallback(
+    (key: string) => {
+      const index = tabs.findIndex((entry) => entry.key === key);
+      const nextTabs = tabs.filter((entry) => entry.key !== key);
+      const nextActiveKey =
+        activeKey === key ? nextTabs[Math.max(0, index - 1)]?.key ?? null : activeKey;
+      setWorkspaceTabs(nextTabs, nextActiveKey);
+      if (tabs.length <= 1) {
+        const currentState = window.history.state;
+        if (isMobile && isRecord(currentState) && currentState.historyDiffSheet === true) {
+          window.history.back();
+        }
+        setMobileInspectorOpen(false);
+        setInspectorMaximized(false);
       }
-      setMobileInspectorOpen(false);
-      setInspectorMaximized(false);
-    }
-  }, [isMobile, tabState.tabs.length]);
+    },
+    [
+      activeKey,
+      isMobile,
+      setInspectorMaximized,
+      setMobileInspectorOpen,
+      setWorkspaceTabs,
+      tabs,
+    ],
+  );
 
-  const selectEntryTab = useCallback((key: string) => {
-    setTabState((current) => ({ ...current, activeKey: key }));
-    if (isMobile) setMobileInspectorOpen(true);
-  }, [isMobile]);
+  const selectEntryTab = useCallback(
+    (key: string) => {
+      setWorkspaceTabs(tabs, key);
+      if (isMobile) setMobileInspectorOpen(true);
+    },
+    [isMobile, setMobileInspectorOpen, setWorkspaceTabs, tabs],
+  );
 
   const closeMobileInspector = useCallback(() => {
     const currentState = window.history.state;
@@ -1138,8 +1227,8 @@ export const ManifestHistoryPage = memo(function ManifestHistoryPage({
   }, []);
 
   const toggleInspectorMaximized = useCallback(() => {
-    setInspectorMaximized((maximized) => !maximized);
-  }, []);
+    setInspectorMaximized(!inspectorMaximized);
+  }, [inspectorMaximized, setInspectorMaximized]);
 
   const handleResizePointerDown = useCallback((event: PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -1159,7 +1248,7 @@ export const ManifestHistoryPage = memo(function ManifestHistoryPage({
         Math.max(minOverviewWidth, Math.min(maxOverviewWidth, proposed)),
       );
     },
-    [maxOverviewWidth, minOverviewWidth],
+    [maxOverviewWidth, minOverviewWidth, setOverviewWidth],
   );
 
   const handleResizePointerUp = useCallback(() => {
@@ -1177,22 +1266,81 @@ export const ManifestHistoryPage = memo(function ManifestHistoryPage({
         Math.max(minOverviewWidth, Math.min(maxOverviewWidth, currentWidth + delta)),
       );
     },
-    [effectiveOverviewWidth, maxOverviewWidth, minOverviewWidth, overviewWidth],
+    [
+      effectiveOverviewWidth,
+      maxOverviewWidth,
+      minOverviewWidth,
+      overviewWidth,
+      setOverviewWidth,
+    ],
   );
 
   const versionOptions = useMemo(
     () =>
-      versions.map((version) => ({
-        value: String(version.i),
-        label: versionLabel(version),
-        keywords: [
-          formatDate(version.date),
-          version.date,
-          version.version ?? '',
-          version.id,
-          version.i,
-        ].join(' '),
-      })),
+      versions.map((version) => {
+        const releaseName = resolveManifestReleaseName(version.date);
+        const patchNote = resolveManifestPatchNote(version.date);
+        const buildLabel = version.version ?? version.id;
+        const optionLabel =
+          patchNote || releaseName
+            ? [formatDate(version.date), patchNote?.label, releaseName]
+                .filter(Boolean)
+                .join(' · ')
+            : `${formatDate(version.date)} · ${buildLabel}`;
+        const counts = version.counts;
+        const countRows = [
+          { key: 'a', label: 'add', count: counts?.a ?? version.added ?? 0 },
+          { key: 'm', label: 'mod', count: counts?.m ?? version.modified ?? 0 },
+          { key: 'r', label: 'rem', count: counts?.r ?? version.removed ?? 0 },
+        ] as const;
+        return {
+          value: String(version.i),
+          label: optionLabel,
+          keywords: [
+            formatDate(version.date),
+            version.date,
+            version.version ?? '',
+            version.id,
+            version.i,
+            manifestReleaseSearchTerms(version.date),
+            manifestPatchNoteSearchTerms(version.date),
+          ].join(' '),
+          title: [
+            formatDate(version.date),
+            patchNote?.label,
+            releaseName,
+            `Bungie version ${buildLabel}`,
+          ].filter(Boolean).join(' · '),
+          renderOption: () => (
+            <div className={styles.versionOption}>
+              <span className={styles.versionOptionTop}>
+                <span className={styles.versionOptionDate}>{formatDate(version.date)}</span>
+                {releaseName && (
+                  <span className={styles.versionOptionRelease}>{releaseName}</span>
+                )}
+                {patchNote && (
+                  <span className={styles.versionOptionPatch}>{patchNote.label}</span>
+                )}
+                <span className={styles.versionOptionCounts}>
+                  {countRows.map(({ key, label, count }) =>
+                    count > 0 ? (
+                      <span
+                        className={`${styles.versionOptionCount} ${styles[`versionOptionCount${key.toUpperCase()}`]}`}
+                        key={key}
+                      >
+                        {formatCount(count)} {label}
+                      </span>
+                    ) : null,
+                  )}
+                </span>
+              </span>
+              <span className={styles.versionOptionBuild}>
+                {version.version ?? version.id}
+              </span>
+            </div>
+          ),
+        };
+      }),
     [versions],
   );
 
@@ -1219,36 +1367,42 @@ export const ManifestHistoryPage = memo(function ManifestHistoryPage({
           aria-label="Release changes"
         >
           <header className={styles.versionPickerBar}>
-            <button
-              type="button"
-              className={styles.versionStep}
-              onClick={() => olderVersion && onSelectVersion(olderVersion.i)}
-              disabled={!olderVersion}
-              aria-label="Older release"
-              title={olderVersion ? formatDate(olderVersion.date) : 'Oldest archived release'}
-            >
-              <ChevronLeftIcon size={15} />
-            </button>
-            <Select
-              className={styles.versionSelect}
-              value={String(activeVersionIndex ?? '')}
-              onChange={(value) => onSelectVersion(Number(value))}
-              options={versionOptions}
-              searchable
-              searchPlaceholder="Search versions or dates..."
-              aria-label="Select manifest version"
-              title={activeVersion ? versionLabel(activeVersion) : 'Select manifest version'}
-            />
-            <button
-              type="button"
-              className={styles.versionStep}
-              onClick={() => newerVersion && onSelectVersion(newerVersion.i)}
-              disabled={!newerVersion}
-              aria-label="Newer release"
-              title={newerVersion ? formatDate(newerVersion.date) : 'Latest archived release'}
-            >
-              <ChevronRightIcon size={15} />
-            </button>
+            <div className={styles.versionPickerGroup}>
+              <button
+                type="button"
+                className={styles.versionStep}
+                onClick={() => olderVersion && onSelectVersion(olderVersion.i)}
+                disabled={!olderVersion}
+                aria-label="Older release"
+                title={olderVersion ? formatDate(olderVersion.date) : 'Oldest archived release'}
+              >
+                <ChevronLeftIcon size={15} />
+              </button>
+              <Select
+                className={styles.versionSelect}
+                value={String(activeVersionIndex ?? '')}
+                onChange={(value) => onSelectVersion(Number(value))}
+                options={versionOptions}
+                searchable
+                maxPopupWidth={34 * 16}
+                searchPlaceholder="Search updates, releases, dates, or builds..."
+                aria-label="Select manifest version"
+                title={
+                  versionOptions.find((option) => option.value === String(activeVersionIndex))
+                    ?.title ?? 'Select manifest version'
+                }
+              />
+              <button
+                type="button"
+                className={styles.versionStep}
+                onClick={() => newerVersion && onSelectVersion(newerVersion.i)}
+                disabled={!newerVersion}
+                aria-label="Newer release"
+                title={newerVersion ? formatDate(newerVersion.date) : 'Latest archived release'}
+              >
+                <ChevronRightIcon size={15} />
+              </button>
+            </div>
             {isMobile && tabState.tabs.length > 0 && !mobileInspectorOpen && (
               <button
                 type="button"

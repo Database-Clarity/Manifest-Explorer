@@ -148,15 +148,17 @@ export const StatusBar = memo(function StatusBar({
             <ClarityWordmark height={12} aria-label="Clarity" />
           </a>
         </span>
+        <span className={styles.actionDivider} aria-hidden="true" />
         <a
           className={cx(styles.barLink, styles.kofiButton)}
           href="https://ko-fi.com/D2Clarity"
           target="_blank"
           rel="noopener noreferrer"
+          aria-label="Support Clarity on Ko-Fi"
           title="Support Clarity on Ko-Fi"
         >
-          <KofiIcon size={12} />
-          Support us on Ko-Fi
+          <KofiIcon size={13} />
+          Ko-Fi
         </a>
       </div>
     </footer>

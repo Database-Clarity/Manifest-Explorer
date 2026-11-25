@@ -3242,9 +3242,14 @@ async function buildSocket(
     const plugSet = await readDefinitionData('DestinyPlugSetDefinition', plugSetHash);
     const items = asRecordArray(plugSet?.reusablePlugItems);
     if (!items) continue;
+    const isRandomizedSet = plugSetHash === randomizedPlugSetHash;
     for (const item of items) {
+      const canRoll =
+        isRandomizedSet && typeof item.currentlyCanRoll === 'boolean'
+          ? item.currentlyCanRoll
+          : undefined;
       const plug = await buildPlug(item.plugItemHash, {
-        currentlyCanRoll: plugSetHash === randomizedPlugSetHash,
+        ...(canRoll !== undefined ? { currentlyCanRoll: canRoll } : {}),
       });
       if (plug) plugs.push(plug);
     }

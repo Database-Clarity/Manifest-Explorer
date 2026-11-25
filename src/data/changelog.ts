@@ -28,6 +28,38 @@ export {
 
 export const CHANGELOG: readonly ChangelogEntry[] = [
   {
+    version: '2026.11.26-1',
+    date: 'Nov 26, 2026',
+    title: 'Destiny 2 patch notes, split-pane History, date sorting & PlugSet overviews',
+    summary: 'Manifest updates are now paired with official Destiny 2 patch notes, History mirrors the Explorer split-pane workspace with a unified Formatted diff view, and Explorer gains date sorting, collapsible table groups, and PlugSet overviews.',
+    sections: [
+      {
+        heading: 'Manifest History & official patch notes',
+        items: [
+          'Paired archived manifest versions with official Bungie.net Destiny 2 patch notes and major expansion launches (including Ash & Iron and Monument of Triumph) — searchable by patch number, release name, date, or build ID, with direct patch-notes links in both History and the Inspector History tab.',
+          'Rebuilt the /history workspace into a resizable split-pane layout with a searchable version picker, compact single-row filter counts, Show 250 more / Show all pagination, saved Diff/Formatted and Inline/Split preferences, and preserved release/workspace state when jumping to Explorer and back.',
+          'Redesigned the History Formatted diff view to match the Diff tab: identical toolbar layout, a Changes / Full toggle that keeps diff highlights across the entire definition, inline expanders to reveal unchanged sibling fields in place, uncapped Expand all / Collapse unchanged, and Copy / Download .json buttons.',
+          'On phones, History entry diffs open in a smooth slide-over sheet with working browser Back navigation and auto-scrolling tab strips.',
+        ],
+      },
+      {
+        heading: 'Explorer, sorting & grouping',
+        items: [
+          'Added Released and Updated date sorting across the manifest, paired with a clean field selector and direction toggle button.',
+          'Added collapsible Group by Table sections in both List and Grid views, removed the 2-column Grid cap for multi-column desktop grids, and kept table names visible on Grid cards.',
+          'Replaced native browser dropdowns with custom Clarity-styled menus, embedded the Filters button inside the search bar, collapsed the Tables list by default, and made element: canonical with full filter alias highlighting (damage:, rarity:, weapon:, etc.).',
+        ],
+      },
+      {
+        heading: 'Inspector & Overview improvements',
+        items: [
+          'Renamed Pretty view to Formatted across the app, added inline Bungie icons to JSON reference pills, and aligned Variants hashes with full-row hover highlighting.',
+          'Added a structured Overview tab for DestinyPlugSetDefinition with plug search and navigation, clickable PlugSet links on every weapon socket, a working Expand all across randomized perks and shader sockets, and fixed reusable shaders/mods/ornaments incorrectly showing as retired.',
+        ],
+      },
+    ],
+  },
+  {
     version: '2026.11.24-2',
     date: 'Nov 24, 2026',
     title: 'Faster loading, snappier search & smoother mobile history',

@@ -1,7 +1,7 @@
 export const CHANGELOG_STORAGE_KEY = 'clarity-manifest-explorer:last-seen-changelog';
 
 /** Keep in sync with CHANGELOG[0].version in changelog.ts. */
-export const LATEST_CHANGELOG_VERSION = '2026.11.24-2';
+export const LATEST_CHANGELOG_VERSION = '2026.11.26-1';
 
 export const CHANGELOG_SEEN_EVENT = 'manifest-explorer:changelog-seen';
 

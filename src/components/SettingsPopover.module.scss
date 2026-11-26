@@ -51,9 +51,11 @@
   max-width: 100%;
 }
 
+// The unified segmented item fills the track height (1.75rem desktop /
+// var(--tap) touch); adding control-size here would make it taller than the
+// track and tower over the adjacent 28px UI scale stepper.
 .segBtn {
   @include ctl.segmented-item;
-  @include ctl.control-size;
   display: inline-flex;
   align-items: center;
   justify-content: center;

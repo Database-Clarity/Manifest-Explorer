@@ -279,8 +279,12 @@
   font-size: 0.75rem;
 }
 
+// Wrapping keeps every label on one full-width line of its button: a narrow
+// popover drops the row to two lines instead of crushing "Send to Diff" until
+// its nowrap text spills out of the 61px-wide button.
 .actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: stretch;
   gap: 0.25rem;
 }
@@ -296,13 +300,13 @@
 
 .primaryAction {
   @include ctl.primary-button;
-  flex: 1;
+  flex: 1 1 auto;
   font-size: 0.75rem;
   padding: 0 0.5rem;
 }
 
 .actionBtn {
-  flex: 1;
+  flex: 1 1 auto;
 }
 
 .clearBtn {
@@ -317,8 +321,7 @@
   align-items: center;
   justify-content: center;
   gap: 0.1875rem;
-  flex: 1;
-  min-width: 0;
+  flex: 1 1 auto;
   color: var(--accent-ink);
   font-size: 0.75rem;
   white-space: nowrap;

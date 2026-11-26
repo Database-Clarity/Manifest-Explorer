@@ -255,6 +255,18 @@
     min-height: 2.25rem;
   }
 
+  // A full tap target for removing a recent: the row grows to contain it and
+  // reserves the same width so the query text never runs under the button.
+  .historyOption {
+    min-height: var(--tap);
+    padding-right: calc(var(--tap) + 0.25rem);
+  }
+
+  .deleteRecent {
+    width: var(--tap);
+    height: var(--tap);
+  }
+
   .section {
     min-height: 1.5rem;
   }

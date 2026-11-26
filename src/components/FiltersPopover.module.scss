@@ -53,7 +53,9 @@
   .optionsInline {
     order: 3;
     flex-basis: 100%;
-    flex-wrap: nowrap;
+    // Wrap instead of forcing one clipped line: "Group by table" and the
+    // fuzziness slider used to overflow the popover's right edge at 390px.
+    flex-wrap: wrap;
     column-gap: 0.25rem;
     row-gap: 0.25rem;
   }
@@ -262,7 +264,7 @@
 
 @include theme.mobile-or-coarse {
   .collapsibleSummary {
-    min-height: 36px;
+    min-height: var(--tap);
     padding: 0.25rem 0.125rem;
   }
 }

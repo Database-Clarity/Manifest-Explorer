@@ -27,7 +27,7 @@ import {
   type ReleaseItemTuple,
   type ReleaseTableChanges,
 } from '../../manifest/history';
-import { getFriendlyTableName } from '../../manifest/tables';
+import { getFriendlyTableName, getShortTableName } from '../../manifest/tables';
 import type { DefinitionRef, DefinitionDetailPayload } from '../../types/manifest';
 import { useSettingsStore } from '../../stores/settings';
 import {
@@ -913,6 +913,10 @@ function HistoryEntryTabs({
 }): ReactNode {
   const tabsRef = useRef<HTMLDivElement | null>(null);
   const activeTabRef = useRef<HTMLDivElement | null>(null);
+  const nameCounts = new Map<string, number>();
+  for (const entry of tabs) {
+    nameCounts.set(entry.name, (nameCounts.get(entry.name) ?? 0) + 1);
+  }
 
   useLayoutEffect(() => {
     const scrollActiveTab = (): void => {
@@ -938,45 +942,54 @@ function HistoryEntryTabs({
       role="tablist"
       aria-label="History entry diffs"
     >
-      {tabs.map((entry) => (
-        <div
-          ref={activeKey === entry.key ? activeTabRef : undefined}
-          className={
-            activeKey === entry.key
-              ? `${styles.entryTab} ${styles.entryTabActive}`
-              : styles.entryTab
-          }
-          key={entry.key}
-          onMouseDown={preventMiddleClickAutoScroll}
-          onAuxClick={(event) => {
-            if (event.button === 1) {
-              event.preventDefault();
-              event.stopPropagation();
-              onCloseEntry(entry.key);
+      {tabs.map((entry) => {
+        const tableAndHash = `${entry.table}:${entry.hash}`;
+        return (
+          <div
+            ref={activeKey === entry.key ? activeTabRef : undefined}
+            className={
+              activeKey === entry.key
+                ? `${styles.entryTab} ${styles.entryTabActive}`
+                : styles.entryTab
             }
-          }}
-        >
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeKey === entry.key}
-            className={styles.entryTabSelect}
-            onClick={() => onSelectEntry(entry.key)}
-            title={entry.name}
+            key={entry.key}
+            onMouseDown={preventMiddleClickAutoScroll}
+            onAuxClick={(event) => {
+              if (event.button === 1) {
+                event.preventDefault();
+                event.stopPropagation();
+                onCloseEntry(entry.key);
+              }
+            }}
           >
-            <BungieIcon icon={entry.icon} size={19} />
-            <span>{entry.name}</span>
-          </button>
-          <button
-            type="button"
-            className={styles.closeEntryTab}
-            aria-label={`Close ${entry.name} history tab`}
-            onClick={() => onCloseEntry(entry.key)}
-          >
-            ×
-          </button>
-        </div>
-      ))}
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeKey === entry.key}
+              aria-label={`${entry.name}, ${entry.table}, hash ${entry.hash}`}
+              className={styles.entryTabSelect}
+              onClick={() => onSelectEntry(entry.key)}
+              title={`${entry.name} (${tableAndHash})`}
+            >
+              <BungieIcon icon={entry.icon} size={19} />
+              <span>{entry.name}</span>
+              {(nameCounts.get(entry.name) ?? 0) > 1 && (
+                <span className={styles.entryTabCategory}>
+                  {getShortTableName(entry.table)}
+                </span>
+              )}
+            </button>
+            <button
+              type="button"
+              className={styles.closeEntryTab}
+              aria-label={`Close ${entry.name} history tab`}
+              onClick={() => onCloseEntry(entry.key)}
+            >
+              ×
+            </button>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -1384,7 +1397,7 @@ export const ManifestHistoryPage = memo(function ManifestHistoryPage({
                 onChange={(value) => onSelectVersion(Number(value))}
                 options={versionOptions}
                 searchable
-                maxPopupWidth={34 * 16}
+                maxPopupWidth="34rem"
                 searchPlaceholder="Search updates, releases, dates, or builds..."
                 aria-label="Select manifest version"
                 title={

@@ -110,17 +110,22 @@
   min-width: 0;
 }
 
+// Let the unified track own the height (1.75rem desktop / var(--tap) touch);
+// the item only fills it so the sort row never grows taller than the filter
+// field beside it.
 .sortItem {
   @include ctl.segmented-item;
-  min-height: 1.75rem;
   padding: 0 0.5rem;
   font-size: 0.6875rem;
   line-height: 1;
   white-space: nowrap;
-}
 
-.sortItemActive {
-  @include ctl.segmented-active;
+  // Class-based active styling (aria-pressed already covers this) never dims
+  // on hover; keep both paths on the lifted pill treatment.
+  &.sortItemActive,
+  &.sortItemActive:hover:not(:disabled) {
+    @include ctl.segmented-active;
+  }
 }
 
 .filterWrap {

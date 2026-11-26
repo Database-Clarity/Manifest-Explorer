@@ -64,7 +64,6 @@
   min-width: 0;
 }
 
-.versionStep,
 .mobileTabsButton,
 .maximizeButton {
   @include ctl.quiet-button;
@@ -83,15 +82,13 @@
 }
 
 .versionStep {
-  border: 1px solid var(--hair);
+  @include ctl.button;
+  width: 1.75rem;
+  height: 1.75rem;
+  min-width: 1.75rem;
+  min-height: 1.75rem;
+  padding: 0;
   border-radius: 0.25rem;
-  background: var(--raised);
-
-  &:hover:not(:disabled) {
-    border-color: var(--ghost-edge);
-    background: var(--hover);
-    color: var(--text);
-  }
 
   &:disabled {
     opacity: 0.45;
@@ -103,7 +100,8 @@
   flex: 1 1 auto;
   width: 0;
   min-width: 0;
-  min-height: 2rem;
+  height: 1.75rem;
+  min-height: 1.75rem;
   font-size: 0.75rem;
 }
 
@@ -280,7 +278,11 @@
   height: 100%;
   overflow-x: auto;
   overflow-y: hidden;
-  scrollbar-width: thin;
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
 }
 
 .entryTab {
@@ -306,12 +308,18 @@
   box-shadow: inset 0 2px 0 var(--accent-ink);
 }
 
+.entryTabActive,
+.entryTabActive:hover {
+  background: var(--raised);
+  color: var(--text);
+}
+
 .entryTabSelect {
   display: inline-flex;
   align-items: center;
   gap: 0.3125rem;
   min-width: 0;
-  max-width: 16rem;
+  max-width: 14rem;
   height: 100%;
   padding: 0;
   border: 0;
@@ -334,12 +342,28 @@
   }
 }
 
+.entryTabActive .entryTabSelect {
+  font-weight: 600;
+}
+
+.entryTabCategory {
+  flex: 0 0 auto;
+  padding: 0 0.25rem;
+  border: 1px solid var(--hair);
+  border-radius: 0.125rem;
+  background: var(--col);
+  color: var(--text3);
+  font-size: 0.625rem;
+  font-weight: 500;
+  line-height: 1.3;
+}
+
 .closeEntryTab {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1.375rem;
-  height: 1.375rem;
+  width: 1.25rem;
+  height: 1.25rem;
   margin-right: 0.25rem;
   padding: 0;
   border: 1px solid transparent;
@@ -354,6 +378,12 @@
   &:focus-visible {
     border-color: var(--ghost-edge);
     background: var(--raised);
+    color: var(--text);
+  }
+
+  &:active {
+    border-color: var(--ctl-hover-edge);
+    background: var(--ctl-pressed);
     color: var(--text);
   }
 
@@ -484,33 +514,6 @@
   text-transform: uppercase;
 }
 
-.totalCounts {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: 0.375rem;
-  max-width: 100%;
-  padding-top: 0.375rem;
-
-  span {
-    padding: 0.25rem 0.4375rem;
-    border: 1px solid var(--hair);
-    border-radius: 0.25rem;
-    background: var(--col);
-    color: var(--text2);
-    font-size: 0.6875rem;
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-  }
-
-  .countAdded,
-  .countModified,
-  .countRemoved {
-    background: var(--raised);
-  }
-}
-
 .overviewControls {
   display: flex;
   flex-direction: column;
@@ -544,10 +547,21 @@
   color: var(--text);
 }
 
+.kindFilterActive,
+.kindFilterActive:hover:not(:disabled) {
+  border-color: var(--accent-ink);
+  background: var(--sel);
+  color: var(--text);
+}
+
 .kindFilter span {
   color: var(--text3);
   font-family: var(--code-font-family);
   font-size: 0.625rem;
+}
+
+.kindFilterActive span {
+  color: var(--text2);
 }
 
 .overviewSearchRow {
@@ -818,6 +832,12 @@
   box-shadow: inset 2px 0 0 var(--accent-ink);
 }
 
+.entryCardActive,
+.entryCardActive:hover {
+  border-color: var(--accent-ink);
+  background: var(--sel);
+}
+
 .entryInfo {
   display: flex;
   flex: 1 1 auto;
@@ -842,6 +862,11 @@
   min-width: 0;
   color: var(--text3);
   font-size: 0.625rem;
+}
+
+.entryCardActive .entryMeta,
+.entryCardActive .fieldCount {
+  color: var(--text2);
 }
 
 .entrySubtitle {
@@ -989,20 +1014,11 @@
 
 .entryModes {
   @include ctl.segmented-track;
-  box-sizing: border-box;
-  min-height: 1.75rem;
-  gap: 0.125rem;
-  padding: 2px;
-  font-size: 0.75rem;
 }
 
 .entryMode,
 .entryModeActive {
   @include ctl.segmented-item;
-  box-sizing: border-box;
-  min-height: calc(1.75rem - 6px);
-  padding: 0 0.4375rem;
-  font-size: 0.75rem;
 }
 
 .entryModeActive,
@@ -1010,17 +1026,6 @@
 .entryMode[aria-pressed='true'],
 .entryMode[aria-pressed='true']:hover:not(:disabled) {
   @include ctl.segmented-active;
-}
-
-@include theme.mobile-or-coarse {
-  .entryModes {
-    min-height: var(--tap);
-  }
-
-  .entryMode,
-  .entryModeActive {
-    min-height: calc(var(--tap) - 6px);
-  }
 }
 
 .entryContent {
@@ -1091,11 +1096,6 @@
   .releaseHeader {
     flex-direction: column;
     gap: 0.5rem;
-  }
-
-  .totalCounts {
-    justify-content: flex-start;
-    padding-top: 0;
   }
 
   .entryHeader {
@@ -1179,7 +1179,7 @@
   .entryInspectorMobileOpen {
     position: fixed;
     inset: 0;
-    z-index: 60;
+    z-index: 80;
     display: flex;
     width: auto;
     max-width: none;
@@ -1212,11 +1212,6 @@
 
   .entryTabs {
     min-height: var(--tap);
-    scrollbar-width: none;
-
-    &::-webkit-scrollbar {
-      display: none;
-    }
   }
 
   .entryTab {
@@ -1229,8 +1224,8 @@
   }
 
   .closeEntryTab {
-    width: var(--tap);
-    height: var(--tap);
+    width: 1.75rem;
+    height: 1.75rem;
     margin-right: 0;
   }
 
@@ -1246,12 +1241,12 @@
   }
 
   .tableGroupTitle {
-    flex-basis: 100%;
+    flex-basis: auto;
   }
 
   .tableGroupAside {
     justify-content: flex-start;
-    margin-left: 1.25rem;
+    margin-left: 0;
   }
 
   .tableKindCounts {
@@ -1270,6 +1265,34 @@
     min-height: 2rem;
     padding: 0 0.375rem;
     font-size: 0.625rem;
+  }
+}
+
+@include theme.mobile-or-coarse {
+  .kindFilter,
+  .kindFilterActive,
+  .expandGroups,
+  .entrySearch,
+  .openExplorer,
+  .showMore,
+  .versionStep,
+  .versionSelect {
+    min-height: var(--tap);
+  }
+
+  .versionStep,
+  .versionSelect {
+    height: var(--tap);
+  }
+
+  .versionStep {
+    width: var(--tap);
+    min-width: var(--tap);
+  }
+
+  .closeEntryTab {
+    width: 1.75rem;
+    height: 1.75rem;
   }
 }
 

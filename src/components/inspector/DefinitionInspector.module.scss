@@ -16,7 +16,9 @@
   @media (max-width: 900px) {
     position: fixed;
     inset: 0;
-    z-index: 60;
+    // Above the global header (70) so the sheet's session bar and nav controls
+    // are never clipped; below Select popups (90) and the portaled lightbox (200).
+    z-index: 80;
     width: 100%;
     max-width: none;
     min-width: 0;
@@ -60,7 +62,9 @@
   }
 }
 
-.pinnedDiffTab {
+// Higher specificity than `.sessionTab` so the pinned tab's divider survives
+// the shared `border-right: 1px solid var(--hair)` rule below it in source order.
+.sessionTab.pinnedDiffTab {
   position: relative;
   z-index: 1;
   max-width: 8rem;
@@ -339,7 +343,8 @@
   }
 }
 
-.sessionTabActive {
+.sessionTabActive,
+.sessionTabActive:hover {
   background: var(--chrome);
   border-top-color: var(--accent-ink);
 }
@@ -814,6 +819,7 @@
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
+  min-height: 1.5rem;
   padding: 0.0625rem 0.375rem;
   font-size: 0.75rem;
   border: 1px solid var(--ghost-edge);
@@ -853,6 +859,10 @@
     color: var(--accent-ink);
   }
   &:focus-visible { @include ctl.focus-ring; }
+
+  @include theme.mobile-or-coarse {
+    min-height: var(--tap);
+  }
 }
 
 .diffEntityButtonOn,
@@ -911,7 +921,8 @@
   }
 }
 
-.coTableActive {
+.coTableActive,
+.coTableActive:hover {
   background: var(--sel);
   color: var(--text);
   border-color: var(--accent-ink);
@@ -1102,13 +1113,17 @@
   background: var(--col);
   border-bottom: 1px solid var(--hair);
   flex-shrink: 0;
+
+  .actionBtn {
+    font-size: 0.75rem;
+  }
 }
 
 .rawPre {
   flex: 1;
   min-height: 0;
   margin: 0;
-  padding: 0.625rem 0.75rem 1.5rem;
+  padding: 0.5rem 0.625rem 1.5rem;
   overflow: auto;
   background: var(--editor);
   color: var(--editor-text);

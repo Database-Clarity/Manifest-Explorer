@@ -80,20 +80,12 @@
 
 .layoutToggle {
   @include ctl.segmented-track;
-  box-sizing: border-box;
-  height: 28px;
-  min-height: 28px;
-  font-size: 12px;
 }
 
 .layoutButton,
 .layoutButtonActive {
   @include ctl.segmented-item;
-  box-sizing: border-box;
-  height: 22px;
-  min-height: 22px;
   padding: 0 0.4375rem;
-  font-size: 12px;
 }
 
 .layoutButtonActive,
@@ -106,10 +98,10 @@
 .toolbarBtn {
   @include ctl.button;
   box-sizing: border-box;
-  height: 28px;
-  min-height: 28px;
+  height: 1.75rem;
+  min-height: 1.75rem;
   padding: 0.125rem 0.375rem;
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .wrapToggle {
@@ -117,14 +109,14 @@
   align-items: center;
   gap: 0.3125rem;
   box-sizing: border-box;
-  height: 28px;
-  min-height: 28px;
+  height: 1.75rem;
+  min-height: 1.75rem;
   padding: 0 0.4375rem;
-  border: 1px solid var(--line);
+  border: 1px solid var(--ctl-edge);
   border-radius: 0.25rem;
   background: var(--seg-track);
   color: var(--seg-inactive-ink);
-  font-size: 12px;
+  font-size: 0.75rem;
   cursor: pointer;
   user-select: none;
   white-space: nowrap;
@@ -153,6 +145,10 @@
     border-color: var(--ctl-hover-edge);
     color: var(--text);
   }
+}
+
+.wrapToggleActive:hover {
+  border-color: var(--seg-active-edge);
 }
 
 .toolbarBtn {
@@ -187,7 +183,7 @@
   padding: 0.25rem 0;
   font-family: var(--code-font-family);
   font-size: var(--code-font-size);
-  line-height: 1.55;
+  line-height: 1.5;
   font-variant-ligatures: none;
   font-feature-settings: 'liga' 0, 'calt' 0;
 }
@@ -198,7 +194,7 @@
   padding: 0.25rem 0;
   font-family: var(--code-font-family);
   font-size: var(--code-font-size);
-  line-height: 1.55;
+  line-height: 1.5;
   font-variant-ligatures: none;
   font-feature-settings: 'liga' 0, 'calt' 0;
 }
@@ -476,7 +472,7 @@
     @include ctl.contain-focus-rings;
     min-height: 1.75rem;
     padding: 0.125rem 0.375rem;
-    border: 1px solid var(--line);
+    border: 1px solid var(--ctl-edge);
     border-radius: 0.1875rem;
     background: var(--strip);
     color: var(--link);
@@ -522,7 +518,7 @@
     @include ctl.contain-focus-rings;
     min-height: 1.75rem;
     padding: 0.125rem 0.5rem;
-    border: 1px solid var(--line);
+    border: 1px solid var(--ctl-edge);
     border-radius: 0.1875rem;
     background: var(--col);
     color: var(--link);
@@ -551,18 +547,11 @@
     box-sizing: border-box;
     height: var(--tap);
     min-height: var(--tap);
-    font-size: 12px;
   }
 
-  .layoutToggle {
-    height: var(--tap);
+  .collapsedRegion button,
+  .renderMore button {
     min-height: var(--tap);
-  }
-
-  .layoutButton,
-  .layoutButtonActive {
-    height: calc(var(--tap) - 6px);
-    min-height: calc(var(--tap) - 6px);
   }
 
   .splitCell {
@@ -610,6 +599,10 @@
 }
 
 @include theme.mobile {
+  .toolbarActions {
+    justify-content: flex-start;
+  }
+
   .layoutToggle {
     display: none;
   }

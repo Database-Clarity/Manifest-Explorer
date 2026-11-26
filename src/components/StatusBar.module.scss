@@ -20,12 +20,14 @@
   overflow: hidden;
 }
 
+// Primary status is the highest-priority item in the bar: it never shrinks, so
+// "Ready" stays intact even at 150% UI scale. Lower-priority metadata
+// (version group, indexed counts) absorbs the remaining width and truncates.
 .status {
   display: inline-flex;
   align-items: center;
   gap: 0.375rem;
-  min-width: 0;
-  flex-shrink: 1;
+  flex-shrink: 0;
 }
 
 .dot {

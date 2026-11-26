@@ -95,33 +95,53 @@
   }
 }
 
-// Neutral segmented control: a clearly recessed track with 2px inner padding
-// and gaps so the active item reads as a separate, lifted pill. Deliberately
-// accent-free — the results already communicate their own state.
+// Neutral segmented control: a clearly recessed track with 1px inner padding
+// and gaps so the active item reads as a separate, lifted pill at the exact
+// same outer height (1.75rem desktop / var(--tap) touch) as adjacent fields and
+// buttons across every UI scale.
 @mixin segmented-track {
+  --seg-h: 1.75rem;
+  @include theme.mobile-or-coarse {
+    --seg-h: var(--tap);
+  }
   @include contain-focus-rings;
   box-sizing: border-box;
   display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 2px;
+  align-items: stretch;
+  gap: 1px;
+  padding: 1px;
+  height: var(--seg-h);
+  min-height: var(--seg-h);
   flex-shrink: 0;
   background: var(--seg-track);
   border: 1px solid var(--ctl-edge);
   border-radius: 0.3125rem;
 }
 
+// Lifted active pill: neutral surface elevation plus a crisp neutral edge and
+// full-strength foreground. Never an accent fill.
+@mixin segmented-active {
+  color: var(--text);
+  background: var(--seg-active);
+  border-color: var(--seg-active-edge);
+  font-weight: 600;
+}
+
 // Base item: transparent over the track with muted ink. The 1px transparent
 // border reserves room so the active pill's crisp edge never shifts layout.
 @mixin segmented-item {
+  box-sizing: border-box;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  height: 100%;
+  min-height: 0;
   border: 1px solid transparent;
   border-radius: 0.1875rem;
   background: transparent;
   color: var(--seg-inactive-ink);
   font: inherit;
+  font-size: 0.75rem;
   line-height: 1.2;
   cursor: pointer;
 
@@ -132,6 +152,13 @@
     }
   }
 
+  &[aria-pressed='true'],
+  &[aria-pressed='true']:hover:not(:disabled),
+  &[aria-current='page'],
+  &[aria-current='page']:hover:not(:disabled) {
+    @include segmented-active;
+  }
+
   &:focus-visible {
     @include focus-ring;
   }
@@ -140,15 +167,6 @@
     opacity: 0.45;
     cursor: default;
   }
-}
-
-// Lifted active pill: neutral surface elevation plus a crisp neutral edge and
-// full-strength foreground. Never an accent fill.
-@mixin segmented-active {
-  color: var(--text);
-  background: var(--seg-active);
-  border-color: var(--seg-active-edge);
-  font-weight: 600;
 }
 
 @mixin field {

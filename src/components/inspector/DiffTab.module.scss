@@ -37,9 +37,9 @@
   flex: 1 1 auto;
   min-width: 0;
   box-sizing: border-box;
-  height: 28px;
-  min-height: 28px;
-  font-size: 12px;
+  height: 1.75rem;
+  min-height: 1.75rem;
+  font-size: 0.75rem;
 }
 
 .triggerValue {
@@ -87,17 +87,16 @@
   justify-content: center;
   gap: 0.25rem;
   box-sizing: border-box;
-  height: 28px;
-  min-height: 28px;
+  height: 1.75rem;
+  min-height: 1.75rem;
   padding: 0 0.375rem;
-  font-size: 12px;
+  font-size: 0.75rem;
   white-space: nowrap;
 }
 
 .swapButton {
-  flex: 0 0 28px;
+  flex: 0 0 1.75rem;
   padding: 0;
-  font-size: 12px;
 
   &:disabled {
     opacity: 0.45;
@@ -208,14 +207,11 @@
 .baseTargetBtn {
   @include ctl.quiet-button;
   min-width: 2.5rem;
-  min-height: 1.5rem;
+  height: 1.75rem;
+  min-height: 1.75rem;
   padding: 0 0.375rem;
   font-size: 0.75rem;
   font-weight: 600;
-
-  @include theme.mobile-or-coarse {
-    min-height: var(--tap);
-  }
 }
 
 .baseTargetBtnActive,
@@ -228,13 +224,9 @@
 .removeButton {
   @include ctl.quiet-button;
   min-width: 1.75rem;
+  height: 1.75rem;
   min-height: 1.75rem;
   padding: 0;
-
-  @include theme.mobile-or-coarse {
-    min-width: var(--tap);
-    min-height: var(--tap);
-  }
 
   &:hover { color: var(--danger); }
 }
@@ -258,6 +250,7 @@
     display: inline-flex;
     align-items: center;
     gap: 0.25rem;
+    height: 1.75rem;
     min-height: 1.75rem;
     padding: 0 0.375rem;
     font-size: 0.6875rem;
@@ -295,6 +288,7 @@
     display: inline-flex;
     align-items: center;
     gap: 0.25rem;
+    height: 1.75rem;
     min-height: 1.75rem;
     padding: 0 0.5rem;
     font-size: 0.75rem;
@@ -331,23 +325,14 @@
 
 .modeToggle {
   @include ctl.segmented-track;
-  display: inline-flex;
-  align-items: stretch;
-  box-sizing: border-box;
-  height: 28px;
-  min-height: 28px;
-  font-size: 12px;
 
   button {
     @include ctl.segmented-item;
-    box-sizing: border-box;
-    height: 22px;
-    min-height: 22px;
     padding: 0 0.5rem;
-    font-size: 12px;
   }
 
-  .modeActive {
+  .modeActive,
+  .modeActive:hover:not(:disabled) {
     @include ctl.segmented-active;
   }
 }
@@ -356,7 +341,6 @@
   .itemSelect.itemSelect {
     height: var(--tap);
     min-height: var(--tap);
-    font-size: 12px;
   }
 
   .swapButton,
@@ -367,17 +351,18 @@
 
   .swapButton {
     flex-basis: var(--tap);
-    font-size: 12px;
   }
 
-  .modeToggle {
+  .baseTargetBtn,
+  .removeButton,
+  .bucketFooter button,
+  .emptyActions button {
     height: var(--tap);
     min-height: var(--tap);
   }
 
-  .modeToggle button {
-    height: calc(var(--tap) - 6px);
-    min-height: calc(var(--tap) - 6px);
+  .removeButton {
+    min-width: var(--tap);
   }
 }
 

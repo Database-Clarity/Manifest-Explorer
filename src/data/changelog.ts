@@ -28,6 +28,29 @@ export {
 
 export const CHANGELOG: readonly ChangelogEntry[] = [
   {
+    version: '2026.11.27-1',
+    date: 'Nov 27, 2026',
+    title: 'Site-wide toolbar, scaling & mobile polish',
+    summary: 'Standardized control heights, borders, and active states across every tab, subtab, popover, and /history view, fixed mobile inspector and lightbox stacking, and restored Overview hero screenshots.',
+    sections: [
+      {
+        heading: 'Unified toolbars, controls & UI scaling',
+        items: [
+          'Standardized every segmented toggle (Explorer/History, Filter/Find, Updates/Compare, Diff/Formatted, Inline/Split, Results List/Grid, Settings, Search History, and Lightbox) to match neighboring inputs and buttons at every Interface Scale (85%–150%) and touch size, with active pills staying highlighted on hover.',
+          'Aligned the Tables rail, Results pane, and Inspector top bars into one continuous header row, centered the search bar cleanly beside Explorer/History, and matched border contrast across buttons, toggles, and inputs.',
+          'Added a Swap button to the Inspector History Compare view, fixed unwrapped Diff rows collapsing narrower than the viewport, tightened Inspector tab close highlights so they never cover the active tab indicator, and switched Light mode diff toolbars to a neutral slate tint.',
+        ],
+      },
+      {
+        heading: 'Mobile, Overview & /history fixes',
+        items: [
+          'Fixed mobile Inspector sheets (both Explorer and /history) and the Image Lightbox appearing underneath the top navigation bar, and restored Overview hero screenshots that were clipping down to a 2px line.',
+          'Fixed mobile wrapping and button overflow in the Filters, Collector, and Lightbox toolbars, enlarged touch targets on /history and recent-search delete buttons, prevented /history tab overflow scrollbars from squashing tabs, and added short table badges to disambiguate duplicate /history tabs.',
+        ],
+      },
+    ],
+  },
+  {
     version: '2026.11.26-5',
     date: 'Nov 26, 2026',
     title: 'Search history, saved & named searches, independent 3-pane resizing & Diff polish',

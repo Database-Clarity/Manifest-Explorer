@@ -26,7 +26,7 @@ import {
   manifestPatchNoteSearchTerms,
   resolveManifestPatchNote,
 } from '../../data/manifestPatchNotes';
-import { ExternalLinkIcon } from '../../ui/Icons';
+import { ExternalLinkIcon, SwapIcon } from '../../ui/Icons';
 import styles from './InspectorTabs.module.scss';
 
 type HistoryView = 'updates' | 'compare';
@@ -462,6 +462,17 @@ export const HistoryTab = memo(function HistoryTab({
     />
   );
 
+  const effectiveFromVersion = fromVersion || CURRENT_VERSION;
+  const canSwapVersions =
+    Boolean(effectiveFromVersion) &&
+    Boolean(toVersion) &&
+    effectiveFromVersion !== toVersion;
+  const swapVersions = (): void => {
+    if (!canSwapVersions) return;
+    setFromVersion(toVersion);
+    setToVersion(effectiveFromVersion);
+  };
+
   if (!result) {
     return (
       <div className={styles.historyTab} data-inspector-scroll="true">
@@ -581,13 +592,23 @@ export const HistoryTab = memo(function HistoryTab({
               <span>From</span>
               <Select
                 className={styles.historySelect}
-                value={fromVersion || CURRENT_VERSION}
+                value={effectiveFromVersion}
                 onChange={setFromVersion}
                 options={compareOptions}
                 searchable
                 searchPlaceholder="Search versions..."
               />
             </label>
+            <button
+              type="button"
+              className={styles.historySwapButton}
+              onClick={swapVersions}
+              disabled={!canSwapVersions}
+              aria-label="Swap from and to versions"
+              title="Swap from and to versions"
+            >
+              <SwapIcon size={14} />
+            </button>
             <label className={styles.historySelectLabel}>
               <span>To</span>
               <Select

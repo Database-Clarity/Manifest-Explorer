@@ -54,8 +54,8 @@ export interface SelectProps<T extends string = string> {
   align?: 'start' | 'end';
   /** Minimum popup width in CSS pixels or a CSS length such as `15rem`. */
   minPopupWidth?: number | string;
-  /** Maximum popup width in CSS pixels. */
-  maxPopupWidth?: number;
+  /** Maximum popup width in CSS pixels or a CSS length such as `34rem`. */
+  maxPopupWidth?: number | string;
   /** Defaults to enabled for lists with 321 or more options. */
   searchable?: boolean;
   searchPlaceholder?: string;
@@ -230,9 +230,13 @@ export function Select<T extends string = string>({
     const triggerRect = trigger.getBoundingClientRect();
     const area = visibleArea(window);
     const requestedWidth = minimumWidthInPixels(minPopupWidth);
+    const maximumWidth =
+      maxPopupWidth === undefined
+        ? Number.POSITIVE_INFINITY
+        : minimumWidthInPixels(maxPopupWidth);
     const naturalWidth = Math.min(
       Math.max(triggerRect.width, requestedWidth),
-      maxPopupWidth === undefined ? Number.POSITIVE_INFINITY : Math.max(0, maxPopupWidth),
+      Math.max(0, maximumWidth),
     );
     const searchHeight =
       popup.querySelector<HTMLElement>('[data-select-search-wrap]')?.offsetHeight ?? 0;

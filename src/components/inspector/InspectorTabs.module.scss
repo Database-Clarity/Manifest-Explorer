@@ -33,16 +33,30 @@
 }
 
 .screenshotBlock {
+  box-sizing: border-box;
+  display: flex;
+  flex-shrink: 0;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  max-height: 15rem;
+  padding: 0;
   border: 1px solid var(--line);
   border-radius: 0.25rem;
   overflow: hidden;
   background: var(--editor);
+  font: inherit;
+  cursor: zoom-in;
+
+  &:focus-visible {
+    @include ctl.focus-ring;
+  }
 }
 
 .heroScreenshot {
   display: block;
   width: 100%;
-  max-height: 15rem;
+  height: 100%;
+  min-height: 0;
   object-fit: cover;
 }
 
@@ -761,7 +775,8 @@
   }
 }
 
-.currentRow {
+.currentRow,
+.currentRow:hover {
   background: var(--sel);
   border-left-color: var(--accent-ink);
 }
@@ -840,6 +855,17 @@
 
   &:hover {
     background: transparent;
+  }
+}
+
+.variantActions > .openInNewTabBtn,
+.variantActions > .smallBtn {
+  height: 1.75rem;
+  min-height: 1.75rem;
+
+  @include theme.mobile-or-coarse {
+    height: var(--tap);
+    min-height: var(--tap);
   }
 }
 
@@ -1111,12 +1137,11 @@
 
 .historyViewButton {
   @include ctl.segmented-item;
-  min-height: 1.75rem;
   padding: 0.125rem 0.625rem;
-  font-size: 0.75rem;
 }
 
-.historyViewButtonActive {
+.historyViewButtonActive,
+.historyViewButtonActive:hover:not(:disabled) {
   @include ctl.segmented-active;
 }
 
@@ -1235,7 +1260,7 @@
   padding: 0.375rem 0.5rem;
   border-left: 1px solid var(--hair);
   color: var(--link);
-  font-size: 0.625rem;
+  font-size: 0.6875rem;
   font-weight: 600;
   text-decoration: none;
   white-space: nowrap;
@@ -1324,12 +1349,11 @@
 
 .historyModeButton {
   @include ctl.segmented-item;
-  min-height: 1.75rem;
   padding: 0.125rem 0.5rem;
-  font-size: 0.6875rem;
 }
 
-.historyModeButtonActive {
+.historyModeButtonActive,
+.historyModeButtonActive:hover:not(:disabled) {
   @include ctl.segmented-active;
 }
 
@@ -1370,7 +1394,8 @@
 
 .historyCompareControls {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: end;
   gap: 0.5rem;
 }
 
@@ -1387,6 +1412,30 @@
   width: 100%;
   min-width: 0;
   font-size: 0.75rem;
+}
+
+.historySwapButton {
+  @include ctl.button;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: end;
+  width: 1.75rem;
+  min-width: 1.75rem;
+  height: 1.75rem;
+  min-height: 1.75rem;
+  padding: 0;
+
+  &:disabled {
+    opacity: 0.45;
+  }
+
+  @include theme.mobile-or-coarse {
+    width: var(--tap);
+    min-width: var(--tap);
+    height: var(--tap);
+    min-height: var(--tap);
+  }
 }
 
 @include theme.mobile-or-coarse {

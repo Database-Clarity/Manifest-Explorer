@@ -84,8 +84,6 @@
 .pageNav {
   @include ctl.segmented-track;
   flex: 0 0 auto;
-  gap: 1px;
-  padding: 1px;
   font-size: 0.6875rem;
 
   @include theme.mobile {
@@ -96,8 +94,8 @@
 .pageNavLink,
 .pageNavActive {
   @include ctl.segmented-item;
-  min-height: 1.5rem;
   padding: 0 0.5rem;
+  font-size: 0.6875rem;
 }
 
 .pageNavActive,
@@ -121,7 +119,6 @@
 @include theme.mobile-or-coarse {
   .pageNavLink,
   .pageNavActive {
-    min-height: var(--tap);
     padding: 0 0.5625rem;
   }
 }

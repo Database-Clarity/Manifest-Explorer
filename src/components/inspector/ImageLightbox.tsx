@@ -7,6 +7,7 @@ import {
   type CSSProperties,
   type ReactNode,
 } from 'react';
+import { createPortal } from 'react-dom';
 import type { ImageScalingMode } from '../../types/manifest';
 import type { RgbaImage } from '../../utils/upscale';
 import {
@@ -894,7 +895,13 @@ export function ImageLightbox({
     }
   };
 
-  return (
+  if (typeof document === 'undefined') {
+    return null;
+  }
+
+  // Portal to <body> so the viewer escapes the inspector's stacking context
+  // (mobile pane z-index 80, global header 70) and always paints on top.
+  return createPortal(
     <div
       className={styles.backdrop}
       role="dialog"
@@ -1157,6 +1164,7 @@ export function ImageLightbox({
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

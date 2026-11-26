@@ -954,13 +954,6 @@ export const OverviewTab = memo(function OverviewTab({
           onClick={() => setLightbox(overview.screenshot ?? null)}
           title="Open screenshot full size"
           aria-label="Open screenshot full size"
-          style={{
-            display: 'block',
-            width: '100%',
-            padding: 0,
-            font: 'inherit',
-            cursor: 'zoom-in',
-          }}
         >
           <img
             src={bungieAssetUrl(overview.screenshot)}

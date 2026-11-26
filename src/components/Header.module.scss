@@ -168,7 +168,8 @@
 
 /** The search field owns its Filters action so it reads as one control. */
 .searchCluster {
-  --search-row-height: calc(1.75rem - 2px);
+  --search-box-height: 1.75rem;
+  --search-row-height: calc(var(--search-box-height) - 2px);
   display: flex;
   align-items: center;
   position: relative;
@@ -176,10 +177,10 @@
   flex: 1 1 auto;
   min-width: 0;
   max-width: 46rem;
-  height: var(--search-row-height);
+  height: var(--search-box-height);
 
   @include theme.mobile {
-    --search-row-height: calc(var(--tap) - 2px);
+    --search-box-height: var(--tap);
     align-self: flex-start;
     gap: 0.25rem;
   }
@@ -491,11 +492,7 @@
 
 @include theme.mobile-or-coarse {
   .searchCluster {
-    --search-row-height: calc(var(--tap) - 2px);
-  }
-
-  .searchField {
-    --search-pad-y: 0.625rem;
+    --search-box-height: var(--tap);
   }
 }
 
@@ -536,7 +533,7 @@
       align-items: flex-start;
       flex: 1 1 0;
       width: 100%;
-      height: var(--search-row-height);
+      height: var(--search-box-height);
     }
 
     .searchField {

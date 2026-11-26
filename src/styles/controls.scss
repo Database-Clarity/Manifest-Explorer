@@ -100,24 +100,29 @@
 // accent-free — the results already communicate their own state.
 @mixin segmented-track {
   @include contain-focus-rings;
+  box-sizing: border-box;
   display: inline-flex;
   align-items: center;
   gap: 2px;
   padding: 2px;
   flex-shrink: 0;
   background: var(--seg-track);
-  border: 1px solid var(--line);
+  border: 1px solid var(--ctl-edge);
   border-radius: 0.3125rem;
 }
 
 // Base item: transparent over the track with muted ink. The 1px transparent
 // border reserves room so the active pill's crisp edge never shifts layout.
 @mixin segmented-item {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: 1px solid transparent;
   border-radius: 0.1875rem;
   background: transparent;
   color: var(--seg-inactive-ink);
   font: inherit;
+  line-height: 1.2;
   cursor: pointer;
 
   @media (hover: hover) {

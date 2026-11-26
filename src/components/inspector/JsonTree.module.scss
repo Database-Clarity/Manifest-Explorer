@@ -115,6 +115,9 @@
   box-sizing: border-box;
   flex: 0 0 auto;
   justify-self: start;
+  gap: 1px;
+  padding: 1px;
+  height: 1.75rem;
   min-height: 1.75rem;
   width: fit-content;
   font-size: 0.75rem;
@@ -187,7 +190,8 @@
 .searchModeBtn {
   @include ctl.segmented-item;
   box-sizing: border-box;
-  min-height: calc(1.75rem - 6px);
+  height: 100%;
+  min-height: 0;
   padding: 0 0.5rem;
   font-size: 0.75rem;
 
@@ -876,8 +880,14 @@
     min-height: var(--tap);
   }
 
+  .searchModes {
+    height: var(--tap);
+    min-height: var(--tap);
+  }
+
   .searchModeBtn {
-    min-height: calc(var(--tap) - 6px);
+    height: 100%;
+    min-height: 0;
     padding: 0 0.4375rem;
   }
 

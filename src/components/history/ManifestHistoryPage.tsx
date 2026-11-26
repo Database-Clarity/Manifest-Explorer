@@ -841,7 +841,7 @@ const EntryDiffPanel = memo(function EntryDiffPanel({
       {loading ? (
         <div className={styles.entryState}>Loading definition and archived revisions…</div>
       ) : mode === 'diff' ? (
-        <div className={styles.entryContent}>
+        <div className={`${styles.entryContent} ${styles.entryContentDiff}`}>
           {historyError && (
             <div className={styles.historyNotice} role="status">
               {historyError} {definition ? 'Showing the current definition where available.' : ''}

@@ -30,7 +30,6 @@ import {
   ChevronDownIcon,
   CloseIcon,
   CopyIcon,
-  DiffIcon,
   DownloadIcon,
   LinkIcon,
   MaximizeIcon,
@@ -543,12 +542,6 @@ function DefinitionInspectorImpl({
       icon: iconPath,
     });
   }, [currentRef, iconPath, itemName, pinForDiff, unsignedHash]);
-
-  const handlePinDiffClick = useCallback(() => {
-    flushScroll();
-    pinCurrentAsBaseline();
-    pushNotice({ tone: 'info', message: `Pinned ${itemName} as diff baseline` });
-  }, [flushScroll, itemName, pinCurrentAsBaseline, pushNotice]);
 
   const handleDiffVariant = useCallback(
     (variantRef: DefinitionRef) => {
@@ -1077,43 +1070,6 @@ function DefinitionInspectorImpl({
               )}
             </div>
           </div>
-        </div>
-
-        <div className={styles.headerActions}>
-          <button
-            type="button"
-            className={styles.actionBtn}
-            onClick={handlePinDiffClick}
-            title="Pin as diff baseline"
-          >
-            <DiffIcon size={13} />
-            <span>Diff</span>
-          </button>
-
-          <button
-            type="button"
-            className={styles.actionBtn}
-            onClick={() => {
-              if (detail) {
-                copyText(JSON.stringify(detail.data, null, 2), 'Copied definition JSON');
-              }
-            }}
-            disabled={!detail}
-            title="Copy JSON (Shift+C)"
-          >
-            <CopyIcon size={13} />
-            <span>JSON</span>
-          </button>
-
-          <button
-            type="button"
-            className={styles.iconBtn}
-            onClick={() => copyText(window.location.href, 'Copied direct link')}
-            aria-label="Copy link"
-            title="Copy shareable link"
-          >
-            <LinkIcon size={14} />
-          </button>
         </div>
 
         {/* Same-hash cross-table switcher */}

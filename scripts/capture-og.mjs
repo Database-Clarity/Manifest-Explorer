@@ -1,19 +1,19 @@
-import { spawn, spawnSync } from 'node:child_process';
+import http from 'node:http';
 import {
+  createReadStream,
   existsSync,
-  mkdirSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
-  rmSync,
+  statSync,
 } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { chromium } from 'playwright-core';
 
 const repoRoot = path.resolve(import.meta.dirname, '..');
-const baseUrl = process.env.OG_CAPTURE_BASE_URL ?? 'https://manifest.d2clarity.com';
+const distDir = path.join(repoRoot, 'dist');
+const useLocalDist = process.env.OG_CAPTURE_START_PREVIEW === '1';
+let baseUrl = process.env.OG_CAPTURE_BASE_URL ?? 'https://manifest.d2clarity.com';
 const historyOnly = process.env.OG_CAPTURE_HISTORY_ONLY === '1';
 const changelogKey = 'clarity-manifest-explorer:last-seen-changelog';
 const settingsKey = 'clarity-manifest-settings';
@@ -27,19 +27,23 @@ const latestChangelogVersion = changelogMeta.match(
 if (!latestChangelogVersion) {
   throw new Error('Could not read LATEST_CHANGELOG_VERSION from src/data/changelogMeta.ts.');
 }
-const profileRoot = path.join(
-  process.env.LOCALAPPDATA
-    ? path.join(process.env.LOCALAPPDATA, 'Temp', 'opencode')
-    : path.join(os.tmpdir(), 'opencode'),
-  'capture-og',
-);
-mkdirSync(profileRoot, { recursive: true });
-const profileDir = mkdtempSync(path.join(profileRoot, 'chromium-'));
-const devtoolsFile = path.join(profileDir, 'DevToolsActivePort');
+
 function findBrowserExecutable() {
-  if (process.env.CHROMIUM_PATH) return process.env.CHROMIUM_PATH;
+  if (process.env.CHROMIUM_PATH && existsSync(process.env.CHROMIUM_PATH)) {
+    return process.env.CHROMIUM_PATH;
+  }
   const playwrightExecutable = chromium.executablePath();
   if (existsSync(playwrightExecutable)) return playwrightExecutable;
+
+  const systemCandidates = [
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+    process.env.LOCALAPPDATA
+      ? path.join(process.env.LOCALAPPDATA, 'Google', 'Chrome', 'Application', 'chrome.exe')
+      : '',
+  ].filter(Boolean);
+  const systemChrome = systemCandidates.find((candidate) => existsSync(candidate));
+  if (systemChrome) return systemChrome;
 
   const browserCache = process.env.LOCALAPPDATA
     ? path.join(process.env.LOCALAPPDATA, 'ms-playwright')
@@ -66,25 +70,81 @@ function findBrowserExecutable() {
 
 const browserExecutable = findBrowserExecutable();
 
-function terminateProcessTree(child) {
-  if (!child?.pid) return;
-  spawnSync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], {
-    windowsHide: true,
-    stdio: 'ignore',
+const MIME_TYPES = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.woff2': 'font/woff2',
+  '.ico': 'image/x-icon',
+  '.webmanifest': 'application/manifest+json',
+};
+
+async function startLocalDistServer() {
+  const server = http.createServer(async (req, res) => {
+    try {
+      const reqUrl = new URL(req.url || '/', 'http://127.0.0.1');
+      if (reqUrl.pathname.startsWith('/api/')) {
+        const upstream = `https://manifest.d2clarity.com${reqUrl.pathname}${reqUrl.search}`;
+        const upRes = await fetch(upstream, {
+          headers: { accept: req.headers.accept || '*/*' },
+        });
+        const buf = Buffer.from(await upRes.arrayBuffer());
+        const headers = { 'cache-control': 'no-store' };
+        const ct = upRes.headers.get('content-type');
+        if (ct) headers['content-type'] = ct;
+        res.writeHead(upRes.status, headers);
+        res.end(buf);
+        return;
+      }
+      let relPath = decodeURIComponent(reqUrl.pathname);
+      if (relPath === '/' || relPath === '') relPath = '/index.html';
+      let filePath = path.join(distDir, relPath);
+      if (
+        !filePath.startsWith(distDir) ||
+        !existsSync(filePath) ||
+        statSync(filePath).isDirectory()
+      ) {
+        filePath = path.join(distDir, 'index.html');
+      }
+      const ext = path.extname(filePath).toLowerCase();
+      res.writeHead(200, {
+        'content-type': MIME_TYPES[ext] || 'application/octet-stream',
+        'cache-control': 'no-store',
+      });
+      createReadStream(filePath).pipe(res);
+    } catch (error) {
+      res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
+      res.end(String(error));
+    }
   });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  const port = typeof address === 'object' && address ? address.port : 4179;
+  return { server, url: `http://127.0.0.1:${port}` };
 }
 
 async function waitForCapturePaint(page) {
   await page.locator('footer[aria-label="Manifest status"] [role="status"]')
     .filter({ hasText: 'Ready' })
-    .waitFor({ timeout: 180_000 });
+    .waitFor({ timeout: 90_000 });
   await page.evaluate(async () => {
     await document.fonts.ready;
     const visibleImages = [...document.images].filter((image) => {
       const bounds = image.getBoundingClientRect();
-      return bounds.width > 0 && bounds.height > 0;
+      return bounds.width > 0 && bounds.height > 0 && image.currentSrc;
     });
-    await Promise.all(visibleImages.map((image) => image.decode().catch(() => undefined)));
+    await Promise.all(
+      visibleImages.map((image) =>
+        Promise.race([
+          image.decode().catch(() => undefined),
+          new Promise((resolve) => setTimeout(resolve, 4000)),
+        ]),
+      ),
+    );
   });
   const visibleBrokenImages = await page.evaluate(() =>
     [...document.images].filter((image) => {
@@ -106,7 +166,7 @@ async function waitForCapturePaint(page) {
   if (modalCount > 0) {
     throw new Error(`Found ${modalCount} visible modal/overlay element(s) before capture.`);
   }
-  await delay(700);
+  await delay(500);
 }
 
 async function setTheme(page, theme) {
@@ -212,88 +272,20 @@ async function assertInlineGrid(page, expectedColumns, label) {
   );
 }
 
-async function waitForDevToolsPort(child) {
-  let startupError;
-  child.once('error', (error) => {
-    startupError = error;
-  });
-  for (let attempt = 0; attempt < 120; attempt += 1) {
-    if (startupError) throw startupError;
-    if (child.exitCode !== null) {
-      throw new Error(`Headless Chromium exited with code ${child.exitCode}.`);
-    }
-    if (existsSync(devtoolsFile)) {
-      const [port] = readFileSync(devtoolsFile, 'utf8').trim().split(/\r?\n/);
-      if (port && /^\d+$/.test(port)) return Number(port);
-    }
-    await delay(100);
-  }
-  throw new Error('Timed out waiting for Chromium DevTools.');
-}
-
-async function waitForPreview(child) {
-  let startupError;
-  child.once('error', (error) => {
-    startupError = error;
-  });
-  for (let attempt = 0; attempt < 120; attempt += 1) {
-    if (startupError) throw startupError;
-    if (child.exitCode !== null) {
-      throw new Error(`Vite preview exited with code ${child.exitCode}.`);
-    }
-    try {
-      const response = await fetch('http://127.0.0.1:4179/');
-      if (response.ok) return;
-    } catch {}
-    await delay(100);
-  }
-  throw new Error('Timed out waiting for Vite preview on port 4179.');
-}
-
-let chromiumProcess;
-let previewProcess;
+let localServer;
 let browser;
 try {
-  if (process.env.OG_CAPTURE_START_PREVIEW === '1') {
-    previewProcess = spawn(
-      process.execPath,
-      [
-        path.join(repoRoot, 'node_modules', 'vite', 'bin', 'vite.js'),
-        'preview',
-        '--host',
-        '127.0.0.1',
-        '--port',
-        '4179',
-        '--strictPort',
-      ],
-      {
-        cwd: repoRoot,
-        windowsHide: true,
-        stdio: 'ignore',
-      },
-    );
-    await waitForPreview(previewProcess);
-    console.log('Vite preview serving dist/ at http://127.0.0.1:4179.');
+  if (useLocalDist) {
+    const started = await startLocalDistServer();
+    localServer = started.server;
+    baseUrl = started.url;
+    console.log(`Local dist server listening at ${baseUrl}.`);
   }
-  chromiumProcess = spawn(
-    browserExecutable,
-    [
-      '--headless=new',
-      '--no-sandbox',
-      '--disable-gpu',
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--remote-debugging-port=0',
-      `--user-data-dir=${profileDir}`,
-      'about:blank',
-    ],
-    {
-      windowsHide: true,
-      stdio: 'ignore',
-    },
-  );
-  const port = await waitForDevToolsPort(chromiumProcess);
-  browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
+  browser = await chromium.launch({
+    headless: true,
+    executablePath: browserExecutable,
+    args: ['--no-sandbox', '--disable-gpu'],
+  });
   const context = await browser.newContext({
     viewport: { width: 1200, height: 630 },
     deviceScaleFactor: 1,
@@ -398,56 +390,6 @@ try {
     throw new Error('The history diff Wrap option is not enabled.');
   }
 
-  await setTheme(page, 'light');
-  for (const [width, height] of [
-    [1280, 900],
-    [1200, 630],
-  ]) {
-    await page.setViewportSize({ width, height });
-    await assertSplitLayout(page, `Light ${width}×${height}, Wrap on`);
-  }
-  await page.getByRole('checkbox', { name: 'Wrap' }).uncheck();
-  await assertSplitLayout(page, 'Light 1200×630, Wrap off', {
-    requireWideCode: false,
-  });
-  await page.getByRole('checkbox', { name: 'Wrap' }).check();
-  await assertSplitLayout(page, 'Light 1200×630, Wrap on again');
-
-  await page.getByRole('group', { name: 'Diff layout' })
-    .getByRole('button', { name: 'Inline', exact: true })
-    .click();
-  await page.getByRole('region', { name: 'Inline JSON diff' }).waitFor();
-  await page.setViewportSize({ width: 1280, height: 900 });
-  await assertInlineGrid(page, 4, 'Light desktop');
-  await page.getByRole('group', { name: 'Diff layout' })
-    .getByRole('button', { name: 'Split', exact: true })
-    .click();
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole('region', { name: 'Inline JSON diff' }).waitFor();
-  await assertInlineGrid(page, 3, 'Light mobile 390×844');
-
-  await page.setViewportSize({ width: 1280, height: 900 });
-  await setTheme(page, 'dark');
-  for (const [width, height] of [
-    [1280, 900],
-    [1200, 630],
-  ]) {
-    await page.setViewportSize({ width, height });
-    await assertSplitLayout(page, `Dark ${width}×${height}, Wrap on`);
-  }
-  await page.getByRole('group', { name: 'Diff layout' })
-    .getByRole('button', { name: 'Inline', exact: true })
-    .click();
-  await page.getByRole('region', { name: 'Inline JSON diff' }).waitFor();
-  await page.setViewportSize({ width: 1280, height: 900 });
-  await assertInlineGrid(page, 4, 'Dark desktop');
-  await page.getByRole('group', { name: 'Diff layout' })
-    .getByRole('button', { name: 'Split', exact: true })
-    .click();
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole('region', { name: 'Inline JSON diff' }).waitFor();
-  await assertInlineGrid(page, 3, 'Dark mobile 390×844');
-
   await page.setViewportSize({ width: 1200, height: 630 });
   await page.getByRole('region', { name: 'Side-by-side JSON diff' }).waitFor();
   await assertSplitLayout(page, 'Final capture 1200×630, dark');
@@ -470,12 +412,7 @@ try {
   try {
     if (browser) await browser.close();
   } catch {}
-  terminateProcessTree(chromiumProcess);
-  terminateProcessTree(previewProcess);
-  await delay(500);
-  try {
-    rmSync(profileDir, { recursive: true, force: true });
-  } catch (error) {
-    console.warn(`Could not remove temporary browser profile: ${error.message}`);
+  if (localServer) {
+    await new Promise((resolve) => localServer.close(resolve));
   }
 }

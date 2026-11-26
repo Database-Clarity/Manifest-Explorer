@@ -28,6 +28,22 @@ export {
 
 export const CHANGELOG: readonly ChangelogEntry[] = [
   {
+    version: '2026.11.26-3',
+    date: 'Nov 26, 2026',
+    title: 'Diff view scrolling, unified touch toolbars & compact tablet layout',
+    summary: 'Fixed scrolling inside Diff views across desktop and mobile, aligned toolbar button sizes on touch screens, and reclaimed vertical space in the inspector on tablets.',
+    sections: [
+      {
+        heading: 'Diff scrolling & layout polish',
+        items: [
+          'Fixed Diff view scrolling across the /history page, Explorer Diff tab, and Inspector History tab for both vertical scrolling and wrap-off horizontal scrolling on desktop and phones.',
+          'Unified button and toggle heights across Diff, Formatted, and History toolbars so Inline/Split, Wrap, Expand all, and Download .json align evenly on both mouse and touch devices.',
+          'Removed the redundant Diff/JSON/link row from the Inspector header, kept the JSON Filter/Find toolbar on a single row on tablets, and prevented the Filter/Find toggle from stretching across empty space.',
+        ],
+      },
+    ],
+  },
+  {
     version: '2026.11.26-2',
     date: 'Nov 26, 2026',
     title: 'Reliable high-DPI image upscaling on phones',

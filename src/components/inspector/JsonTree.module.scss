@@ -112,16 +112,26 @@
 
 .searchModes {
   @include ctl.segmented-track;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  justify-self: start;
+  min-height: 1.75rem;
+  width: fit-content;
+  font-size: 0.75rem;
 }
 
 .diffModes {
   @include ctl.segmented-track;
+  box-sizing: border-box;
   flex: 0 0 auto;
+  min-height: 1.75rem;
+  font-size: 0.75rem;
 }
 
 .diffModeButton {
   @include ctl.segmented-item;
-  min-height: 1.625rem;
+  box-sizing: border-box;
+  min-height: calc(1.75rem - 6px);
   padding: 0 0.5rem;
   font-size: 0.75rem;
 
@@ -133,6 +143,7 @@
 
 .diffToolbarButton {
   @include ctl.button;
+  box-sizing: border-box;
   min-height: 1.75rem;
   padding: 0.125rem 0.375rem;
   font-family: inherit;
@@ -172,7 +183,8 @@
 
 .searchModeBtn {
   @include ctl.segmented-item;
-  min-height: 1.625rem;
+  box-sizing: border-box;
+  min-height: calc(1.75rem - 6px);
   padding: 0 0.5rem;
   font-size: 0.75rem;
 
@@ -216,6 +228,9 @@
 
 .toolBtn {
   @include ctl.button;
+  box-sizing: border-box;
+  min-height: 1.75rem;
+  font-size: 0.75rem;
   text-decoration: none;
 
   &:hover {
@@ -823,10 +838,6 @@
 
 @include theme.mobile-or-coarse {
   .toolbar {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
-    align-items: center;
-    gap: 0.375rem;
     padding: 0.375rem 0.5rem;
   }
 
@@ -842,6 +853,12 @@
   }
 
   .diffToolbarButton {
+    box-sizing: border-box;
+    min-height: var(--tap);
+  }
+
+  .diffModes,
+  .searchModes {
     min-height: var(--tap);
   }
 
@@ -853,20 +870,8 @@
     min-height: var(--tap);
   }
 
-  .toolbarLeading {
-    grid-column: 1 / -1;
-  }
-
-  // Give search its own row so the compact placeholder remains useful beside
-  // the Filter/Find and tree actions on narrow inspector widths.
-  .filterWrap {
-    grid-column: 1 / -1;
-    width: 100%;
-    min-width: 0;
-  }
-
   .searchModeBtn {
-    min-height: var(--tap);
+    min-height: calc(var(--tap) - 6px);
     padding: 0 0.4375rem;
   }
 
@@ -884,6 +889,7 @@
   }
 
   .toolBtn {
+    box-sizing: border-box;
     justify-self: start;
     min-height: var(--tap);
     padding: 0 0.5rem;
@@ -946,6 +952,32 @@
 }
 
 @include theme.mobile {
+  .toolbar:not(.diffToolbar) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 0.375rem;
+  }
+
+  .toolbarLeading {
+    grid-column: 1 / -1;
+  }
+
+  // Give search its own row on narrow phones only.
+  .filterWrap {
+    grid-column: 1 / -1;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .findControls {
+    grid-column: 1 / -1;
+  }
+
+  .toolBtn {
+    justify-self: start;
+  }
+
   .row {
     max-width: 100%;
   }

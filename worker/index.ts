@@ -140,7 +140,7 @@ async function handleFetch(
 const HISTORY_PAGE_TITLE = 'Destiny 2 Manifest History';
 const HISTORY_PAGE_DESCRIPTION =
   'Browse Destiny 2 manifest updates from 2017 to today with categorized changes and full JSON diffs.';
-const HISTORY_PAGE_IMAGE = 'https://manifest.d2clarity.com/og-history.png?v=20261124-2';
+const HISTORY_PAGE_IMAGE = 'https://manifest.d2clarity.com/og-history.png?v=20261126-3';
 const HISTORY_PAGE_IMAGE_ALT = 'Destiny 2 Manifest History diffs by Clarity';
 
 async function serveHistoryPage(

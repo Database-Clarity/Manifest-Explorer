@@ -2,9 +2,15 @@
 @use '../../styles/variables' as theme;
 
 .viewer {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
   width: 100%;
   min-width: 0;
+  min-height: 0;
   max-width: 100%;
+  // Bound expanded diffs so the rows viewport, not an ancestor, owns scrolling.
+  max-height: min(70vh, 52rem);
   overflow: hidden;
   border: 1px solid var(--hair);
   background: var(--editor);
@@ -12,15 +18,13 @@
 }
 
 .viewerWithLeadingToolbar {
-  // History's scroll container reserves a native scrollbar only while the diff
-  // is visible. Include that gutter so its far-right actions stay in the same
-  // slot as Formatted, whose tree content doesn't need the outer scrollbar.
-  width: calc(100% + 10px);
-  max-width: none;
+  width: 100%;
+  max-width: 100%;
 }
 
 .toolbar {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
@@ -76,14 +80,18 @@
 
 .layoutToggle {
   @include ctl.segmented-track;
-  font-size: 0.6875rem;
+  box-sizing: border-box;
+  min-height: 1.75rem;
+  font-size: 0.75rem;
 }
 
 .layoutButton,
 .layoutButtonActive {
   @include ctl.segmented-item;
-  min-height: 1.625rem;
+  box-sizing: border-box;
+  min-height: calc(1.75rem - 6px);
   padding: 0 0.4375rem;
+  font-size: 0.75rem;
 }
 
 .layoutButtonActive,
@@ -95,6 +103,7 @@
 
 .toolbarBtn {
   @include ctl.button;
+  box-sizing: border-box;
   min-height: 1.75rem;
   padding: 0.125rem 0.375rem;
   font-size: 0.75rem;
@@ -104,6 +113,7 @@
   display: inline-flex;
   align-items: center;
   gap: 0.3125rem;
+  box-sizing: border-box;
   min-height: 1.75rem;
   padding: 0 0.4375rem;
   border: 1px solid var(--line);
@@ -149,16 +159,21 @@
 .syntaxViewport {
   min-width: 0;
   max-width: 100%;
-  overflow: visible;
-  overscroll-behavior-y: auto;
+  overflow: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.diffViewport {
+  flex: 1 1 auto;
+  min-height: 0;
+  touch-action: pan-x pan-y;
 }
 
 .splitLayout .diffViewport,
 .unwrapped .diffViewport {
   overflow-x: auto;
-  overflow-y: visible;
-  overscroll-behavior-y: auto;
-  touch-action: pan-x pan-y;
+  overflow-y: auto;
 }
 
 .codeRows {
@@ -513,7 +528,17 @@
 
   .wrapToggle,
   .toolbarBtn {
+    box-sizing: border-box;
     min-height: var(--tap);
+  }
+
+  .layoutToggle {
+    min-height: var(--tap);
+  }
+
+  .layoutButton,
+  .layoutButtonActive {
+    min-height: calc(var(--tap) - 6px);
   }
 
   .splitCell {

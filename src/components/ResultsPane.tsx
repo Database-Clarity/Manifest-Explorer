@@ -370,6 +370,7 @@ interface ResultRowProps {
   collected: boolean;
   inDiffBucket: boolean;
   collectMode: boolean;
+  showDiffControls: boolean;
   showTableColumn: boolean;
   showInlineTable: boolean;
   showGridTable?: boolean;
@@ -391,6 +392,7 @@ const ListRow = memo(function ListRow({
   collected,
   inDiffBucket,
   collectMode,
+  showDiffControls,
   showTableColumn,
   showInlineTable,
   dateDisplay,
@@ -543,36 +545,38 @@ const ListRow = memo(function ListRow({
         {item.hash}
       </button>
       {collectMode && collected ? <CollectedBadge /> : null}
-      <button
-        type="button"
-        className={styles.diffAction}
-        aria-label={
-          inDiffBucket
-            ? `Remove ${itemLabel(item)} from Diff bucket`
-            : `Add ${itemLabel(item)} to Diff bucket`
-        }
-        aria-pressed={inDiffBucket}
-        title={inDiffBucket ? 'Remove from Diff bucket' : 'Add to Diff bucket'}
-        onClick={(event) => {
-          event.stopPropagation();
-          onToggleDiff(item);
-        }}
-        onKeyDown={stopActivationKeys}
-        onMouseDown={(event) => {
-          if (event.button === 1) {
-            event.preventDefault();
-            event.stopPropagation();
+      {showDiffControls ? (
+        <button
+          type="button"
+          className={styles.diffAction}
+          aria-label={
+            inDiffBucket
+              ? `Remove ${itemLabel(item)} from Diff bucket`
+              : `Add ${itemLabel(item)} to Diff bucket`
           }
-        }}
-        onAuxClick={(event) => {
-          if (event.button === 1) {
-            event.preventDefault();
+          aria-pressed={inDiffBucket}
+          title={inDiffBucket ? 'Remove from Diff bucket' : 'Add to Diff bucket'}
+          onClick={(event) => {
             event.stopPropagation();
-          }
-        }}
-      >
-        {inDiffBucket ? <CheckIcon size={13} /> : <DiffIcon size={13} />}
-      </button>
+            onToggleDiff(item);
+          }}
+          onKeyDown={stopActivationKeys}
+          onMouseDown={(event) => {
+            if (event.button === 1) {
+              event.preventDefault();
+              event.stopPropagation();
+            }
+          }}
+          onAuxClick={(event) => {
+            if (event.button === 1) {
+              event.preventDefault();
+              event.stopPropagation();
+            }
+          }}
+        >
+          {inDiffBucket ? <CheckIcon size={13} /> : <DiffIcon size={13} />}
+        </button>
+      ) : null}
     </div>
   );
 });
@@ -586,6 +590,7 @@ const GridCell = memo(function GridCell({
   collected,
   inDiffBucket,
   collectMode,
+  showDiffControls,
   showGridTable = false,
   dateDisplay,
   artifactPerksCategory,
@@ -690,36 +695,38 @@ const GridCell = memo(function GridCell({
         </span>
       </span>
       {collectMode && collected ? <CollectedBadge /> : null}
-      <button
-        type="button"
-        className={styles.diffAction}
-        aria-label={
-          inDiffBucket
-            ? `Remove ${itemLabel(item)} from Diff bucket`
-            : `Add ${itemLabel(item)} to Diff bucket`
-        }
-        aria-pressed={inDiffBucket}
-        title={inDiffBucket ? 'Remove from Diff bucket' : 'Add to Diff bucket'}
-        onClick={(event) => {
-          event.stopPropagation();
-          onToggleDiff(item);
-        }}
-        onKeyDown={stopActivationKeys}
-        onMouseDown={(event) => {
-          if (event.button === 1) {
-            event.preventDefault();
-            event.stopPropagation();
+      {showDiffControls ? (
+        <button
+          type="button"
+          className={styles.diffAction}
+          aria-label={
+            inDiffBucket
+              ? `Remove ${itemLabel(item)} from Diff bucket`
+              : `Add ${itemLabel(item)} to Diff bucket`
           }
-        }}
-        onAuxClick={(event) => {
-          if (event.button === 1) {
-            event.preventDefault();
+          aria-pressed={inDiffBucket}
+          title={inDiffBucket ? 'Remove from Diff bucket' : 'Add to Diff bucket'}
+          onClick={(event) => {
             event.stopPropagation();
-          }
-        }}
-      >
-        {inDiffBucket ? <CheckIcon size={13} /> : <DiffIcon size={13} />}
-      </button>
+            onToggleDiff(item);
+          }}
+          onKeyDown={stopActivationKeys}
+          onMouseDown={(event) => {
+            if (event.button === 1) {
+              event.preventDefault();
+              event.stopPropagation();
+            }
+          }}
+          onAuxClick={(event) => {
+            if (event.button === 1) {
+              event.preventDefault();
+              event.stopPropagation();
+            }
+          }}
+        >
+          {inDiffBucket ? <CheckIcon size={13} /> : <DiffIcon size={13} />}
+        </button>
+      ) : null}
     </div>
   );
 });
@@ -954,11 +961,9 @@ export const ResultsPane = memo(function ResultsPane({
       subtitle: item.subtitle,
       ...(item.icon ? { icon: item.icon } : {}),
     });
-    const focus = useExplorerStore.getState().sessions.length === 0;
-    diffStore.openDiffTab(focus);
-    if (focus) {
-      useExplorerStore.getState().setMobileInspectorOpen(true);
-    }
+    // Stay on the results list: per-row Diff toggles only edit bucket
+    // membership. Users open the Diff tab explicitly via the Results header
+    // return button or the inspector Diff tab when they are done selecting.
     useExplorerStore.getState().pushNotice({
       tone: 'info',
       message: `Added ${item.name || item.hash} to Diff bucket`,
@@ -1624,6 +1629,7 @@ export const ResultsPane = memo(function ResultsPane({
                 collected={collectedKeys.has(itemKey)}
                 inDiffBucket={diffKeys.has(itemKey)}
                 collectMode={collectMode}
+                showDiffControls={diffTabOpen}
                 showTableColumn={false}
                 showInlineTable={false}
                 dateDisplay={resultDateDisplay(item, sortMode, versionDates)}
@@ -1665,6 +1671,7 @@ export const ResultsPane = memo(function ResultsPane({
                 collected={collectedKeys.has(itemKey)}
                 inDiffBucket={diffKeys.has(itemKey)}
                 collectMode={collectMode}
+                showDiffControls={diffTabOpen}
                 showTableColumn={false}
                 showInlineTable={false}
                 showGridTable={false}
@@ -1719,6 +1726,7 @@ export const ResultsPane = memo(function ResultsPane({
             collected={collectedKeys.has(itemKey)}
             inDiffBucket={diffKeys.has(itemKey)}
             collectMode={collectMode}
+            showDiffControls={diffTabOpen}
             showTableColumn={showTableColumn}
             showInlineTable={showInlineTable}
             dateDisplay={resultDateDisplay(item, sortMode, versionDates)}
@@ -1753,6 +1761,7 @@ export const ResultsPane = memo(function ResultsPane({
             collected={collectedKeys.has(itemKey)}
             inDiffBucket={diffKeys.has(itemKey)}
             collectMode={collectMode}
+            showDiffControls={diffTabOpen}
             showTableColumn={false}
             showInlineTable={showInlineTable}
             showGridTable={showGridTable}
@@ -1793,6 +1802,7 @@ export const ResultsPane = memo(function ResultsPane({
     collectMode,
     collectedKeys,
     diffKeys,
+    diffTabOpen,
     columns,
     collapsedResultGroups,
     firstGroupSectionIndex,
@@ -1832,7 +1842,7 @@ export const ResultsPane = memo(function ResultsPane({
           <span className={styles.summary} title={summaryText}>
             {headerSummaryText}
           </span>
-          {hasActiveFilters && totalMatches > 0 && results.length > 0 ? (
+          {diffTabOpen && hasActiveFilters && totalMatches > 0 && results.length > 0 ? (
             <button
               type="button"
               className={styles.bulkDiffButton}

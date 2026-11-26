@@ -566,7 +566,8 @@ function DefinitionInspectorImpl({
         icon: iconPath,
       });
     }
-    openDiffTab(false);
+    // Toggle bucket membership only; never steal focus from the inspected
+    // entry. The Diff tab is already open when this control is visible.
   }, [
     addDiffItem,
     currentBucketItemKey,
@@ -575,7 +576,6 @@ function DefinitionInspectorImpl({
     iconPath,
     itemName,
     itemSubtitle,
-    openDiffTab,
     removeDiffItem,
     unsignedHash,
   ]);
@@ -1258,17 +1258,19 @@ function DefinitionInspectorImpl({
                   <span className="mono">{signedHash}</span>
                 </button>
               )}
-              <button
-                type="button"
-                className={`${styles.diffEntityButton} ${currentInBucket ? styles.diffEntityButtonOn : ''}`}
-                aria-pressed={currentInBucket}
-                title={currentInBucket ? 'Remove from Diff bucket' : 'Add to Diff bucket'}
-                aria-label={currentInBucket ? 'Remove from Diff bucket' : 'Add to Diff bucket'}
-                onClick={toggleCurrentDiffItem}
-              >
-                {currentInBucket ? <CheckIcon size={12} /> : <DiffIcon size={12} />}
-                <span>{currentInBucket ? 'In Diff' : 'Diff'}</span>
-              </button>
+              {diffTabOpen ? (
+                <button
+                  type="button"
+                  className={`${styles.diffEntityButton} ${currentInBucket ? styles.diffEntityButtonOn : ''}`}
+                  aria-pressed={currentInBucket}
+                  title={currentInBucket ? 'Remove from Diff bucket' : 'Add to Diff bucket'}
+                  aria-label={currentInBucket ? 'Remove from Diff bucket' : 'Add to Diff bucket'}
+                  onClick={toggleCurrentDiffItem}
+                >
+                  {currentInBucket ? <CheckIcon size={12} /> : <DiffIcon size={12} />}
+                  <span>{currentInBucket ? 'In Diff' : 'Diff'}</span>
+                </button>
+              ) : null}
             </div>
           </div>
         </div>

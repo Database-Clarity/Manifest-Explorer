@@ -38,7 +38,7 @@ export const CHANGELOG: readonly ChangelogEntry[] = [
         items: [
           'Replaced "Pin as diff base" with a persistent Diff bucket: the first item added defaults as Base, the second as Target, and you can switch freely between any items in the bucket using searchable dropdowns.',
           'Moved Diff out of the per-entry subtabs into a top-level tab pinned to the left when open, preserving scroll and expansion state when switching back and forth with regular tabs.',
-          'Added subtle ways to populate and open the Diff bucket from result rows, bulk-adding current search results (up to 100), entity headers, Variants, the Collector popover, and a quiet tab-bar trigger.',
+          'Kept all diff-adding controls out of the way until you open the Diff tab (via the quiet tab-bar icon, Brand menu → Tools, Variants, or Collector), then unlocked in-place row toggles, bulk-adding search results (up to 100), and entity-header toggles while diffing.',
           'Added the Formatted diff view inside the Diff tab alongside Split and Inline diffs, matching /history with Changes/Full filtering, inline unchanged expanders, and resolved hash icons/pills.',
         ],
       },

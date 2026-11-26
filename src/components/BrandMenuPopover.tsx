@@ -5,6 +5,7 @@ import {
   BookmarkIcon,
   ClarityWordmark,
   DatabaseIcon,
+  DiffIcon,
   HeartFilledIcon,
   HelpIcon,
   KofiIcon,
@@ -22,6 +23,9 @@ export interface BrandMenuPopoverProps {
   onNavigatePage?: (path: '/' | '/history') => void;
   onNavigateExplorer: () => void;
   onOpenCollector: () => void;
+  onOpenDiff: () => void;
+  diffCount: number;
+  diffTabOpen: boolean;
   onOpenHelp: () => void;
   onOpenChangelog?: () => void;
   hasUnseenChangelog: boolean;
@@ -47,6 +51,9 @@ function BrandMenuPopoverBody({
   onNavigatePage,
   onNavigateExplorer,
   onOpenCollector,
+  onOpenDiff,
+  diffCount,
+  diffTabOpen,
   onOpenHelp,
   onOpenChangelog,
   hasUnseenChangelog,
@@ -111,6 +118,22 @@ function BrandMenuPopoverBody({
                 {collectedCount > 0 ? collectedCount : 'Active'}
               </span>
             )}
+          </button>
+          <button
+            type="button"
+            className={styles.menuItem}
+            onClick={() => {
+              onClose();
+              onOpenDiff();
+            }}
+          >
+            <DiffIcon size={15} className={styles.itemIcon} />
+            <span className={styles.itemLabel}>Compare definitions (Diff)</span>
+            {diffTabOpen ? (
+              <span className={styles.badge}>Open</span>
+            ) : diffCount > 0 ? (
+              <span className={styles.badge}>{diffCount}</span>
+            ) : null}
           </button>
           <button
             type="button"

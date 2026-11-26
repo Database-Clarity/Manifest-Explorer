@@ -80,6 +80,9 @@ export interface HeaderProps {
   onOpenChangelog?: () => void;
   onLocaleChange: (locale: BungieLocale) => void;
   onSelectTable: (table: string) => void;
+  diffCount: number;
+  diffTabOpen: boolean;
+  onOpenDiff: () => void;
 }
 
 type MenuName = 'brand' | 'filters' | 'collector' | 'settings';
@@ -146,6 +149,9 @@ export const Header = memo(function Header({
   onOpenChangelog,
   onLocaleChange,
   onSelectTable,
+  diffCount,
+  diffTabOpen,
+  onOpenDiff,
 }: HeaderProps): ReactNode {
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [hasUnseenChangelog, setHasUnseenChangelog] = useState(
@@ -668,6 +674,9 @@ export const Header = memo(function Header({
               onNavigatePage?.('/');
             }}
             onOpenCollector={() => setMenu({ name: 'collector', source: 'brand' })}
+            onOpenDiff={onOpenDiff}
+            diffCount={diffCount}
+            diffTabOpen={diffTabOpen}
             onOpenHelp={onOpenHelp}
             onOpenChangelog={onOpenChangelog}
             hasUnseenChangelog={hasUnseenChangelog}

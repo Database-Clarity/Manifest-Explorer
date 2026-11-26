@@ -426,6 +426,19 @@ export function App(): ReactNode {
     setPathname(window.location.pathname);
   }, []);
 
+  /**
+   * Quiet entry point from the brand menu: open the Diff tab, reveal the
+   * inspector on narrow layouts, and bounce back to Explorer when the user is
+   * browsing Manifest History.
+   */
+  const handleOpenDiffFromMenu = useCallback(() => {
+    useDiffBucketStore.getState().openDiffTab(true);
+    setMobileInspectorOpen(true);
+    if (window.location.pathname.startsWith('/history')) {
+      navigatePage('/');
+    }
+  }, [navigatePage, setMobileInspectorOpen]);
+
   const selectHistoryVersion = useCallback((index: number, replace = false) => {
     const path = `/history/${index}`;
     if (window.location.pathname === path) return;
@@ -2024,6 +2037,9 @@ export function App(): ReactNode {
         onOpenChangelog={handleOpenChangelog}
         onLocaleChange={handleLocaleChange}
         onSelectTable={handleSelectTable}
+        diffCount={diffBucketItems.length}
+        diffTabOpen={diffTabOpen}
+        onOpenDiff={handleOpenDiffFromMenu}
       />
 
       {appUpdateAvailable && !appUpdateDismissed && (

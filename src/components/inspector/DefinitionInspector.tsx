@@ -45,7 +45,7 @@ import { BungieIcon } from '../BungieIcon';
 import { activateOnMiddleClick, preventMiddleClickAutoScroll } from '../middleClick';
 import { scrollTabIntoView } from '../../utils/scrollTabIntoView';
 import { JsonTree } from './JsonTree';
-import { useDiffBucketStore } from '../../stores/diffBucket';
+import { DIFF_BUCKET_NOTICE_ID, useDiffBucketStore } from '../../stores/diffBucket';
 import styles from './DefinitionInspector.module.scss';
 
 const LazyOverviewTab = lazy(() =>
@@ -567,7 +567,15 @@ function DefinitionInspectorImpl({
       });
     }
     // Toggle bucket membership only; never steal focus from the inspected
-    // entry. The Diff tab is already open when this control is visible.
+    // entry. The Diff tab is already open when this control is visible. The
+    // stable notice id keeps repeated toggles to a single updating toast.
+    pushNotice({
+      id: DIFF_BUCKET_NOTICE_ID,
+      tone: 'info',
+      message: currentInBucket
+        ? `Removed ${itemName || `#${unsignedHash}`} from Diff bucket`
+        : `Added ${itemName || `#${unsignedHash}`} to Diff bucket`,
+    });
   }, [
     addDiffItem,
     currentBucketItemKey,
@@ -576,6 +584,7 @@ function DefinitionInspectorImpl({
     iconPath,
     itemName,
     itemSubtitle,
+    pushNotice,
     removeDiffItem,
     unsignedHash,
   ]);

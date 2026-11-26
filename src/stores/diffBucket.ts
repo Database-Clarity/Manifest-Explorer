@@ -3,6 +3,11 @@ import { createJSONStorage, persist } from 'zustand/middleware';
 
 export const DIFF_BUCKET_STORAGE_KEY = 'clarity-manifest-diff-bucket';
 export const DIFF_BUCKET_BULK_CAP = 100;
+/**
+ * Stable notice id for Diff-bucket membership changes: rapid row taps update a
+ * single toast in place instead of stacking one card per tapped definition.
+ */
+export const DIFF_BUCKET_NOTICE_ID = 'diff-bucket';
 
 export interface DiffBucketItem {
   key: string;

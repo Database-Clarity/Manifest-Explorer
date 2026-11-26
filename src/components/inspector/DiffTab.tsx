@@ -1,7 +1,13 @@
 import { memo, useCallback, useMemo, type MutableRefObject, type ReactNode } from 'react';
 import type { DefinitionDetailPayload, DefinitionRef, SearchResultItem } from '../../types/manifest';
 import { getShortTableName } from '../../manifest/tables';
-import { useDiffBucketStore, type DiffBucketItem, type NewDiffBucketItem } from '../../stores/diffBucket';
+import {
+  DIFF_BUCKET_BULK_CAP,
+  DIFF_BUCKET_NOTICE_ID,
+  useDiffBucketStore,
+  type DiffBucketItem,
+  type NewDiffBucketItem,
+} from '../../stores/diffBucket';
 import { useExplorerStore } from '../../stores/explorer';
 import { useSettingsStore } from '../../stores/settings';
 import { CheckIcon, CloseIcon, DiffIcon, PlusIcon, SwapIcon, TrashIcon } from '../../ui/Icons';
@@ -94,9 +100,6 @@ export const DiffTab = memo(function DiffTab({
   const setTarget = useDiffBucketStore((state) => state.setTarget);
   const swapBaseTarget = useDiffBucketStore((state) => state.swapBaseTarget);
   const openDiffTab = useDiffBucketStore((state) => state.openDiffTab);
-  const query = useExplorerStore((state) => state.query);
-  const deepSearch = useExplorerStore((state) => state.deepSearch);
-  const filters = useExplorerStore((state) => state.filters);
   const searchResults = useExplorerStore((state) => state.results);
   const pushNotice = useExplorerStore((state) => state.pushNotice);
   const setMobileInspectorOpen = useExplorerStore((state) => state.setMobileInspectorOpen);
@@ -107,17 +110,7 @@ export const DiffTab = memo(function DiffTab({
   const imageScaling = useSettingsStore((state) => state.imageScaling);
   const baseItem = items.find((item) => item.key === baseKey) ?? null;
   const targetItem = items.find((item) => item.key === targetKey) ?? null;
-  const hasActiveSearchOrFilter =
-    query.trim().length > 0 ||
-    deepSearch ||
-    filters.table !== 'all' ||
-    filters.tierTypes.length > 0 ||
-    filters.damageTypes.length > 0 ||
-    filters.classTypes.length > 0 ||
-    filters.itemTypes.length > 0 ||
-    filters.itemCategoryHashes.length > 0 ||
-    filters.includeUnnamed ||
-    filters.onlyRedacted;
+  const searchResultAddCount = Math.min(searchResults.length, DIFF_BUCKET_BULK_CAP);
 
   const selectOptions = useMemo(() => items.map(optionFor), [items]);
   const mergedResolvedRefs = useMemo(
@@ -133,19 +126,26 @@ export const DiffTab = memo(function DiffTab({
   const addActive = useCallback(() => {
     if (!activeItem || activeItemAlreadyInBucket) return;
     addItem(activeItem);
-    pushNotice({ tone: 'info', message: 'Added active tab to Diff bucket' });
+    pushNotice({
+      id: DIFF_BUCKET_NOTICE_ID,
+      tone: 'info',
+      message: 'Added active tab to Diff bucket',
+    });
   }, [activeItem, activeItemAlreadyInBucket, addItem, pushNotice]);
   const addSearchResults = useCallback(() => {
-    const result = addItems(searchResults.map(toBucketItem), { cap: 100 });
+    const result = addItems(searchResults.map(toBucketItem), {
+      cap: DIFF_BUCKET_BULK_CAP,
+    });
     openDiffTab(true);
     setMobileInspectorOpen(true);
     pushNotice({
+      id: DIFF_BUCKET_NOTICE_ID,
       tone: 'info',
       message:
         result.addedCount === 0
           ? 'All matching results are already in the Diff bucket'
-          : result.truncated || searchResults.length > 100
-            ? `Added ${result.addedCount} of first 100 results to Diff bucket`
+          : result.truncated || searchResults.length > DIFF_BUCKET_BULK_CAP
+            ? `Added ${result.addedCount} of first ${DIFF_BUCKET_BULK_CAP} results to Diff bucket`
             : `Added ${result.addedCount} ${result.addedCount === 1 ? 'result' : 'results'} to Diff bucket`,
     });
   }, [addItems, openDiffTab, pushNotice, searchResults, setMobileInspectorOpen]);
@@ -317,9 +317,9 @@ export const DiffTab = memo(function DiffTab({
               {activeItem && !activeItemAlreadyInBucket ? (
                 <button type="button" onClick={addActive}><PlusIcon size={12} /> Active tab</button>
               ) : null}
-              {hasActiveSearchOrFilter && searchResults.length > 0 ? (
+              {searchResults.length > 0 ? (
                 <button type="button" onClick={addSearchResults}>
-                  <PlusIcon size={12} /> Search results ({searchResults.length > 100 ? 'up to 100' : searchResults.length})
+                  <PlusIcon size={12} /> Add search results ({searchResultAddCount})
                 </button>
               ) : null}
               {items.length > 0 ? (
@@ -339,8 +339,8 @@ export const DiffTab = memo(function DiffTab({
           <span>Build a bucket from the active tab or your current search results.</span>
           <div className={styles.emptyActions}>
             {activeItem && !activeItemAlreadyInBucket ? <button type="button" onClick={addActive}><PlusIcon size={13} /> Add active tab</button> : null}
-            {hasActiveSearchOrFilter && searchResults.length > 0 ? (
-              <button type="button" onClick={addSearchResults}><PlusIcon size={13} /> Add search results ({Math.min(searchResults.length, 100)})</button>
+            {searchResults.length > 0 ? (
+              <button type="button" onClick={addSearchResults}><PlusIcon size={13} /> Add search results ({searchResultAddCount})</button>
             ) : null}
           </div>
         </div>
@@ -351,8 +351,8 @@ export const DiffTab = memo(function DiffTab({
           <span>Add another definition to compare its fields.</span>
           <div className={styles.emptyActions}>
             {activeItem && !activeItemAlreadyInBucket ? <button type="button" onClick={addActive}><PlusIcon size={13} /> Add active tab</button> : null}
-            {hasActiveSearchOrFilter && searchResults.length > 0 ? (
-              <button type="button" onClick={addSearchResults}><PlusIcon size={13} /> Add search results ({Math.min(searchResults.length, 100)})</button>
+            {searchResults.length > 0 ? (
+              <button type="button" onClick={addSearchResults}><PlusIcon size={13} /> Add search results ({searchResultAddCount})</button>
             ) : null}
           </div>
         </div>

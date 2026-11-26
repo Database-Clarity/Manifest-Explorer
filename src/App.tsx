@@ -429,15 +429,19 @@ export function App(): ReactNode {
   /**
    * Quiet entry point from the brand menu: open the Diff tab, reveal the
    * inspector on narrow layouts, and bounce back to Explorer when the user is
-   * browsing Manifest History.
+   * browsing Manifest History. On narrow layouts with fewer than two bucket
+   * items we keep the Results list on screen (Diff selection active) so the
+   * user can pick definitions instead of landing on an empty comparison.
    */
   const handleOpenDiffFromMenu = useCallback(() => {
-    useDiffBucketStore.getState().openDiffTab(true);
-    setMobileInspectorOpen(true);
+    const diffStore = useDiffBucketStore.getState();
+    const stayingOnResults = isNarrowLayout && diffStore.items.length < 2;
+    diffStore.openDiffTab(!stayingOnResults);
+    setMobileInspectorOpen(!stayingOnResults);
     if (window.location.pathname.startsWith('/history')) {
       navigatePage('/');
     }
-  }, [navigatePage, setMobileInspectorOpen]);
+  }, [isNarrowLayout, navigatePage, setMobileInspectorOpen]);
 
   const selectHistoryVersion = useCallback((index: number, replace = false) => {
     const path = `/history/${index}`;

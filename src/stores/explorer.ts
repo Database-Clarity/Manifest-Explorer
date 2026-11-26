@@ -181,6 +181,13 @@ export function createDefaultFilters(): SearchFilters {
   };
 }
 
+/**
+ * Hard cap on simultaneously visible notices. Rapid actions (e.g. tapping
+ * several result rows into the Diff bucket) must never stack a wall of cards
+ * over the content the user is interacting with.
+ */
+export const MAX_VISIBLE_NOTICES = 2;
+
 const NOTICE_TIMEOUTS: Record<NoticeTone, number> = {
   info: 3200,
   warn: 6000,
@@ -939,11 +946,23 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
     const existingTimer = NOTICE_TIMERS.get(id);
     if (existingTimer !== undefined) {
       clearTimeout(existingTimer);
+      NOTICE_TIMERS.delete(id);
     }
 
-    set((state) => ({
-      notices: [...state.notices.filter((item) => item.id !== id), entry],
-    }));
+    set((state) => {
+      const nextNotices = [...state.notices.filter((item) => item.id !== id), entry];
+      if (nextNotices.length > MAX_VISIBLE_NOTICES) {
+        const evicted = nextNotices.splice(0, nextNotices.length - MAX_VISIBLE_NOTICES);
+        for (const noticeItem of evicted) {
+          const evictedTimer = NOTICE_TIMERS.get(noticeItem.id);
+          if (evictedTimer !== undefined) {
+            clearTimeout(evictedTimer);
+            NOTICE_TIMERS.delete(noticeItem.id);
+          }
+        }
+      }
+      return { notices: nextNotices };
+    });
 
     const timer = setTimeout(() => {
       NOTICE_TIMERS.delete(id);

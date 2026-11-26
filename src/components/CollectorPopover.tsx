@@ -2,7 +2,7 @@
 import { useState, type ReactNode, type RefObject } from 'react';
 import type { CollectorExportFormat } from '../stores/collector';
 import { formatCollectedItems, useCollectorStore, type CollectedItem } from '../stores/collector';
-import { useDiffBucketStore } from '../stores/diffBucket';
+import { DIFF_BUCKET_NOTICE_ID, useDiffBucketStore } from '../stores/diffBucket';
 import { fallbackEntryLabel, useExplorerStore } from '../stores/explorer';
 import { bungieAssetUrl } from '../manifest/hash';
 import { getShortTableName } from '../manifest/tables';
@@ -176,6 +176,7 @@ function CollectorPopoverBody({ open, onClose, anchorRef }: CollectorPopoverProp
     openDiffTab(true);
     setMobileInspectorOpen(true);
     pushNotice({
+      id: DIFF_BUCKET_NOTICE_ID,
       tone: 'info',
       message:
         result.addedCount === 0

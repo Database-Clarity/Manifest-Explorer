@@ -26,6 +26,7 @@ import {
 import { useCollectorStore } from '../stores/collector';
 import {
   DIFF_BUCKET_BULK_CAP,
+  DIFF_BUCKET_NOTICE_ID,
   useDiffBucketStore,
   type NewDiffBucketItem,
 } from '../stores/diffBucket';
@@ -799,6 +800,7 @@ export const ResultsPane = memo(function ResultsPane({
   const collectedItems = useCollectorStore((state) => state.items);
   const diffItems = useDiffBucketStore((state) => state.items);
   const diffTabOpen = useDiffBucketStore((state) => state.diffTabOpen);
+  const closeDiffTab = useDiffBucketStore((state) => state.closeDiffTab);
   const openTabCount = sessionCount + (diffTabOpen ? 1 : 0);
 
   const [remPx, setRemPx] = useState(readRootRemPx);
@@ -949,6 +951,7 @@ export const ResultsPane = memo(function ResultsPane({
     if (diffStore.items.some((entry) => entry.key === key)) {
       diffStore.removeItem(key);
       useExplorerStore.getState().pushNotice({
+        id: DIFF_BUCKET_NOTICE_ID,
         tone: 'info',
         message: `Removed ${item.name || item.hash} from Diff bucket`,
       });
@@ -962,15 +965,29 @@ export const ResultsPane = memo(function ResultsPane({
       ...(item.icon ? { icon: item.icon } : {}),
     });
     // Stay on the results list: per-row Diff toggles only edit bucket
-    // membership. Users open the Diff tab explicitly via the Results header
-    // return button or the inspector Diff tab when they are done selecting.
+    // membership. Users open the Diff tab explicitly via the pinned inspector
+    // tab, the banner's Compare button, or the header shortcut when a pair is
+    // already ready to compare.
     useExplorerStore.getState().pushNotice({
+      id: DIFF_BUCKET_NOTICE_ID,
       tone: 'info',
       message: `Added ${item.name || item.hash} to Diff bucket`,
     });
   }, []);
 
   const openDiffTabFromHeader = useCallback(() => {
+    const diffStore = useDiffBucketStore.getState();
+    if (isNarrowPhone && diffStore.items.length < 2) {
+      // Mobile: reveal the Diff selection banner in place so the user can pick
+      // rows or tap "Add all" instead of being dropped onto an empty Diff tab.
+      diffStore.openDiffTab(false);
+      return;
+    }
+    diffStore.openDiffTab(true);
+    useExplorerStore.getState().setMobileInspectorOpen(true);
+  }, [isNarrowPhone]);
+
+  const openDiffTabFromBanner = useCallback(() => {
     useDiffBucketStore.getState().openDiffTab(true);
     useExplorerStore.getState().setMobileInspectorOpen(true);
   }, []);
@@ -983,19 +1000,28 @@ export const ResultsPane = memo(function ResultsPane({
       subtitle: item.subtitle,
       ...(item.icon ? { icon: item.icon } : {}),
     }));
-    const result = useDiffBucketStore.getState().addItems(bucketItems, { cap: 100 });
+    const result = useDiffBucketStore.getState().addItems(bucketItems, {
+      cap: DIFF_BUCKET_BULK_CAP,
+    });
     useDiffBucketStore.getState().openDiffTab(true);
     useExplorerStore.getState().setMobileInspectorOpen(true);
     useExplorerStore.getState().pushNotice({
+      id: DIFF_BUCKET_NOTICE_ID,
       tone: 'info',
       message:
         result.addedCount === 0
           ? 'All matching results are already in the Diff bucket'
-          : result.truncated || results.length > 100
-            ? `Added ${result.addedCount} of first 100 results to Diff bucket`
+          : result.truncated || results.length > DIFF_BUCKET_BULK_CAP
+            ? `Added ${result.addedCount} of first ${DIFF_BUCKET_BULK_CAP} results to Diff bucket`
             : `Added ${result.addedCount} ${result.addedCount === 1 ? 'result' : 'results'} to Diff bucket`,
     });
   }, [results]);
+
+  const addAllDiffCount = Math.min(results.length, DIFF_BUCKET_BULK_CAP);
+  const addAllDiffLabel =
+    results.length > DIFF_BUCKET_BULK_CAP
+      ? `+ Add ${DIFF_BUCKET_BULK_CAP}`
+      : `+ Add all (${addAllDiffCount})`;
 
   const hasDeepMatches = results.length > 0 && results[0]?.deepMatch !== undefined;
   const gridSidePad = remPx * GRID_SIDE_PAD_REM;
@@ -1870,18 +1896,6 @@ export const ResultsPane = memo(function ResultsPane({
                 <span className={styles.diffShortcutCount}>{diffItems.length}</span>
               ) : null}
             </button>
-          ) : hasActiveFilters && totalMatches > 0 && results.length > 0 ? (
-            <button
-              type="button"
-              className={styles.bulkDiffButton}
-              onClick={addCurrentResultsToDiff}
-              title={`Add ${Math.min(results.length, DIFF_BUCKET_BULK_CAP)} loaded results to Diff bucket`}
-              aria-label={`Add ${Math.min(results.length, DIFF_BUCKET_BULK_CAP)} loaded results to Diff bucket`}
-              onKeyDown={stopActivationKeys}
-            >
-              <DiffIcon size={12} />
-              <span>Add all</span>
-            </button>
           ) : null}
 
           {isNarrowPhone && hasTableFilter ? (
@@ -1978,23 +1992,15 @@ export const ResultsPane = memo(function ResultsPane({
         </div>
 
         <div className={styles.controls}>
-          {isNarrowPhone && openTabCount > 0 ? (
+          {isNarrowPhone && sessionCount > 0 ? (
             <button
               type="button"
               className={styles.tabsBtn}
               onClick={() => setMobileInspectorOpen(true)}
-              aria-label={
-                sessionCount === 0 && diffTabOpen
-                  ? 'Return to Diff tab'
-                  : `Return to open tabs, ${openTabCount}`
-              }
-              title={
-                sessionCount === 0 && diffTabOpen
-                  ? 'Return to Diff tab'
-                  : `Open tabs (${openTabCount})`
-              }
+              aria-label={`Return to open tabs, ${openTabCount}`}
+              title={`Open tabs (${openTabCount})`}
             >
-              {sessionCount === 0 && diffTabOpen ? 'Diff' : `Tabs (${openTabCount})`}
+              {`Tabs (${openTabCount})`}
             </button>
           ) : null}
 
@@ -2105,6 +2111,59 @@ export const ResultsPane = memo(function ResultsPane({
           </div>
         </div>
       </header>
+
+      {diffTabOpen ? (
+        <div className={styles.diffBanner} role="status">
+          <span className={styles.diffBannerText}>
+            Diff bucket <span className={styles.diffBannerCount}>({diffItems.length})</span>
+          </span>
+          <div className={styles.diffBannerActions}>
+            {results.length > 0 ? (
+              <button
+                type="button"
+                className={styles.diffBannerAdd}
+                onClick={addCurrentResultsToDiff}
+                title={`Add ${addAllDiffCount} loaded results to the Diff bucket`}
+                aria-label={`Add ${addAllDiffCount} loaded results to Diff bucket`}
+                onKeyDown={stopActivationKeys}
+              >
+                {addAllDiffLabel}
+              </button>
+            ) : null}
+            {isNarrowPhone ? (
+              <button
+                type="button"
+                className={joinClasses(
+                  styles.diffBannerCompare,
+                  diffItems.length >= 2 ? styles.diffBannerCompareReady : '',
+                )}
+                onClick={openDiffTabFromBanner}
+                aria-label={
+                  diffItems.length >= 2
+                    ? `Compare ${diffItems.length} definitions in the Diff tab`
+                    : 'Open Diff tab'
+                }
+                title={
+                  diffItems.length >= 2
+                    ? 'Open the Diff tab with the current pair'
+                    : 'Open the Diff tab to manage the bucket'
+                }
+                onKeyDown={stopActivationKeys}
+              >
+                {diffItems.length >= 2 ? 'Compare' : 'Open Diff'}
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className={styles.bannerDone}
+              onClick={closeDiffTab}
+              onKeyDown={stopActivationKeys}
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       {collectMode ? (
         <div className={styles.collectBanner} role="status">

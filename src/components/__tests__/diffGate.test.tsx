@@ -140,6 +140,10 @@ function bulkDiffButton(host: HTMLElement): HTMLButtonElement | null {
   );
 }
 
+function openDiffShortcutButton(host: HTMLElement): HTMLButtonElement | null {
+  return host.querySelector<HTMLButtonElement>('button[aria-label^="Open Diff tab"]');
+}
+
 beforeEach(() => {
   resetSavedResultsScroll();
   useExplorerStore.setState({
@@ -187,11 +191,20 @@ afterEach(() => {
 });
 
 describe('Diff controls stay behind the Diff tab gate', () => {
-  it('renders no per-row or bulk Diff controls in ResultsPane while the Diff tab is closed', () => {
+  it('renders only the Open Diff shortcut (no per-row or bulk add controls) while Diff tab is closed', () => {
     const host = renderResultsPane();
 
     expect(rowDiffButtons(host)).toHaveLength(0);
     expect(bulkDiffButton(host)).toBeNull();
+    const shortcut = openDiffShortcutButton(host);
+    expect(shortcut).not.toBeNull();
+
+    act(() => shortcut?.click());
+    expect(useDiffBucketStore.getState().diffTabOpen).toBe(true);
+    expect(useDiffBucketStore.getState().diffTabActive).toBe(true);
+    expect(openDiffShortcutButton(host)).toBeNull();
+    expect(bulkDiffButton(host)).not.toBeNull();
+    expect(rowDiffButtons(host)).toHaveLength(items.length);
   });
 
   it('unlocks per-row and bulk Diff controls without leaving the results list', () => {
@@ -241,6 +254,9 @@ describe('Diff controls stay behind the Diff tab gate', () => {
 
     expect(rowDiffButtons(host)).toHaveLength(0);
     expect(bulkDiffButton(host)).toBeNull();
+    expect(openDiffShortcutButton(host)?.getAttribute('aria-label')).toBe(
+      `Open Diff tab (${items.length} in bucket)`,
+    );
     expect(useDiffBucketStore.getState().items).toHaveLength(items.length);
   });
 

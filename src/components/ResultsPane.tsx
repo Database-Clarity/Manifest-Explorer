@@ -970,6 +970,11 @@ export const ResultsPane = memo(function ResultsPane({
     });
   }, []);
 
+  const openDiffTabFromHeader = useCallback(() => {
+    useDiffBucketStore.getState().openDiffTab(true);
+    useExplorerStore.getState().setMobileInspectorOpen(true);
+  }, []);
+
   const addCurrentResultsToDiff = useCallback(() => {
     const bucketItems: NewDiffBucketItem[] = results.map((item) => ({
       table: item.table,
@@ -1842,7 +1847,30 @@ export const ResultsPane = memo(function ResultsPane({
           <span className={styles.summary} title={summaryText}>
             {headerSummaryText}
           </span>
-          {diffTabOpen && hasActiveFilters && totalMatches > 0 && results.length > 0 ? (
+          {!diffTabOpen ? (
+            <button
+              type="button"
+              className={styles.bulkDiffButton}
+              onClick={openDiffTabFromHeader}
+              title={
+                diffItems.length > 0
+                  ? `Open Diff tab (${diffItems.length} in bucket)`
+                  : 'Open Diff tab'
+              }
+              aria-label={
+                diffItems.length > 0
+                  ? `Open Diff tab (${diffItems.length} in bucket)`
+                  : 'Open Diff tab'
+              }
+              onKeyDown={stopActivationKeys}
+            >
+              <DiffIcon size={12} />
+              <span>Diff</span>
+              {diffItems.length > 0 ? (
+                <span className={styles.diffShortcutCount}>{diffItems.length}</span>
+              ) : null}
+            </button>
+          ) : hasActiveFilters && totalMatches > 0 && results.length > 0 ? (
             <button
               type="button"
               className={styles.bulkDiffButton}
@@ -1852,7 +1880,7 @@ export const ResultsPane = memo(function ResultsPane({
               onKeyDown={stopActivationKeys}
             >
               <DiffIcon size={12} />
-              <span>Diff</span>
+              <span>Add all</span>
             </button>
           ) : null}
 

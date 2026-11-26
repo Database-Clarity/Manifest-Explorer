@@ -165,6 +165,7 @@ export const Header = memo(function Header({
       window.matchMedia('(max-width: 700px)').matches,
   );
   const [searchCaret, setSearchCaret] = useState(0);
+  const [undoQuery, setUndoQuery] = useState<string | null>(null);
   const [suggestionIndex, setSuggestionIndex] = useState(-1);
   const [suggestionsDismissed, setSuggestionsDismissed] = useState(false);
   const suggestionListId = useId();
@@ -215,6 +216,13 @@ export const Header = memo(function Header({
     media.addEventListener('change', updateViewport);
     return () => media.removeEventListener('change', updateViewport);
   }, []);
+
+  // Typing anything new invalidates the snapshot taken by the clear button.
+  useEffect(() => {
+    if (query.length > 0 && undoQuery !== null) {
+      setUndoQuery(null);
+    }
+  }, [query, undoQuery]);
 
   useLayoutEffect(() => {
     const input = searchInputRef.current;
@@ -273,14 +281,33 @@ export const Header = memo(function Header({
   function handleBrandClick(): void {
     setMenu(null);
     setQuery('');
+    setUndoQuery(null);
     setTableFilter('all');
     setMobileInspectorOpen(false);
     onNavigatePage?.('/');
   }
 
   function handleClearSearch(): void {
+    if (query.length > 0) {
+      setUndoQuery(query);
+    }
     setQuery('');
     searchInputRef.current?.focus();
+  }
+
+  /** Restores the snapshot taken by the clear button and keeps the caret at the end. */
+  function restoreClearedSearch(restored: string): void {
+    setQuery(restored);
+    setUndoQuery(null);
+    setSearchCaret(restored.length);
+    setSuggestionIndex(-1);
+    const input = searchInputRef.current;
+    if (input) {
+      input.focus();
+      window.requestAnimationFrame(() => {
+        input.setSelectionRange(restored.length, restored.length);
+      });
+    }
   }
 
   /** Keeps the tracked caret in sync without resetting the highlight needlessly. */
@@ -352,6 +379,20 @@ export const Header = memo(function Header({
 
   function handleSearchKeyDown(event: KeyboardEvent<HTMLTextAreaElement>): void {
     const input = event.currentTarget;
+
+    if (
+      (event.ctrlKey || event.metaKey) &&
+      !event.shiftKey &&
+      !event.altKey &&
+      event.key.toLowerCase() === 'z' &&
+      query.length === 0 &&
+      undoQuery !== null
+    ) {
+      event.preventDefault();
+      restoreClearedSearch(undoQuery);
+      return;
+    }
+
     const caret = input.selectionStart ?? input.value.length;
     const current =
       caret === searchCaret
@@ -549,6 +590,7 @@ export const Header = memo(function Header({
                   <button
                     type="button"
                     className={styles.clearSearch}
+                    onMouseDown={(event) => event.preventDefault()}
                     onClick={handleClearSearch}
                     aria-label="Clear search"
                     title="Clear search"

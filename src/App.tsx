@@ -284,6 +284,7 @@ export function App(): ReactNode {
   const lastResultLimitRef = useRef<number | null>(null);
   const lastLimitSearchKeyRef = useRef('');
   const maxPushedBySessionRef = useRef(new Map<string, number>());
+  const queryHistoryTimerRef = useRef<number | null>(null);
 
   const [helpOpen, setHelpOpen] = useState(false);
   const [changelogState, setChangelogState] = useState(() => {
@@ -513,7 +514,16 @@ export function App(): ReactNode {
   const [clarityLoading, setClarityLoading] = useState(false);
   const [detailReloadCounter, setDetailReloadCounter] = useState(0);
 
+  /** Drop a queued query-only URL write; direct sync calls flush the latest state now. */
+  const cancelPendingQueryHistory = useCallback(() => {
+    if (queryHistoryTimerRef.current !== null) {
+      window.clearTimeout(queryHistoryTimerRef.current);
+      queryHistoryTimerRef.current = null;
+    }
+  }, []);
+
   const syncBrowserHistory = useCallback((mode: 'replace' | 'push') => {
+    cancelPendingQueryHistory();
     if (
       window.location.pathname === '/history' ||
       window.location.pathname.startsWith('/history/')
@@ -587,7 +597,22 @@ export function App(): ReactNode {
     window.setTimeout(() => {
       syncingHashRef.current = false;
     }, 0);
-  }, [isNarrowLayout]);
+  }, [isNarrowLayout, cancelPendingQueryHistory]);
+
+  /**
+   * Query keystrokes only rewrite the hash once typing settles. Any other URL
+   * change calls `syncBrowserHistory` directly, which cancels this timer and
+   * writes the current query immediately, so the address bar is never stale.
+   */
+  const scheduleQueryHistorySync = useCallback(() => {
+    cancelPendingQueryHistory();
+    queryHistoryTimerRef.current = window.setTimeout(() => {
+      queryHistoryTimerRef.current = null;
+      syncBrowserHistory('replace');
+    }, 400);
+  }, [cancelPendingQueryHistory, syncBrowserHistory]);
+
+  useEffect(() => () => cancelPendingQueryHistory(), [cancelPendingQueryHistory]);
 
   useEffect(() => {
     const media = window.matchMedia('(max-width: 900px)');
@@ -778,7 +803,12 @@ export function App(): ReactNode {
         }
       }
       if (state.query !== previousState.query) {
-        syncBrowserHistory('replace');
+        if (state.query.length === 0) {
+          // Clearing is an explicit action; drop the pending write and update now.
+          syncBrowserHistory('replace');
+        } else {
+          scheduleQueryHistorySync();
+        }
       }
     });
     return () => {
@@ -787,7 +817,7 @@ export function App(): ReactNode {
         window.clearTimeout(timer);
       }
     };
-  }, [syncBrowserHistory]);
+  }, [syncBrowserHistory, scheduleQueryHistorySync]);
 
   // Worker subscriptions + boot
   const bootManifest = useCallback(

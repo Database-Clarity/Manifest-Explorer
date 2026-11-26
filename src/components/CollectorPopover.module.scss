@@ -141,7 +141,7 @@
   overflow-y: auto;
   border: 1px solid var(--hair);
   background: var(--col);
-  overscroll-behavior: contain;
+  overscroll-behavior-y: auto;
 }
 
 .item {

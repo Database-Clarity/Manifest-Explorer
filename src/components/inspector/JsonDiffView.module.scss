@@ -372,7 +372,7 @@
 .unwrapped {
   .codeRows {
     width: max-content;
-    min-width: max-content;
+    min-width: 100%;
   }
 
   .splitRows {
@@ -383,11 +383,11 @@
   .codeRows .addedLine,
   .codeRows .removedLine,
   .codeRows .contextLine {
-    grid-template-columns: 3.25rem 3.25rem 1.25rem max-content;
+    grid-template-columns: 3.25rem 3.25rem 1.25rem minmax(max-content, 1fr);
   }
 
   .splitCell {
-    grid-template-columns: 3.25rem max-content;
+    grid-template-columns: 3.25rem minmax(max-content, 1fr);
   }
 
   .codeLine {
@@ -570,7 +570,7 @@
   }
 
   .unwrapped .splitCell {
-    grid-template-columns: 2.5rem max-content;
+    grid-template-columns: 2.5rem minmax(max-content, 1fr);
   }
 
   .oldLineNumber,
@@ -587,7 +587,7 @@
   .unwrapped .codeRows .addedLine,
   .unwrapped .codeRows .removedLine,
   .unwrapped .codeRows .contextLine {
-    grid-template-columns: 2.25rem 0.875rem max-content;
+    grid-template-columns: 2.25rem 0.875rem minmax(max-content, 1fr);
   }
 
   .mobileLineNumber {

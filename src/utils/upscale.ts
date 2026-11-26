@@ -14,9 +14,8 @@
  *                 of the nearest 2x2 source texels — guaranteeing zero ringing.
  *                 Uses a 2x cascade when upscaling more than 2x (sharper, and
  *                 still fast).
- *  - `perk-sdf` — subpixel vector tracing from alpha or a flat two-color
- *                 palette, with corner-preserving cubic Bézier fitting and
- *                 anti-aliased even-odd fill. Textured opaque art uses Mitchell.
+ *  - `perk-sdf` — implemented separately in `./perkVector` so general-purpose
+ *                 scaling has no dependency on the large vector-tracing module.
  *  - `mitchell` — Mitchell-Netravali (B=1/3, C=1/3) separable cubic. Balanced,
  *                 zero-ringing, far cleaner than browser bilinear.
  *  - `nearest`  — Nearest-neighbour (pixelated / integer).
@@ -33,9 +32,7 @@
  *  - Mitchell-Netravali: standard B=C=1/3 cubic reconstruction filter.
  */
 
-import { upscalePerkVector } from './perkVector';
-
-export type UpscaleMode = 'anime4k' | 'perk-sdf' | 'mitchell' | 'nearest';
+export type UpscaleMode = 'mitchell' | 'nearest';
 
 /** A straight (non-premultiplied) RGBA image on 0..255 byte data. */
 export interface RgbaImage {
@@ -501,16 +498,6 @@ export function upscaleEasu(
 }
 
 // ---------------------------------------------------------------------------
-// Perk vector tracing
-// ---------------------------------------------------------------------------
-
-/** Trace flat perk glyphs and use Mitchell for continuous-tone artwork. */
-export function upscalePerkSdf(source: RgbaImage, targetWidth: number, targetHeight: number): RgbaImage {
-  return upscalePerkVector(source, targetWidth, targetHeight)
-    ?? upscaleMitchell(source, targetWidth, targetHeight);
-}
-
-// ---------------------------------------------------------------------------
 // Dispatcher
 // ---------------------------------------------------------------------------
 
@@ -529,11 +516,5 @@ export function upscale(
       return upscaleNearest(source, targetWidth, targetHeight);
     case 'mitchell':
       return upscaleMitchell(source, targetWidth, targetHeight);
-    case 'perk-sdf':
-      return upscalePerkSdf(source, targetWidth, targetHeight);
-    case 'anime4k':
-      throw new Error(
-        'anime4k runs on WebGL2 only — call upscaleAnime4k() from ./anime4k and fall back to upscaleEasu()',
-      );
   }
 }

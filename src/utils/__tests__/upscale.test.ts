@@ -1,13 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { upscaleAnime4k } from '../anime4k';
+import * as generalUpscaleModule from '../upscale';
 import {
   upscale,
   upscaleEasu,
   upscaleMitchell,
   upscaleNearest,
-  upscalePerkSdf,
   type RgbaImage,
 } from '../upscale';
+import { upscalePerkSdf, upscalePerkSdfWithStatus } from '../perkVector';
 
 type Pixel = [number, number, number, number];
 
@@ -34,6 +35,121 @@ const OPAQUE_WHITE: Pixel = [255, 255, 255, 255];
 const OPAQUE_BLACK: Pixel = [0, 0, 0, 255];
 const TRANSPARENT_BLACK: Pixel = [0, 0, 0, 0];
 
+interface FakeWebgl {
+  gl: WebGL2RenderingContext;
+  readPixelsCalls: Array<{ format: number; type: number; pixels: ArrayBufferView }>;
+}
+
+let createdCanvas: HTMLCanvasElement | undefined;
+const originalGetContext = HTMLCanvasElement.prototype.getContext;
+
+function createFakeWebgl(
+  extensions: string[] = ['EXT_color_buffer_half_float'],
+  framebufferStatus = 0x8cd5,
+): FakeWebgl {
+  const readPixelsCalls: FakeWebgl['readPixelsCalls'] = [];
+  let id = 0;
+  const object = () => ({ id: id++ });
+  const gl = {
+    VERTEX_SHADER: 0x8b31,
+    FRAGMENT_SHADER: 0x8b30,
+    COMPILE_STATUS: 0x8b81,
+    LINK_STATUS: 0x8b82,
+    TEXTURE_2D: 0x0de1,
+    RGBA16F: 0x881a,
+    RGBA8: 0x8058,
+    RGBA: 0x1908,
+    HALF_FLOAT: 0x140b,
+    UNSIGNED_BYTE: 0x1401,
+    TEXTURE_MIN_FILTER: 0x2801,
+    TEXTURE_MAG_FILTER: 0x2800,
+    TEXTURE_WRAP_S: 0x2802,
+    TEXTURE_WRAP_T: 0x2803,
+    LINEAR: 0x2601,
+    CLAMP_TO_EDGE: 0x812f,
+    FRAMEBUFFER: 0x8d40,
+    COLOR_ATTACHMENT0: 0x8ce0,
+    FRAMEBUFFER_COMPLETE: 0x8cd5,
+    ARRAY_BUFFER: 0x8892,
+    STATIC_DRAW: 0x88e4,
+    FLOAT: 0x1406,
+    TRIANGLES: 0x0004,
+    TEXTURE0: 0x84c0,
+    TEXTURE1: 0x84c1,
+    TEXTURE2: 0x84c2,
+    MAX_TEXTURE_SIZE: 0x0d33,
+    getExtension: (name: string) => (extensions.includes(name) ? {} : null),
+    getParameter: () => 8192,
+    createShader: object,
+    shaderSource: vi.fn(),
+    compileShader: vi.fn(),
+    getShaderParameter: () => true,
+    getShaderInfoLog: () => null,
+    deleteShader: vi.fn(),
+    createProgram: object,
+    attachShader: vi.fn(),
+    bindAttribLocation: vi.fn(),
+    linkProgram: vi.fn(),
+    getProgramParameter: () => true,
+    getProgramInfoLog: () => null,
+    deleteProgram: vi.fn(),
+    getUniformLocation: object,
+    createTexture: object,
+    bindTexture: vi.fn(),
+    texImage2D: vi.fn(),
+    texParameteri: vi.fn(),
+    createFramebuffer: object,
+    bindFramebuffer: vi.fn(),
+    framebufferTexture2D: vi.fn(),
+    checkFramebufferStatus: () => framebufferStatus,
+    deleteFramebuffer: vi.fn(),
+    deleteTexture: vi.fn(),
+    createVertexArray: object,
+    bindVertexArray: vi.fn(),
+    createBuffer: object,
+    bindBuffer: vi.fn(),
+    bufferData: vi.fn(),
+    enableVertexAttribArray: vi.fn(),
+    vertexAttribPointer: vi.fn(),
+    viewport: vi.fn(),
+    useProgram: vi.fn(),
+    activeTexture: vi.fn(),
+    uniform1i: vi.fn(),
+    uniform2f: vi.fn(),
+    drawArrays: vi.fn(),
+    readPixels: (
+      _x: number,
+      _y: number,
+      _width: number,
+      _height: number,
+      format: number,
+      type: number,
+      pixels: ArrayBufferView,
+    ) => {
+      readPixelsCalls.push({ format, type, pixels });
+      if (pixels instanceof Uint8Array) pixels.fill(128);
+    },
+  } as unknown as WebGL2RenderingContext;
+
+  return { gl, readPixelsCalls };
+}
+
+function useFakeWebgl(...contexts: FakeWebgl[]): void {
+  const pending = [...contexts];
+  HTMLCanvasElement.prototype.getContext = function (this: HTMLCanvasElement, contextId: string) {
+    if (contextId !== 'webgl2') return null;
+    createdCanvas = this;
+    return pending.shift()?.gl ?? null;
+  } as typeof HTMLCanvasElement.prototype.getContext;
+}
+
+afterEach(() => {
+  createdCanvas?.dispatchEvent(new Event('webglcontextlost', { cancelable: true }));
+  createdCanvas = undefined;
+  HTMLCanvasElement.prototype.getContext = originalGetContext;
+  vi.restoreAllMocks();
+});
+
 describe('upscale — exact output dimensions', () => {
   const source = makeImage(8, 6, () => OPAQUE_WHITE);
 
@@ -41,7 +157,6 @@ describe('upscale — exact output dimensions', () => {
     ['nearest', upscaleNearest],
     ['mitchell', upscaleMitchell],
     ['easu', upscaleEasu],
-    ['perk-sdf', upscalePerkSdf],
   ];
 
   for (const [label, fn] of cases) {
@@ -1765,16 +1880,74 @@ describe('upscale — perk-sdf on genuinely multi-colour art', () => {
 });
 
 describe('upscale — dispatcher', () => {
-  it('dispatches mitchell and nearest to the right resamplers', () => {
+  it('keeps general-purpose algorithms independent of the perk vector module', () => {
     const source = makeImage(8, 8, (x) => (x < 4 ? OPAQUE_BLACK : OPAQUE_WHITE));
     expect(upscale(source, 16, 16, 'mitchell').width).toBe(16);
     expect(upscale(source, 16, 16, 'nearest').width).toBe(16);
-    expect(upscale(source, 16, 16, 'perk-sdf').width).toBe(16);
+    expect('upscalePerkSdf' in generalUpscaleModule).toBe(false);
+    expect(upscalePerkSdf(source, 16, 16).width).toBe(16);
+  });
+
+  it('reports the smooth fallback for artwork without a traceable perk palette', () => {
+    const source = makeImage(8, 8, () => OPAQUE_WHITE);
+    expect(upscalePerkSdfWithStatus(source, 16, 16).method).toBe('smooth');
+    expect(upscalePerkSdf(source, 16, 16).width).toBe(16);
+  });
+});
+
+describe('upscale — mobile-safe Anime4K WebGL2', () => {
+  it('accepts half-float targets and reads the clamped output from RGBA8', () => {
+    const fake = createFakeWebgl();
+    useFakeWebgl(fake);
+    const source = makeImage(8, 8, () => OPAQUE_WHITE);
+
+    const out = upscaleAnime4k(source, 16, 16);
+
+    expect(out).not.toBeNull();
+    expect(out?.width).toBe(16);
+    expect(fake.readPixelsCalls).toHaveLength(1);
+    expect(fake.readPixelsCalls[0]?.format).toBe(fake.gl.RGBA);
+    expect(fake.readPixelsCalls[0]?.type).toBe(fake.gl.UNSIGNED_BYTE);
+    expect(fake.readPixelsCalls[0]?.pixels).toBeInstanceOf(Uint8Array);
+    expect(out?.data[0]).toBe(128);
+  });
+
+  it('retries engine initialization after an unsupported or transient context', () => {
+    const unavailable = createFakeWebgl([]);
+    const available = createFakeWebgl();
+    useFakeWebgl(unavailable, available);
+    const source = makeImage(8, 8, () => OPAQUE_WHITE);
+
+    expect(upscaleAnime4k(source, 16, 16)).toBeNull();
+    expect(upscaleAnime4k(source, 16, 16)).not.toBeNull();
+  });
+
+  it('falls back when the RGBA16F framebuffer is incomplete', () => {
+    const incomplete = createFakeWebgl(['EXT_color_buffer_half_float'], 0x8cd6);
+    useFakeWebgl(incomplete);
+    const source = makeImage(8, 8, () => OPAQUE_WHITE);
+
+    expect(upscaleAnime4k(source, 16, 16)).toBeNull();
+  });
+
+  it('rebuilds the engine after its WebGL context is lost', () => {
+    const first = createFakeWebgl();
+    const second = createFakeWebgl();
+    useFakeWebgl(first, second);
+    const source = makeImage(8, 8, () => OPAQUE_WHITE);
+
+    expect(upscaleAnime4k(source, 16, 16)).not.toBeNull();
+    expect(createdCanvas?.dispatchEvent(new Event('webglcontextlost', { cancelable: true }))).toBe(
+      false,
+    );
+    expect(upscaleAnime4k(source, 16, 16)).not.toBeNull();
+    expect(second.readPixelsCalls).toHaveLength(1);
   });
 });
 
 describe('upscale — anime4k graceful null fallback', () => {
   it('returns null when WebGL2 is unavailable (Node/jsdom)', () => {
+    useFakeWebgl();
     const source = makeImage(8, 8, () => OPAQUE_WHITE);
     expect(upscaleAnime4k(source, 16, 16)).toBeNull();
   });

@@ -1,4 +1,4 @@
-import type { RgbaImage } from './upscale';
+import { upscaleMitchell, type RgbaImage } from './upscale';
 
 type Color = [number, number, number];
 interface Point { x: number; y: number }
@@ -5013,4 +5013,35 @@ export function upscalePerkVector(source: RgbaImage, width: number, height: numb
     data[p * 4 + 3] = 255;
   }
   return { data, width, height };
+}
+
+export interface PerkSdfResult {
+  image: RgbaImage;
+  method: 'vector' | 'smooth';
+}
+
+/** Trace flat perk glyphs and use Mitchell for continuous-tone artwork. */
+export function upscalePerkSdf(
+  source: RgbaImage,
+  width: number,
+  height: number,
+  onMethod?: (method: PerkSdfResult['method']) => void,
+): RgbaImage {
+  const vector = upscalePerkVector(source, width, height);
+  const method = vector ? 'vector' : 'smooth';
+  onMethod?.(method);
+  return vector ?? upscaleMitchell(source, width, height);
+}
+
+/** Return the selected reconstruction along with its actual render path. */
+export function upscalePerkSdfWithStatus(
+  source: RgbaImage,
+  width: number,
+  height: number,
+): PerkSdfResult {
+  let method: PerkSdfResult['method'] = 'smooth';
+  const image = upscalePerkSdf(source, width, height, (actualMethod) => {
+    method = actualMethod;
+  });
+  return { image, method };
 }

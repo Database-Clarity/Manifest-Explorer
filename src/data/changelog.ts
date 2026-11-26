@@ -28,6 +28,22 @@ export {
 
 export const CHANGELOG: readonly ChangelogEntry[] = [
   {
+    version: '2026.11.26-2',
+    date: 'Nov 26, 2026',
+    title: 'Reliable high-DPI image upscaling on phones',
+    summary: 'Fixed Anime4K, Perk Vector, and Smooth upscaling failing or looking soft on mobile screens, and added clear status notes when a mode falls back.',
+    sections: [
+      {
+        heading: 'Image lightbox & mobile upscaling',
+        items: [
+          'Fixed high-DPI phones capping upscaled icons at 4× native size — small Bungie icons now render sharply at full device pixel resolution instead of being stretched by the browser.',
+          'Hardened Anime4K for mobile WebGL2 GPUs (supporting half-float render targets, spec-safe RGBA8 readback, and automatic recovery after WebGL context loss) and decoupled Smooth/Anime4K from the Perk Vector bundle.',
+          'Fixed stale-tab chunk errors permanently breaking upscaling until reload, unified CORS-safe image loading across thumbnails and the lightbox, and added subtle footer notes whenever a mode falls back (such as Perk Vector on full-color art or large native-resolution screenshots) with a Retry action on load failures.',
+        ],
+      },
+    ],
+  },
+  {
     version: '2026.11.26-1',
     date: 'Nov 26, 2026',
     title: 'Destiny 2 patch notes, split-pane History, date sorting & PlugSet overviews',

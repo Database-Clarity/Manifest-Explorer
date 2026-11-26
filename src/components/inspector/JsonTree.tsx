@@ -660,6 +660,7 @@ function InlineImagePreview({
         aria-label={`Open image ${path}`}
       >
         <img
+          crossOrigin="anonymous"
           src={url}
           alt=""
           loading="lazy"

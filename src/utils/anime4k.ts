@@ -191,6 +191,17 @@ void main() {
   fragColor = vec4(max(base.rgb + vec3(v), 0.0), a);
 }`;
 
+/** Convert the float intermediate into a portable byte framebuffer. */
+const RGBA8_FRAGMENT = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 fragColor;
+uniform sampler2D u_tex;
+void main() {
+  vec4 color = texture(u_tex, v_uv);
+  fragColor = clamp(color, 0.0, 1.0);
+}`;
+
 interface PassDef {
   kind: 'conv' | 'depth2x';
   bind: string | null;
@@ -210,14 +221,17 @@ interface Engine {
   convPasses: ConvPass[];
   blitProgram: WebGLProgram;
   blitUTex: WebGLUniformLocation | null;
+  rgba8Program: WebGLProgram;
+  rgba8UTex: WebGLUniformLocation | null;
   depthProgram: WebGLProgram;
   depthUConv: WebGLUniformLocation | null;
   depthUBase: WebGLUniformLocation | null;
   depthUAlpha: WebGLUniformLocation | null;
 }
 
-/** Lazily-initialized, cached engine. `undefined` = not attempted, `null` = unavailable. */
-let engine: Engine | null | undefined;
+/** Lazily initialized engine. Failed initialization is retried on the next call. */
+let engine: Engine | undefined;
+const MAX_OUTPUT_PIXELS = 4_194_304;
 
 function parsePasses(src: string): PassDef[] {
   const chunks = src.split('//!DESC').slice(1);
@@ -328,31 +342,56 @@ function uploadRgba8(
   return t;
 }
 
+function makeRgba8Tex(gl: WebGL2RenderingContext, w: number, h: number): WebGLTexture {
+  const texture = gl.createTexture();
+  if (!texture) throw new Error('createTexture failed');
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return texture;
+}
+
 function buildEngine(): Engine | null {
   if (typeof document === 'undefined') return null;
 
   let gl: WebGL2RenderingContext | null = null;
+  const canvas = document.createElement('canvas');
   try {
-    gl = document
-      .createElement('canvas')
-      .getContext('webgl2', {
-        antialias: false,
-        depth: false,
-        stencil: false,
-        preserveDrawingBuffer: false,
-      }) as WebGL2RenderingContext | null;
+    gl = canvas.getContext('webgl2', {
+      antialias: false,
+      depth: false,
+      stencil: false,
+      preserveDrawingBuffer: false,
+    }) as WebGL2RenderingContext | null;
   } catch {
     return null;
   }
   if (!gl) return null;
 
-  // Float render targets are required for the RGBA16F intermediate tensors.
-  if (!gl.getExtension('EXT_color_buffer_float')) return null;
-  gl.getExtension('EXT_color_buffer_half_float');
+  // Every intermediate is RGBA16F, so either half- or full-float renderability
+  // is sufficient. Check an actual attachment as some mobile drivers advertise
+  // an extension but still reject the framebuffer format.
+  if (
+    !gl.getExtension('EXT_color_buffer_float') &&
+    !gl.getExtension('EXT_color_buffer_half_float')
+  ) {
+    return null;
+  }
   gl.getExtension('OES_texture_float_linear');
   gl.getExtension('OES_texture_half_float_linear');
 
   try {
+    const probeTexture = makeTex(gl, 1, 1);
+    try {
+      const probeFramebuffer = makeFbo(gl, probeTexture);
+      gl.deleteFramebuffer(probeFramebuffer);
+    } finally {
+      gl.deleteTexture(probeTexture);
+    }
+
     const passes = parsePasses(A4K_GLSL);
     const convPasses: ConvPass[] = [];
     for (const pass of passes) {
@@ -366,6 +405,7 @@ function buildEngine(): Engine | null {
     }
 
     const blitProgram = linkProgram(gl, BLIT_FRAGMENT);
+    const rgba8Program = linkProgram(gl, RGBA8_FRAGMENT);
     const depthProgram = linkProgram(gl, DEPTH_FRAGMENT);
 
     // Fullscreen triangle.
@@ -379,17 +419,30 @@ function buildEngine(): Engine | null {
     gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
     // Keep the VAO bound — every draw uses this single fullscreen triangle.
 
-    return {
+    const builtEngine: Engine = {
       gl,
       vao,
       convPasses,
       blitProgram,
       blitUTex: gl.getUniformLocation(blitProgram, 'u_tex'),
+      rgba8Program,
+      rgba8UTex: gl.getUniformLocation(rgba8Program, 'u_tex'),
       depthProgram,
       depthUConv: gl.getUniformLocation(depthProgram, 'u_conv'),
       depthUBase: gl.getUniformLocation(depthProgram, 'u_base'),
       depthUAlpha: gl.getUniformLocation(depthProgram, 'u_alpha'),
     };
+
+    const invalidateEngine = (event: Event): void => {
+      event.preventDefault();
+      if (engine === builtEngine) engine = undefined;
+    };
+    canvas.addEventListener('webglcontextlost', invalidateEngine);
+    canvas.addEventListener('webglcontextrestored', () => {
+      if (engine === builtEngine) engine = undefined;
+    });
+
+    return builtEngine;
   } catch {
     // Shader compilation / linking failed — no GPU upscaling.
     return null;
@@ -397,8 +450,8 @@ function buildEngine(): Engine | null {
 }
 
 function getEngine(): Engine | null {
-  if (engine === undefined) engine = buildEngine();
-  return engine;
+  if (!engine) engine = buildEngine() ?? undefined;
+  return engine ?? null;
 }
 
 /** Run one 2x CNN pass. Returns a new RGBA16F texture at (w*2, h*2). */
@@ -475,20 +528,33 @@ function run2x(
   return outTex;
 }
 
-function readRgba16f(
+function readRgba8(
   engine: Engine,
   tex: WebGLTexture,
   w: number,
   h: number,
-): Float32Array {
+): Uint8Array {
   const { gl } = engine;
-  const fbo = makeFbo(gl, tex);
-  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
-  const out = new Float32Array(w * h * 4);
-  gl.readPixels(0, 0, w, h, gl.RGBA, gl.FLOAT, out);
-  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-  gl.deleteFramebuffer(fbo);
-  return out;
+  const outputTexture = makeRgba8Tex(gl, w, h);
+  let framebuffer: WebGLFramebuffer | null = null;
+  try {
+    framebuffer = makeFbo(gl, outputTexture);
+    gl.viewport(0, 0, w, h);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+    gl.useProgram(engine.rgba8Program);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.uniform1i(engine.rgba8UTex, 0);
+    gl.bindVertexArray(engine.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    const out = new Uint8Array(w * h * 4);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, out);
+    return out;
+  } finally {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    if (framebuffer) gl.deleteFramebuffer(framebuffer);
+    gl.deleteTexture(outputTexture);
+  }
 }
 
 function hasMeaningfulAlpha(source: RgbaImage): boolean {
@@ -611,8 +677,9 @@ function alphaAsGrayscale(source: RgbaImage): RgbaImage {
 /**
  * Upscale `source` to `(targetW, targetH)` using the Anime4K 3D-AA CNN.
  *
- * Returns `null` (so the caller can fall back to CPU EASU) when WebGL2, float
- * render targets, or shader compilation are unavailable, or on any GPU error.
+ * Returns `null` (so the caller can fall back to CPU EASU) when WebGL2,
+ * half-float render targets, or shader compilation are unavailable, or on any
+ * GPU error.
  *
  * Uses cascaded 2x passes (1 pass for <= 2x, 2 passes for <= 4x), then a clean
  * Mitchell step to the exact target size. For transparent PNGs the RGB is
@@ -629,10 +696,12 @@ export function upscaleAnime4k(
   if (targetWidth < srcW || targetHeight < srcH) return null;
   if (targetWidth === srcW && targetHeight === srcH) return null;
 
-  const engine = getEngine();
-  if (!engine) return null;
+  const currentEngine = getEngine();
+  if (!currentEngine) return null;
 
   try {
+    if (targetWidth * targetHeight > MAX_OUTPUT_PIXELS) return null;
+
     const scale = Math.max(targetWidth / srcW, targetHeight / srcH);
     let passes = 0;
     if (scale > 1) passes = 1;
@@ -640,43 +709,46 @@ export function upscaleAnime4k(
 
     const iw = srcW << passes;
     const ih = srcH << passes;
+    const maxTextureSize = Number(currentEngine.gl.getParameter(currentEngine.gl.MAX_TEXTURE_SIZE));
+    if (maxTextureSize > 0 && Math.max(iw, ih, targetWidth, targetHeight) > maxTextureSize) {
+      return null;
+    }
 
     const transparent = hasMeaningfulAlpha(source);
     const input = buildInputRgb(source, transparent);
-    const inputTex = uploadRgba8(engine.gl, input, srcW, srcH);
+    const inputTex = uploadRgba8(currentEngine.gl, input, srcW, srcH);
 
     let tex = inputTex;
     for (let p = 0; p < passes; p += 1) {
-      const next = run2x(engine, tex, srcW << p, srcH << p);
-      if (p > 0) engine.gl.deleteTexture(tex);
+      const next = run2x(currentEngine, tex, srcW << p, srcH << p);
+      if (p > 0) currentEngine.gl.deleteTexture(tex);
       tex = next;
     }
-    engine.gl.deleteTexture(inputTex);
+    currentEngine.gl.deleteTexture(inputTex);
 
-    const f32 = readRgba16f(engine, tex, iw, ih);
-    engine.gl.deleteTexture(tex);
+    const rgba8 = readRgba8(currentEngine, tex, iw, ih);
+    currentEngine.gl.deleteTexture(tex);
 
     // Alpha: EASU 2x cascade for transparent icons, opaque otherwise.
     const alphaBytes = transparent ? upscaleEasu(alphaAsGrayscale(source), iw, ih) : null;
 
     const mid: RgbaImage = {
-      data: new Uint8ClampedArray(iw * ih * 4),
+      data: new Uint8ClampedArray(rgba8),
       width: iw,
       height: ih,
     };
-    for (let i = 0; i < f32.length; i += 4) {
-      const a = alphaBytes ? (alphaBytes.data[i] ?? 0) : 255;
-      mid.data[i] = (f32[i] ?? 0) < 0 ? 0 : (f32[i] ?? 0) > 1 ? 255 : Math.round((f32[i] ?? 0) * 255);
-      mid.data[i + 1] =
-        (f32[i + 1] ?? 0) < 0 ? 0 : (f32[i + 1] ?? 0) > 1 ? 255 : Math.round((f32[i + 1] ?? 0) * 255);
-      mid.data[i + 2] =
-        (f32[i + 2] ?? 0) < 0 ? 0 : (f32[i + 2] ?? 0) > 1 ? 255 : Math.round((f32[i + 2] ?? 0) * 255);
-      mid.data[i + 3] = a;
+    if (alphaBytes) {
+      for (let i = 0; i < rgba8.length; i += 4) {
+        mid.data[i + 3] = alphaBytes.data[i] ?? 0;
+      }
+    } else {
+      for (let i = 3; i < mid.data.length; i += 4) mid.data[i] = 255;
     }
 
     if (iw === targetWidth && ih === targetHeight) return mid;
     return upscaleMitchell(mid, targetWidth, targetHeight);
   } catch {
+    if (engine === currentEngine) engine = undefined;
     return null;
   }
 }

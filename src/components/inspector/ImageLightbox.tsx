@@ -48,6 +48,20 @@ interface DisplaySize {
 
 type FeedbackKind = 'copied' | 'copy-unavailable' | 'export-unavailable';
 type ExportAction = 'copy' | 'download' | 'open';
+type UpscaleResult =
+  | 'idle'
+  | 'loading'
+  | 'ready-anime4k'
+  | 'anime4k-cpu'
+  | 'ready-perk-vector'
+  | 'perk-fallback'
+  | 'ready-smooth'
+  | 'native'
+  | 'cors'
+  | 'engine-load'
+  | 'source-limit'
+  | 'auto-skipped'
+  | 'render-fallback';
 
 interface PngExport {
   blob: Blob;
@@ -55,11 +69,14 @@ interface PngExport {
 }
 
 const ZOOM_LEVELS: readonly (1 | 2 | 3 | 4 | 6)[] = [1, 2, 3, 4, 6];
-const MAX_CANVAS_SOURCE_WIDTH = 1024;
-const MAX_OUTPUT_DIMENSION = 4096;
-const MAX_OUTPUT_PIXELS = 8_000_000;
-/** Cap the internal resample buffer at 4x native so Fit mode stays instant. */
-const MAX_UPSCALE_SCALE = 4;
+const MAX_CANVAS_SOURCE_DIMENSION = 2048;
+const MAX_EXPORT_DIMENSION = 4096;
+const MAX_EXPORT_PIXELS = 8_000_000;
+const MAX_MOBILE_OUTPUT_DIMENSION = 2048;
+const MAX_DESKTOP_OUTPUT_DIMENSION = 3072;
+const MAX_MOBILE_OUTPUT_PIXELS = 4_194_304;
+const MAX_DESKTOP_OUTPUT_PIXELS = 6_291_456;
+const MAX_UPSCALE_SCALE = 12;
 const STAGE_PADDING = 32;
 const FEEDBACK_MS = 1_800;
 const DOWNLOAD_URL_REVOKE_MS = 1_000;
@@ -83,15 +100,87 @@ let anime4kModulePromise: Promise<Anime4kModule> | undefined;
 let perkVectorModulePromise: Promise<PerkVectorModule> | undefined;
 
 function loadUpscaleModule(): Promise<UpscaleModule> {
-  return (upscaleModulePromise ??= import('../../utils/upscale'));
+  if (upscaleModulePromise) return upscaleModulePromise;
+  const promise = import('../../utils/upscale').catch((error: unknown) => {
+    if (upscaleModulePromise === promise) upscaleModulePromise = undefined;
+    throw error;
+  });
+  upscaleModulePromise = promise;
+  return promise;
 }
 
 function loadAnime4kModule(): Promise<Anime4kModule> {
-  return (anime4kModulePromise ??= import('../../utils/anime4k'));
+  if (anime4kModulePromise) return anime4kModulePromise;
+  const promise = import('../../utils/anime4k').catch((error: unknown) => {
+    if (anime4kModulePromise === promise) anime4kModulePromise = undefined;
+    throw error;
+  });
+  anime4kModulePromise = promise;
+  return promise;
 }
 
 function loadPerkVectorModule(): Promise<PerkVectorModule> {
-  return (perkVectorModulePromise ??= import('../../utils/perkVector'));
+  if (perkVectorModulePromise) return perkVectorModulePromise;
+  const promise = import('../../utils/perkVector').catch((error: unknown) => {
+    if (perkVectorModulePromise === promise) perkVectorModulePromise = undefined;
+    throw error;
+  });
+  perkVectorModulePromise = promise;
+  return promise;
+}
+
+function isStaleChunkError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /failed to fetch dynamically imported module|dynamically imported module|loading chunk|mime type|preload/i.test(
+    message,
+  );
+}
+
+export function isReadyResult(result: UpscaleResult): boolean {
+  return (
+    result === 'ready-anime4k' ||
+    result === 'anime4k-cpu' ||
+    result === 'ready-perk-vector' ||
+    result === 'perk-fallback' ||
+    result === 'ready-smooth'
+  );
+}
+
+function mobileOutputBudget(): boolean {
+  const coarsePointer =
+    typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches;
+  const compactViewport =
+    Math.min(window.innerWidth || 1280, window.innerHeight || 900) <= 768;
+  return coarsePointer || compactViewport;
+}
+
+export function computeUpscaleTarget(
+  assetWidth: number,
+  assetHeight: number,
+  displayWidth: number,
+  displayHeight: number,
+  dpr: number,
+  mobile: boolean,
+): { width: number; height: number } {
+  const requestedWidth = Math.max(1, Math.round(displayWidth * dpr));
+  const requestedHeight = Math.max(1, Math.round(displayHeight * dpr));
+  const maxDimension = mobile ? MAX_MOBILE_OUTPUT_DIMENSION : MAX_DESKTOP_OUTPUT_DIMENSION;
+  const maxPixels = mobile ? MAX_MOBILE_OUTPUT_PIXELS : MAX_DESKTOP_OUTPUT_PIXELS;
+  const scale = Math.min(
+    1,
+    maxDimension / requestedWidth,
+    maxDimension / requestedHeight,
+    Math.sqrt(maxPixels / (requestedWidth * requestedHeight)),
+    (assetWidth * MAX_UPSCALE_SCALE) / requestedWidth,
+    (assetHeight * MAX_UPSCALE_SCALE) / requestedHeight,
+  );
+  let width = Math.max(1, Math.min(maxDimension, Math.round(requestedWidth * scale)));
+  let height = Math.max(1, Math.min(maxDimension, Math.round(requestedHeight * scale)));
+  while (width * height > maxPixels) {
+    if (width / requestedWidth >= height / requestedHeight) width -= 1;
+    else height -= 1;
+  }
+  return { width, height };
 }
 
 const SCALING_OPTIONS: ReadonlyArray<{
@@ -197,8 +286,8 @@ function buildExportFilename(
 function clampExportSize(width: number, height: number): { width: number; height: number } {
   const safeWidth = Math.max(1, Math.round(width));
   const safeHeight = Math.max(1, Math.round(height));
-  const dimensionScale = Math.min(1, MAX_OUTPUT_DIMENSION / Math.max(safeWidth, safeHeight));
-  const pixelScale = Math.min(1, Math.sqrt(MAX_OUTPUT_PIXELS / (safeWidth * safeHeight)));
+  const dimensionScale = Math.min(1, MAX_EXPORT_DIMENSION / Math.max(safeWidth, safeHeight));
+  const pixelScale = Math.min(1, Math.sqrt(MAX_EXPORT_PIXELS / (safeWidth * safeHeight)));
   const scale = Math.min(dimensionScale, pixelScale);
   return {
     width: Math.max(1, Math.round(safeWidth * scale)),
@@ -289,7 +378,9 @@ export function ImageLightbox({
   const [backdrop, setBackdrop] = useState<BackdropMode>('dark');
   const [asset, setAsset] = useState<LoadedAsset | null>(null);
   const [loadError, setLoadError] = useState(false);
-  const [upscaleResult, setUpscaleResult] = useState<'idle' | 'ready' | 'fallback'>('idle');
+  const [upscaleResult, setUpscaleResult] = useState<UpscaleResult>('idle');
+  const [retryCount, setRetryCount] = useState(0);
+  const [staleChunk, setStaleChunk] = useState(false);
   const [view, setView] = useState<{ width: number; height: number }>({
     width: 0,
     height: 0,
@@ -416,6 +507,7 @@ export function ImageLightbox({
     setAsset(null);
     setLoadError(false);
     setUpscaleResult('idle');
+    setStaleChunk(false);
 
     const settle = (image: HTMLImageElement, corsSafe: boolean): void => {
       if (cancelled) return;
@@ -482,8 +574,32 @@ export function ImageLightbox({
       return;
     }
 
-    if (!asset.corsSafe || asset.width > MAX_CANVAS_SOURCE_WIDTH) {
-      setUpscaleResult('fallback');
+    const { width: targetWidth, height: targetHeight } = computeUpscaleTarget(
+      asset.width,
+      asset.height,
+      display.width,
+      display.height,
+      dpr,
+      mobileOutputBudget(),
+    );
+
+    // Avoid spending CPU or GPU resources when the browser can display all
+    // requested device pixels from the source without reconstruction.
+    if (targetWidth <= asset.width && targetHeight <= asset.height) {
+      setUpscaleResult('native');
+      return;
+    }
+
+    if (!asset.corsSafe) {
+      setUpscaleResult('cors');
+      return;
+    }
+
+    if (
+      asset.width > MAX_CANVAS_SOURCE_DIMENSION ||
+      asset.height > MAX_CANVAS_SOURCE_DIMENSION
+    ) {
+      setUpscaleResult('source-limit');
       return;
     }
 
@@ -491,36 +607,14 @@ export function ImageLightbox({
     // still auto-upscale compact icons; other assets load an engine only after
     // the user explicitly selects a canvas-based scaling mode.
     if (!userSelectedMode && !isEligibleAutoUpscaleIcon(asset)) {
-      setUpscaleResult('fallback');
+      setUpscaleResult('auto-skipped');
       return;
     }
 
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    // Clamp the internal resample buffer to at most 4x native so Fit mode on a
-    // small icon resamples to a handful of pixels (e.g. 384x384), never a
-    // 1728x1728 device-pixel grid that freezes the main thread. The canvas is
-    // still displayed at the requested CSS size via its inline style.
-    const targetWidth = Math.min(
-      Math.max(1, Math.round(display.width * dpr)),
-      asset.width * MAX_UPSCALE_SCALE,
-    );
-    const targetHeight = Math.min(
-      Math.max(1, Math.round(display.height * dpr)),
-      asset.height * MAX_UPSCALE_SCALE,
-    );
-
-    if (
-      targetWidth > MAX_OUTPUT_DIMENSION ||
-      targetHeight > MAX_OUTPUT_DIMENSION ||
-      targetWidth * targetHeight > MAX_OUTPUT_PIXELS
-    ) {
-      setUpscaleResult('fallback');
-      return;
-    }
-
-    setUpscaleResult('fallback');
+    setUpscaleResult('loading');
     let cancelled = false;
     const loadModules: Promise<
       readonly [UpscaleModule, Anime4kModule | null, PerkVectorModule | null]
@@ -540,7 +634,7 @@ export function ImageLightbox({
         if (cancelled) return;
         const outContext = canvas.getContext('2d');
         if (!outContext) {
-          setUpscaleResult('fallback');
+          setUpscaleResult('render-fallback');
           return;
         }
 
@@ -552,7 +646,7 @@ export function ImageLightbox({
             outContext.imageSmoothingEnabled = false;
             outContext.clearRect(0, 0, targetWidth, targetHeight);
             outContext.drawImage(asset.image, 0, 0);
-            setUpscaleResult('ready');
+            setUpscaleResult('native');
             return;
           }
 
@@ -561,7 +655,7 @@ export function ImageLightbox({
           sourceCanvas.height = asset.height;
           const sourceContext = sourceCanvas.getContext('2d', { willReadFrequently: true });
           if (!sourceContext) {
-            setUpscaleResult('fallback');
+            setUpscaleResult('render-fallback');
             return;
           }
 
@@ -575,17 +669,28 @@ export function ImageLightbox({
           };
 
           let resampled: RgbaImage;
+          let result: UpscaleResult;
           if (mode === 'anime4k') {
             // WebGL2 CNN, falling back to the CPU EASU 2x cascade without WebGL2.
-            resampled =
-              anime4kModule?.upscaleAnime4k(source, targetWidth, targetHeight) ??
-              upscaleModule.upscaleEasu(source, targetWidth, targetHeight);
+            const gpuResult = anime4kModule?.upscaleAnime4k(source, targetWidth, targetHeight);
+            resampled = gpuResult ?? upscaleModule.upscaleEasu(source, targetWidth, targetHeight);
+            result = gpuResult ? 'ready-anime4k' : 'anime4k-cpu';
           } else if (mode === 'perk-sdf') {
-            resampled =
-              perkVectorModule?.upscalePerkVector(source, targetWidth, targetHeight) ??
-              upscaleModule.upscaleMitchell(source, targetWidth, targetHeight);
+            const method: { value: 'vector' | 'smooth' } = { value: 'smooth' };
+            resampled = perkVectorModule
+              ? perkVectorModule.upscalePerkSdf(
+                  source,
+                  targetWidth,
+                  targetHeight,
+                  (actualMethod) => {
+                    method.value = actualMethod;
+                  },
+                )
+              : upscaleModule.upscaleMitchell(source, targetWidth, targetHeight);
+            result = method.value === 'vector' ? 'ready-perk-vector' : 'perk-fallback';
           } else {
             resampled = upscaleModule.upscale(source, targetWidth, targetHeight, mode);
+            result = 'ready-smooth';
           }
 
           outContext.putImageData(
@@ -597,20 +702,27 @@ export function ImageLightbox({
             0,
             0,
           );
-          setUpscaleResult('ready');
-        } catch {
-          // Tainted canvas or an unsupported ImageData path: use the <img> fallback.
-          setUpscaleResult('fallback');
+          setUpscaleResult(result);
+        } catch (error) {
+          // A late CORS failure can happen even after the image element loaded.
+          setUpscaleResult(
+            error instanceof DOMException && error.name === 'SecurityError'
+              ? 'cors'
+              : 'render-fallback',
+          );
         }
       })
-      .catch(() => {
-        if (!cancelled) setUpscaleResult('fallback');
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setStaleChunk(isStaleChunkError(error));
+          setUpscaleResult('engine-load');
+        }
       });
 
     return () => {
       cancelled = true;
     };
-  }, [mode, asset, display.width, display.height, dpr, userSelectedMode]);
+  }, [mode, asset, display.width, display.height, dpr, userSelectedMode, retryCount]);
 
   const stageClass =
     backdrop === 'dark'
@@ -623,11 +735,7 @@ export function ImageLightbox({
     width: display.width,
     height: display.height,
     imageRendering:
-      mode === 'nearest'
-        ? 'pixelated'
-        : isCanvasMode(mode) && upscaleResult === 'fallback'
-          ? 'crisp-edges'
-          : 'auto',
+      mode === 'nearest' ? 'pixelated' : 'auto',
   };
 
   const canvasStyle: CSSProperties = {
@@ -639,6 +747,33 @@ export function ImageLightbox({
     zoom === 'fit'
       ? `Fit ${display.scale.toFixed(2)}×`
       : `${zoom}×`;
+
+  const upscaleStatus =
+    upscaleResult === 'ready-anime4k'
+      ? 'Anime4K WebGL2'
+      : upscaleResult === 'anime4k-cpu'
+        ? 'CPU fallback (WebGL2 unavailable)'
+        : upscaleResult === 'ready-perk-vector'
+          ? 'Perk Vector'
+          : upscaleResult === 'perk-fallback'
+            ? 'Smooth fallback (full-color art)'
+            : upscaleResult === 'ready-smooth'
+              ? 'Smooth'
+              : upscaleResult === 'native'
+                ? 'Shown at native resolution'
+                : upscaleResult === 'cors'
+                  ? 'Upscaling blocked by CORS'
+                  : upscaleResult === 'engine-load'
+                    ? 'Failed to load upscaler'
+                    : upscaleResult === 'source-limit'
+                      ? 'Upscaling unavailable for this image size'
+                      : upscaleResult === 'auto-skipped'
+                        ? 'Automatic upscaling skipped'
+                        : upscaleResult === 'render-fallback'
+                          ? 'Upscaling unavailable — showing original'
+                          : upscaleResult === 'loading'
+                            ? 'Upscaling…'
+                            : '';
 
   const showFeedback = (kind: FeedbackKind): void => {
     if (feedbackTimerRef.current !== null) {
@@ -659,7 +794,7 @@ export function ImageLightbox({
     const canvas = canvasRef.current;
     if (
       isCanvasMode(mode) &&
-      upscaleResult === 'ready' &&
+      isReadyResult(upscaleResult) &&
       canvas &&
       canvas.width > 0 &&
       canvas.height > 0
@@ -686,7 +821,7 @@ export function ImageLightbox({
       throw new Error('Could not create an export canvas.');
     }
 
-    if (mode !== 'original') {
+    if (mode === 'nearest') {
       context.imageSmoothingEnabled = false;
     }
     context.clearRect(0, 0, size.width, size.height);
@@ -896,13 +1031,15 @@ export function ImageLightbox({
                   className={styles.canvas}
                   style={{
                     ...canvasStyle,
-                    display: upscaleResult === 'ready' ? 'block' : 'none',
+                    display: isReadyResult(upscaleResult) ? 'block' : 'none',
                   }}
+                  data-upscale-result={upscaleResult}
                   aria-hidden="true"
                 />
               )}
-              {(!isCanvasMode(mode) || upscaleResult !== 'ready') && (
+              {(!isCanvasMode(mode) || !isReadyResult(upscaleResult)) && (
                 <img
+                  crossOrigin={asset.corsSafe ? 'anonymous' : undefined}
                   src={url}
                   alt=""
                   className={styles.image}
@@ -930,6 +1067,27 @@ export function ImageLightbox({
             </span>
             <span>
               {Math.round(display.width * dpr)} × {Math.round(display.height * dpr)} device px
+            </span>
+            <span className={styles.upscaleStatus} aria-live="polite">
+              {upscaleResult === 'engine-load' && staleChunk
+                ? 'Update available —'
+                : upscaleStatus || '\u00a0'}
+              {upscaleResult === 'engine-load' && (
+                <button
+                  type="button"
+                  className={styles.retryButton}
+                  onClick={() => {
+                    if (staleChunk) {
+                      window.location.reload();
+                      return;
+                    }
+                    setStaleChunk(false);
+                    setRetryCount((current) => current + 1);
+                  }}
+                >
+                  {staleChunk ? 'Reload' : 'Retry'}
+                </button>
+              )}
             </span>
           </div>
 

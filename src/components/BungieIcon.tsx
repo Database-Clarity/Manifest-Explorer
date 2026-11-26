@@ -69,6 +69,8 @@ export function BungieIcon({
 
   const [brokenIcon, setBrokenIcon] = useState<string | null>(null);
   const [brokenWatermark, setBrokenWatermark] = useState<string | null>(null);
+  const [plainIcon, setPlainIcon] = useState<string | null>(null);
+  const [plainWatermark, setPlainWatermark] = useState<string | null>(null);
 
   const iconSrc = typeof icon === 'string' && icon.trim().length > 0 ? bungieAssetUrl(icon) : null;
   const watermarkSrc =
@@ -76,7 +78,8 @@ export function BungieIcon({
       ? bungieAssetUrl(watermark)
       : null;
 
-  const showIcon = iconSrc !== null && brokenIcon !== iconSrc;
+  const isKnownMissingIcon = iconSrc?.includes('/img/misc/missing_icon_d2.png') ?? false;
+  const showIcon = iconSrc !== null && !isKnownMissingIcon && brokenIcon !== iconSrc;
   const showWatermark = watermarkSrc !== null && brokenWatermark !== watermarkSrc;
 
   const scalingClass = scalingClassName(scaling);
@@ -97,6 +100,7 @@ export function BungieIcon({
       {showWatermark ? (
         <img
           className={styles.watermark}
+          crossOrigin={plainWatermark === watermarkSrc ? undefined : 'anonymous'}
           src={watermarkSrc}
           alt=""
           loading={
@@ -115,6 +119,10 @@ export function BungieIcon({
           }}
           onError={() => {
             if (watermarkSrc === null) return;
+            if (plainWatermark !== watermarkSrc) {
+              setPlainWatermark(watermarkSrc);
+              return;
+            }
             rememberIconUrl(failedIconUrls, watermarkSrc);
             setBrokenWatermark((current) =>
               current === watermarkSrc ? current : watermarkSrc,
@@ -126,6 +134,7 @@ export function BungieIcon({
       {showIcon ? (
         <img
           className={imageClass}
+          crossOrigin={plainIcon === iconSrc ? undefined : 'anonymous'}
           src={iconSrc}
           alt={alt ?? ''}
           loading={iconSrc !== null && loadedIconUrls.has(iconSrc) ? 'eager' : 'lazy'}
@@ -136,6 +145,10 @@ export function BungieIcon({
           }}
           onError={() => {
             if (iconSrc === null) return;
+            if (plainIcon !== iconSrc) {
+              setPlainIcon(iconSrc);
+              return;
+            }
             rememberIconUrl(failedIconUrls, iconSrc);
             setBrokenIcon((current) => (current === iconSrc ? current : iconSrc));
           }}

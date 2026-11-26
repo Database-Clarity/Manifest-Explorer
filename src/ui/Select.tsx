@@ -61,7 +61,7 @@ export interface SelectProps<T extends string = string> {
   searchPlaceholder?: string;
   emptySearchText?: string;
   /** Closed-trigger text override; the selected option still supplies its title. */
-  displayLabel?: string;
+  displayLabel?: ReactNode;
   onTriggerKeyDown?: (event: ReactKeyboardEvent<HTMLButtonElement>) => void;
   onOpenChange?: (open: boolean) => void;
 }

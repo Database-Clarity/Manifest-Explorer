@@ -175,7 +175,7 @@ function resolveHashForNode(
         return direct;
       }
     }
-    return null;
+    return resolvedRefs[String(unsigned)] ?? null;
   }
 
   const looksLikeHashKey =
@@ -240,11 +240,16 @@ function createFilterCache(): FilterCache {
 function refLabelMatches(
   table: string,
   name: string | undefined,
+  hash: number,
   filterLower: string,
 ): boolean {
+  const shortTable = getShortTableName(table).toLowerCase();
+  const hashText = String(hash);
   return (
     (typeof name === 'string' && name.toLowerCase().includes(filterLower)) ||
-    getShortTableName(table).toLowerCase().includes(filterLower)
+    shortTable.includes(filterLower) ||
+    hashText.includes(filterLower) ||
+    `#${hashText}`.includes(filterLower)
   );
 }
 
@@ -290,7 +295,12 @@ function matchesNodeSelf(
     );
     if (
       resolvedRef &&
-      refLabelMatches(resolvedRef.table, resolvedRef.name, filterLower)
+      refLabelMatches(
+        resolvedRef.table,
+        resolvedRef.name,
+        resolvedRef.hash,
+        filterLower,
+      )
     ) {
       return true;
     }
@@ -304,7 +314,12 @@ function matchesNodeSelf(
     const objectRef = resolveObjectKeyRef(nodeKey, parentKey, resolvedRefs);
     if (
       objectRef &&
-      refLabelMatches(objectRef.table, objectRef.name, filterLower)
+      refLabelMatches(
+        objectRef.table,
+        objectRef.name,
+        objectRef.hash,
+        filterLower,
+      )
     ) {
       return true;
     }
@@ -490,6 +505,188 @@ function treeChildPath(parentPath: string, key: string, isArray: boolean): strin
   return parentPath ? `${parentPath}.${key}` : key;
 }
 
+type ArrayAlignment = Array<{
+  oldIndex: number | null;
+  newIndex: number | null;
+}>;
+
+const MAX_SEQUENCE_DIFF_SIZE = 400;
+const ARRAY_IDENTITY_KEYS = [
+  'hash',
+  'itemHash',
+  'plugItemHash',
+  'socketTypeHash',
+  'statHash',
+  'perkHash',
+  'objectiveHash',
+  'socketCategoryHash',
+] as const;
+
+function isPrimitiveArrayValue(value: unknown): boolean {
+  return (
+    value === null ||
+    typeof value === 'string' ||
+    typeof value === 'number' ||
+    typeof value === 'boolean'
+  );
+}
+
+function resolvedRefDisplayName(
+  table: string,
+  name: string | undefined,
+  hash: number,
+): string {
+  const shortTable = getShortTableName(table);
+  const trimmedName = name?.trim();
+  return trimmedName ? `${shortTable} "${trimmedName}"` : `${shortTable} #${hash}`;
+}
+
+function identityValue(value: unknown): string | null {
+  if (
+    value === null ||
+    (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean')
+  ) {
+    return null;
+  }
+  return `${typeof value}:${String(value)}`;
+}
+
+function uniqueObjectArrayIdentities(
+  before: readonly unknown[],
+  after: readonly unknown[],
+): { before: string[]; after: string[] } | null {
+  const objects = [...before, ...after];
+  if (
+    objects.some(
+      (value) =>
+        typeof value !== 'object' ||
+        value === null ||
+        Array.isArray(value),
+    )
+  ) {
+    return null;
+  }
+
+  for (const key of ARRAY_IDENTITY_KEYS) {
+    const read = (values: readonly unknown[]): string[] | null => {
+      const identities: string[] = [];
+      for (const value of values) {
+        const identity = identityValue((value as Record<string, unknown>)[key]);
+        if (identity === null) return null;
+        identities.push(`${key}:${identity}`);
+      }
+      return new Set(identities).size === identities.length ? identities : null;
+    };
+    const beforeIdentities = read(before);
+    const afterIdentities = read(after);
+    if (beforeIdentities && afterIdentities) {
+      return { before: beforeIdentities, after: afterIdentities };
+    }
+  }
+  return null;
+}
+
+function lcsArrayAlignment<T>(
+  before: readonly T[],
+  after: readonly T[],
+  equal: (left: T, right: T) => boolean,
+): ArrayAlignment {
+  const table = Array.from(
+    { length: before.length + 1 },
+    () => new Uint16Array(after.length + 1),
+  );
+  for (let i = before.length - 1; i >= 0; i -= 1) {
+    for (let j = after.length - 1; j >= 0; j -= 1) {
+      table[i]![j] = equal(before[i]!, after[j]!)
+        ? (table[i + 1]![j + 1] ?? 0) + 1
+        : Math.max(table[i + 1]![j] ?? 0, table[i]![j + 1] ?? 0);
+    }
+  }
+
+  const alignment: ArrayAlignment = [];
+  let i = 0;
+  let j = 0;
+  while (i < before.length || j < after.length) {
+    if (i < before.length && j < after.length && equal(before[i]!, after[j]!)) {
+      alignment.push({ oldIndex: i, newIndex: j });
+      i += 1;
+      j += 1;
+    } else if (
+      i < before.length &&
+      (j >= after.length || table[i + 1]![j]! >= table[i]![j + 1]!)
+    ) {
+      alignment.push({ oldIndex: i, newIndex: null });
+      i += 1;
+    } else {
+      alignment.push({ oldIndex: null, newIndex: j });
+      j += 1;
+    }
+  }
+  return alignment;
+}
+
+function pairAdjacentPrimitiveReplacements(alignment: ArrayAlignment): ArrayAlignment {
+  const result: ArrayAlignment = [];
+  let cursor = 0;
+  while (cursor < alignment.length) {
+    const entry = alignment[cursor]!;
+    if (entry.oldIndex !== null && entry.newIndex !== null) {
+      result.push(entry);
+      cursor += 1;
+      continue;
+    }
+
+    const removed: number[] = [];
+    const added: number[] = [];
+    while (cursor < alignment.length) {
+      const current = alignment[cursor]!;
+      if (current.oldIndex !== null && current.newIndex !== null) break;
+      if (current.oldIndex !== null) removed.push(current.oldIndex);
+      if (current.newIndex !== null) added.push(current.newIndex);
+      cursor += 1;
+    }
+
+    const paired = Math.min(removed.length, added.length);
+    for (let index = 0; index < paired; index += 1) {
+      result.push({ oldIndex: removed[index]!, newIndex: added[index]! });
+    }
+    for (let index = paired; index < removed.length; index += 1) {
+      result.push({ oldIndex: removed[index]!, newIndex: null });
+    }
+    for (let index = paired; index < added.length; index += 1) {
+      result.push({ oldIndex: null, newIndex: added[index]! });
+    }
+  }
+  return result;
+}
+
+function alignArrayChanges(before: readonly unknown[], after: readonly unknown[]): ArrayAlignment {
+  if (Math.max(before.length, after.length) > MAX_SEQUENCE_DIFF_SIZE) {
+    return Array.from({ length: Math.max(before.length, after.length) }, (_, index) => ({
+      oldIndex: index < before.length ? index : null,
+      newIndex: index < after.length ? index : null,
+    }));
+  }
+
+  if (before.every(isPrimitiveArrayValue) && after.every(isPrimitiveArrayValue)) {
+    return pairAdjacentPrimitiveReplacements(lcsArrayAlignment(before, after, Object.is));
+  }
+
+  const identities = uniqueObjectArrayIdentities(before, after);
+  if (identities) {
+    return lcsArrayAlignment(
+      identities.before,
+      identities.after,
+      (left, right) => left === right,
+    );
+  }
+
+  return Array.from({ length: Math.max(before.length, after.length) }, (_, index) => ({
+    oldIndex: index < before.length ? index : null,
+    newIndex: index < after.length ? index : null,
+  }));
+}
+
 function createJsonTreeDiff(
   before: Record<string, unknown>,
   after: Record<string, unknown>,
@@ -558,43 +755,49 @@ function createJsonTreeDiff(
     ) {
       const oldArray = Array.isArray(oldValue);
       const newArray = Array.isArray(newValue);
-      const keys =
-        oldArray && newArray
-          ? Array.from(
-              { length: Math.max(oldValue.length, newValue.length) },
-              (_, index) => String(index),
-            )
-          : [
-              ...Object.keys(newValue as Record<string, unknown>),
-              ...Object.keys(oldValue as Record<string, unknown>).filter(
-                (key) => !Object.prototype.hasOwnProperty.call(newValue, key),
-              ),
-            ];
       const mergedEntries: Array<readonly [string, unknown]> = [];
       let hasChanges = false;
 
-      keys.forEach((key) => {
-        const childHasOld = oldArray
-          ? Number(key) < (oldValue as unknown[]).length
-          : Object.prototype.hasOwnProperty.call(oldValue, key);
-        const childHasNew = newArray
-          ? Number(key) < (newValue as unknown[]).length
-          : Object.prototype.hasOwnProperty.call(newValue, key);
-        const childPath = treeChildPath(path, key, oldArray);
-        const child = mergeNode(
-          childPath,
-          oldArray
-            ? (oldValue as unknown[])[Number(key)]
-            : (oldValue as Record<string, unknown>)[key],
-          newArray
-            ? (newValue as unknown[])[Number(key)]
-            : (newValue as Record<string, unknown>)[key],
-          childHasOld,
-          childHasNew,
-        );
-        mergedEntries.push([key, child]);
-        hasChanges ||= nodes.get(childPath)?.hasChanges ?? false;
-      });
+      if (oldArray && newArray) {
+        const oldItems = oldValue as unknown[];
+        const newItems = newValue as unknown[];
+        alignArrayChanges(oldItems, newItems).forEach((pair) => {
+          const key = String(mergedEntries.length);
+          const childPath = treeChildPath(path, key, true);
+          const hasOld = pair.oldIndex !== null;
+          const hasNew = pair.newIndex !== null;
+          const child = mergeNode(
+            childPath,
+            hasOld ? oldItems[pair.oldIndex!] : undefined,
+            hasNew ? newItems[pair.newIndex!] : undefined,
+            hasOld,
+            hasNew,
+          );
+          mergedEntries.push([key, child]);
+          hasChanges ||= nodes.get(childPath)?.hasChanges ?? false;
+        });
+      } else {
+        const keys = [
+          ...Object.keys(newValue as Record<string, unknown>),
+          ...Object.keys(oldValue as Record<string, unknown>).filter(
+            (key) => !Object.prototype.hasOwnProperty.call(newValue, key),
+          ),
+        ];
+        keys.forEach((key) => {
+          const childHasOld = Object.prototype.hasOwnProperty.call(oldValue, key);
+          const childHasNew = Object.prototype.hasOwnProperty.call(newValue, key);
+          const childPath = treeChildPath(path, key, false);
+          const child = mergeNode(
+            childPath,
+            (oldValue as Record<string, unknown>)[key],
+            (newValue as Record<string, unknown>)[key],
+            childHasOld,
+            childHasNew,
+          );
+          mergedEntries.push([key, child]);
+          hasChanges ||= nodes.get(childPath)?.hasChanges ?? false;
+        });
+      }
 
       const mergedValue = oldArray
         ? mergedEntries.map(([, child]) => child)
@@ -894,7 +1097,7 @@ function PreviousScalarValue({
     ? {
         table: resolvedRef.table,
         hash: resolvedRef.hash,
-        label: resolvedRef.name || undefined,
+        label: resolvedRef.name?.trim() || undefined,
         icon: resolvedRef.icon,
       }
     : null;
@@ -912,7 +1115,16 @@ function PreviousScalarValue({
             onAuxClick={(event) =>
               activateOnMiddleClick(event, () => onNavigateRef(ref, true))
             }
-            title={`${resolvedRef.table}:${resolvedRef.hash}${resolvedRef.subtitle ? ` — ${resolvedRef.subtitle}` : ''}`}
+            title={`Click to inspect ${resolvedRefDisplayName(
+              resolvedRef.table,
+              resolvedRef.name,
+              resolvedRef.hash,
+            )} (${resolvedRef.table}:${resolvedRef.hash})${resolvedRef.subtitle ? ` — ${resolvedRef.subtitle}` : ''}`}
+            aria-label={`Open ${resolvedRefDisplayName(
+              resolvedRef.table,
+              resolvedRef.name,
+              resolvedRef.hash,
+            )}`}
           >
             {resolvedRef.icon ? (
               <BungieIcon
@@ -922,9 +1134,11 @@ function PreviousScalarValue({
               />
             ) : null}
             <span className={styles.refTable}>{getShortTableName(resolvedRef.table)}</span>
-            <span className={styles.refName}>
-              &quot;{resolvedRef.name || 'Unnamed'}&quot;
-            </span>
+            {resolvedRef.name?.trim() ? (
+              <span className={styles.refName}>&quot;{resolvedRef.name}&quot;</span>
+            ) : (
+              <span className={styles.refName}>#{resolvedRef.hash}</span>
+            )}
           </button>
         ) : enumInfo ? (
           <span className={`${styles.annotation} ${styles.annotationEnum}`}>
@@ -1191,14 +1405,26 @@ const JsonNode = memo(function JsonNode({
     const objectKeyRef = isArray
       ? null
       : resolveObjectKeyRef(nodeKey, parentKey, resolvedRefs);
+    const objectKeyNumber = Number(nodeKey);
+    const lazyObjectKeyTable =
+      !objectKeyRef &&
+      /^\d+$/.test(nodeKey) &&
+      Number.isSafeInteger(objectKeyNumber) &&
+      objectKeyNumber > 0
+        ? getTargetTablesForObjectKey(parentKey)[0]
+        : undefined;
+    const lazyObjectKeyHash =
+      lazyObjectKeyTable !== undefined ? toUnsignedHash(Number(nodeKey)) : null;
     const objectRefTarget: DefinitionRef | null = objectKeyRef
       ? {
           table: objectKeyRef.table,
           hash: objectKeyRef.hash,
-          label: objectKeyRef.name || undefined,
+          label: objectKeyRef.name?.trim() || undefined,
           icon: objectKeyRef.icon,
         }
-      : null;
+      : lazyObjectKeyTable !== undefined && lazyObjectKeyHash !== null
+        ? { table: lazyObjectKeyTable, hash: lazyObjectKeyHash }
+        : null;
     const peek =
       !isExpanded && count > 0
         ? getCollapsedPeek(value as Record<string, unknown>, isArray)
@@ -1279,33 +1505,80 @@ const JsonNode = memo(function JsonNode({
               {diffKind === 'added' ? '+' : diffKind === 'removed' ? '−' : '~'}
             </span>
           )}
-          {objectKeyRef && (
+          {(objectKeyRef || (lazyObjectKeyTable && lazyObjectKeyHash !== null)) && (
             <span className={styles.refLinkGroup}>
               <button
                 type="button"
-                className={`${styles.annotation} ${styles.annotationRef} ${styles.refBadge}`}
+                className={`${styles.annotation} ${
+                  objectKeyRef ? styles.annotationRef : styles.annotationLazy
+                } ${styles.refBadge}`}
                 onClick={handleObjectRefClick}
                 onMouseDown={preventMiddleClickAutoScroll}
                 onAuxClick={handleObjectRefAuxClick}
-                title={`Click to inspect · Ctrl+Click or middle-click for new tab (${objectKeyRef.table}:${objectKeyRef.hash}${objectKeyRef.subtitle ? ` — ${objectKeyRef.subtitle}` : ''})`}
-          >
-            {objectKeyRef.icon ? (
-              <BungieIcon
-                icon={objectKeyRef.icon}
-                size={16}
-                className={styles.refIcon}
-              />
-            ) : null}
-            <span className={styles.refTable}>
-              {highlightText(
-                    getShortTableName(objectKeyRef.table),
-                    filterLower,
-                    isActiveMatch,
-                  )}
-                </span>
-                <span className={styles.refName}>
-                  &quot;{highlightText(objectKeyRef.name || 'Unnamed', filterLower, isActiveMatch)}&quot;
-                </span>
+                title={
+                  objectKeyRef
+                    ? `Click to inspect ${resolvedRefDisplayName(
+                        objectKeyRef.table,
+                        objectKeyRef.name,
+                        objectKeyRef.hash,
+                      )} · Ctrl+Click or middle-click for new tab (${objectKeyRef.table}:${objectKeyRef.hash}${objectKeyRef.subtitle ? ` — ${objectKeyRef.subtitle}` : ''})`
+                    : `Table not loaded yet — click to load ${lazyObjectKeyTable} and open ${lazyObjectKeyHash}`
+                }
+                aria-label={
+                  objectKeyRef
+                    ? `Open ${resolvedRefDisplayName(
+                        objectKeyRef.table,
+                        objectKeyRef.name,
+                        objectKeyRef.hash,
+                      )}`
+                    : `Open ${getShortTableName(lazyObjectKeyTable!)} ${lazyObjectKeyHash}`
+                }
+              >
+                {objectKeyRef?.icon ? (
+                  <BungieIcon
+                    icon={objectKeyRef.icon}
+                    size={16}
+                    className={styles.refIcon}
+                  />
+                ) : null}
+                {objectKeyRef ? (
+                  <>
+                    <span className={styles.refTable}>
+                      {highlightText(
+                        getShortTableName(objectKeyRef.table),
+                        filterLower,
+                        isActiveMatch,
+                      )}
+                    </span>
+                    {objectKeyRef.name?.trim() ? (
+                      <span className={styles.refName}>
+                        &quot;{highlightText(objectKeyRef.name, filterLower, isActiveMatch)}&quot;
+                      </span>
+                    ) : (
+                      <span className={styles.refName}>
+                        {highlightText(`#${objectKeyRef.hash}`, filterLower, isActiveMatch)}
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <span className={styles.lazyLabel}>
+                      Open{' '}
+                      {highlightText(
+                        getShortTableName(lazyObjectKeyTable!),
+                        filterLower,
+                        isActiveMatch,
+                      )}
+                    </span>
+                    <span className={styles.lazyHash}>
+                      {highlightText(
+                        String(lazyObjectKeyHash),
+                        filterLower,
+                        isActiveMatch,
+                      )}
+                    </span>
+                  </>
+                )}
               </button>
               <button
                 type="button"
@@ -1323,8 +1596,24 @@ const JsonNode = memo(function JsonNode({
                     }
                   });
                 }}
-                title={`Open ${objectKeyRef.name || getShortTableName(objectKeyRef.table)} in a new tab`}
-                aria-label={`Open ${objectKeyRef.name || getShortTableName(objectKeyRef.table)} in a new tab`}
+                title={`Open ${
+                  objectKeyRef
+                    ? resolvedRefDisplayName(
+                        objectKeyRef.table,
+                        objectKeyRef.name,
+                        objectKeyRef.hash,
+                      )
+                    : `${getShortTableName(lazyObjectKeyTable!)} ${lazyObjectKeyHash}`
+                } in a new tab`}
+                aria-label={`Open ${
+                  objectKeyRef
+                    ? resolvedRefDisplayName(
+                        objectKeyRef.table,
+                        objectKeyRef.name,
+                        objectKeyRef.hash,
+                      )
+                    : `${getShortTableName(lazyObjectKeyTable!)} ${lazyObjectKeyHash}`
+                } in a new tab`}
               >
                 <ExternalLinkIcon size={11} />
               </button>
@@ -1501,7 +1790,7 @@ const JsonNode = memo(function JsonNode({
     ? {
         table: resolvedRef.table,
         hash: resolvedRef.hash,
-        label: resolvedRef.name || undefined,
+         label: resolvedRef.name?.trim() || undefined,
         icon: resolvedRef.icon,
       }
     : null;
@@ -1656,7 +1945,16 @@ const JsonNode = memo(function JsonNode({
               onClick={handleRefClick}
               onMouseDown={preventMiddleClickAutoScroll}
               onAuxClick={handleRefAuxClick}
-              title={`Click to inspect · Ctrl+Click or middle-click for new tab (${resolvedRef.table}:${resolvedRef.hash}${resolvedRef.subtitle ? ` — ${resolvedRef.subtitle}` : ''})`}
+              title={`Click to inspect ${resolvedRefDisplayName(
+                resolvedRef.table,
+                resolvedRef.name,
+                resolvedRef.hash,
+              )} · Ctrl+Click or middle-click for new tab (${resolvedRef.table}:${resolvedRef.hash}${resolvedRef.subtitle ? ` — ${resolvedRef.subtitle}` : ''})`}
+              aria-label={`Open ${resolvedRefDisplayName(
+                resolvedRef.table,
+                resolvedRef.name,
+                resolvedRef.hash,
+              )}`}
             >
               {resolvedRef.icon ? (
                 <BungieIcon
@@ -1672,9 +1970,15 @@ const JsonNode = memo(function JsonNode({
                   isActiveMatch,
                 )}
               </span>
-              <span className={styles.refName}>
-                &quot;{highlightText(resolvedRef.name || 'Unnamed', filterLower, isActiveMatch)}&quot;
-              </span>
+              {resolvedRef.name?.trim() ? (
+                <span className={styles.refName}>
+                  &quot;{highlightText(resolvedRef.name, filterLower, isActiveMatch)}&quot;
+                </span>
+              ) : (
+                <span className={styles.refName}>
+                  {highlightText(`#${resolvedRef.hash}`, filterLower, isActiveMatch)}
+                </span>
+              )}
             </button>
             <button
               type="button"
@@ -1692,8 +1996,16 @@ const JsonNode = memo(function JsonNode({
                   }
                 });
               }}
-              title={`Open ${resolvedRef.name || getShortTableName(resolvedRef.table)} in a new tab`}
-              aria-label={`Open ${resolvedRef.name || getShortTableName(resolvedRef.table)} in a new tab`}
+              title={`Open ${resolvedRefDisplayName(
+                resolvedRef.table,
+                resolvedRef.name,
+                resolvedRef.hash,
+              )} in a new tab`}
+              aria-label={`Open ${resolvedRefDisplayName(
+                resolvedRef.table,
+                resolvedRef.name,
+                resolvedRef.hash,
+              )} in a new tab`}
             >
               <ExternalLinkIcon size={11} />
             </button>
@@ -1721,6 +2033,7 @@ const JsonNode = memo(function JsonNode({
               onMouseDown={preventMiddleClickAutoScroll}
               onAuxClick={handleLazyRefAuxClick}
               title={`Table not loaded yet — click to load ${lazyTargetTable} and open ${lazyHash} · Ctrl+Click or middle-click for new tab`}
+              aria-label={`Open ${getShortTableName(lazyTargetTable)} ${lazyHash}`}
             >
               <span className={styles.lazyLabel}>
                 Open{' '}

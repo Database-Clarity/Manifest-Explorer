@@ -81,17 +81,19 @@
 .layoutToggle {
   @include ctl.segmented-track;
   box-sizing: border-box;
-  min-height: 1.75rem;
-  font-size: 0.75rem;
+  height: 28px;
+  min-height: 28px;
+  font-size: 12px;
 }
 
 .layoutButton,
 .layoutButtonActive {
   @include ctl.segmented-item;
   box-sizing: border-box;
-  min-height: calc(1.75rem - 6px);
+  height: 22px;
+  min-height: 22px;
   padding: 0 0.4375rem;
-  font-size: 0.75rem;
+  font-size: 12px;
 }
 
 .layoutButtonActive,
@@ -104,9 +106,10 @@
 .toolbarBtn {
   @include ctl.button;
   box-sizing: border-box;
-  min-height: 1.75rem;
+  height: 28px;
+  min-height: 28px;
   padding: 0.125rem 0.375rem;
-  font-size: 0.75rem;
+  font-size: 12px;
 }
 
 .wrapToggle {
@@ -114,13 +117,14 @@
   align-items: center;
   gap: 0.3125rem;
   box-sizing: border-box;
-  min-height: 1.75rem;
+  height: 28px;
+  min-height: 28px;
   padding: 0 0.4375rem;
   border: 1px solid var(--line);
   border-radius: 0.25rem;
   background: var(--seg-track);
   color: var(--seg-inactive-ink);
-  font-size: 0.75rem;
+  font-size: 12px;
   cursor: pointer;
   user-select: none;
   white-space: nowrap;
@@ -427,6 +431,21 @@
   color: var(--editor-text);
 }
 
+.inlineAdded,
+.inlineRemoved {
+  padding: 0;
+  border-radius: 2px;
+  color: var(--editor-text);
+}
+
+.inlineAdded {
+  background: color-mix(in srgb, var(--ins) 27%, var(--editor));
+}
+
+.inlineRemoved {
+  background: color-mix(in srgb, var(--del-text) 25%, var(--editor));
+}
+
 .matchingLine {
   outline: 1px solid color-mix(in srgb, var(--link) 42%, transparent);
   outline-offset: -1px;
@@ -529,15 +548,19 @@
   .wrapToggle,
   .toolbarBtn {
     box-sizing: border-box;
+    height: var(--tap);
     min-height: var(--tap);
+    font-size: 12px;
   }
 
   .layoutToggle {
+    height: var(--tap);
     min-height: var(--tap);
   }
 
   .layoutButton,
   .layoutButtonActive {
+    height: calc(var(--tap) - 6px);
     min-height: calc(var(--tap) - 6px);
   }
 

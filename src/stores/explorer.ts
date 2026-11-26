@@ -13,6 +13,7 @@ import type {
 } from '../types/manifest';
 import { hasPositiveTableScopeInQuery } from '../manifest/query';
 import { ARTIFACT_PERKS_TABLE, TABLE_METADATA, getShortTableName } from '../manifest/tables';
+import { useDiffBucketStore } from './diffBucket';
 
 export type NoticeTone = 'info' | 'warn' | 'danger';
 
@@ -76,7 +77,6 @@ export interface ExplorerState {
   history: TabHistoryEntry[];
   historyIndex: number;
   activeTab: InspectorTab;
-  pinnedDiffRef: DefinitionRef | null;
   mobileInspectorOpen: boolean;
   inspectorMaximized: boolean;
 
@@ -146,8 +146,6 @@ export interface ExplorerState {
   hydrateEntrySummaries: (summaries: Record<string, ResolvedSummaryEntry>) => void;
 
   closeInspector: () => void;
-  pinForDiff: (ref: DefinitionRef) => void;
-  clearPinnedDiff: () => void;
   setMobileInspectorOpen: (open: boolean) => void;
 
   pushNotice: (notice: NoticeInput) => void;
@@ -366,7 +364,7 @@ function syncActiveSession(
     activeSessionIndex: clamped,
     history: active.history,
     historyIndex: active.historyIndex,
-    activeTab: current?.activeTab ?? 'pretty',
+    activeTab: current?.activeTab === 'diff' ? 'pretty' : current?.activeTab ?? 'pretty',
   };
 }
 
@@ -394,7 +392,6 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
   history: [],
   historyIndex: -1,
   activeTab: 'pretty',
-  pinnedDiffRef: null,
   mobileInspectorOpen: false,
   inspectorMaximized: false,
 
@@ -537,6 +534,7 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
     ),
 
   navigateInTab: (ref, jsonFilter) => {
+    useDiffBucketStore.getState().blurDiffTab();
     const state = get();
     const entry = createHistoryEntry(ref, jsonFilter);
 
@@ -595,6 +593,7 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
   },
 
   openInNewTab: (ref, focus = true, jsonFilter) => {
+    useDiffBucketStore.getState().blurDiffTab();
     const state = get();
     const unsigned = ref.hash >>> 0;
     const existingIdx = state.sessions.findIndex((s) => {
@@ -651,13 +650,15 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
       if (index < 0 || index >= state.sessions.length) {
         return {};
       }
+      useDiffBucketStore.getState().blurDiffTab();
       return {
         ...syncActiveSession(state.sessions, index),
         mobileInspectorOpen: true,
       };
     }),
 
-  closeSession: (index) =>
+  closeSession: (index) => {
+    let emptied = false;
     set((state) => {
       if (index < 0 || index >= state.sessions.length) {
         return {};
@@ -666,6 +667,7 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
       if (closedSession) clearSessionEntryScroll(closedSession.id);
       const nextSessions = state.sessions.filter((_, idx) => idx !== index);
       if (nextSessions.length === 0) {
+        emptied = true;
         return {
           ...syncActiveSession([], -1),
           mobileInspectorOpen: false,
@@ -679,7 +681,12 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
         nextActive = Math.min(index, nextSessions.length - 1);
       }
       return syncActiveSession(nextSessions, nextActive);
-    }),
+    });
+    if (emptied && useDiffBucketStore.getState().diffTabOpen) {
+      useDiffBucketStore.getState().focusDiffTab();
+      set({ mobileInspectorOpen: true });
+    }
+  },
 
   closeOtherSessions: (index) =>
     set((state) => {
@@ -774,13 +781,15 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
 
   setActiveTab: (activeTab) =>
     set((state) => {
+      useDiffBucketStore.getState().blurDiffTab();
+      const safeActiveTab = activeTab === 'diff' ? 'pretty' : activeTab;
       if (state.activeSessionIndex < 0) {
-        return { activeTab };
+        return { activeTab: safeActiveTab };
       }
       const nextSessions = state.sessions.map((s, idx) => {
         if (idx !== state.activeSessionIndex) return s;
         const nextHistory = s.history.map((item, hIdx) =>
-          hIdx === s.historyIndex ? { ...item, activeTab } : item,
+          hIdx === s.historyIndex ? { ...item, activeTab: safeActiveTab } : item,
         );
         return { ...s, history: nextHistory };
       });
@@ -909,6 +918,7 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
 
   closeInspector: () => {
     clearAllEntryScroll();
+    useDiffBucketStore.getState().closeDiffTab();
     set({
       sessions: [],
       activeSessionIndex: -1,
@@ -919,26 +929,6 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
       inspectorMaximized: false,
     });
   },
-
-  pinForDiff: (ref) =>
-    set((state) => {
-      if (state.activeSessionIndex < 0) {
-        return { pinnedDiffRef: ref, activeTab: 'diff' };
-      }
-      const nextSessions = state.sessions.map((s, idx) => {
-        if (idx !== state.activeSessionIndex) return s;
-        const nextHistory = s.history.map((item, hIdx) =>
-          hIdx === s.historyIndex ? { ...item, activeTab: 'diff' as const } : item,
-        );
-        return { ...s, history: nextHistory };
-      });
-      return {
-        pinnedDiffRef: ref,
-        ...syncActiveSession(nextSessions, state.activeSessionIndex),
-      };
-    }),
-
-  clearPinnedDiff: () => set({ pinnedDiffRef: null }),
 
   setMobileInspectorOpen: (mobileInspectorOpen) => set({ mobileInspectorOpen }),
 
@@ -1028,6 +1018,9 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
       }
     }
 
+    if (sessions.length > 0) {
+      useDiffBucketStore.getState().blurDiffTab();
+    }
     set((state) => ({
       query,
       deepSearch,
@@ -1038,7 +1031,6 @@ export const useExplorerStore = create<ExplorerState>()((set, get) => ({
         includeUnnamed: unnamedMode === 'always',
       },
       ...syncActiveSession(sessions, activeIdx),
-      pinnedDiffRef: null,
       mobileInspectorOpen: sessions.length > 0,
       selectedResultIndex: 0,
       collapsedResultGroups: {},

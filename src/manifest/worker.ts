@@ -2918,6 +2918,17 @@ function resolveHash(hash: number, targetTables: string[]): ResolvedHashSummary 
       const entry = getIndexedEntry(table, hash);
       if (entry) return toSummary(entry);
     }
+    // Fall back to the cross-table index only when every target table is
+    // already indexed. If a target table isn't indexed yet its entries are
+    // absent from the index, so a cross-table hit would mislabel the hash
+    // until that table loads and triggers a refresh.
+    const allTargetsIndexed = targetTables.every(
+      (table) => tableStatuses.get(table)?.indexed === true,
+    );
+    if (allTargetsIndexed) {
+      const fallback = entryByHash.get(hash);
+      if (fallback) return toSummary(fallback);
+    }
     return undefined;
   }
   const fallback = entryByHash.get(hash);
@@ -2976,7 +2987,9 @@ function walkForRefs(
     // (`stats.stats["..."], objectives, perks, items, nodes, ...`).
     if (/^\d+$/.test(key)) {
       const numericKey = Number(key);
-      if (numericKey > 1000) recordObjectKeyRef(refs, parentKey, toUnsignedHash(numericKey));
+      if (Number.isSafeInteger(numericKey) && numericKey > 0) {
+        recordObjectKeyRef(refs, parentKey, toUnsignedHash(numericKey));
+      }
       if (typeof child === 'object' && child !== null) {
         walkForRefs(child, parentKey, refs, depth + 1);
       }
@@ -2992,6 +3005,24 @@ function walkForRefs(
         continue;
       }
       if (Array.isArray(child)) {
+        for (const item of child) {
+          const hash = asUnsigned(item);
+          if (hash !== undefined) recordRef(refs, key, parentKey, hash);
+        }
+        continue;
+      }
+    }
+
+    if (targetTables.length === 0) {
+      const looksLikeHashContext =
+        /hash(es)?$/i.test(key) ||
+        (parentKey !== undefined && /hash(es)?$/i.test(parentKey)) ||
+        (key === 'hash' && parentKey !== undefined);
+      if (looksLikeHashContext && typeof child === 'number' && Number.isFinite(child)) {
+        recordRef(refs, key, parentKey, toUnsignedHash(child));
+        continue;
+      }
+      if (looksLikeHashContext && Array.isArray(child)) {
         for (const item of child) {
           const hash = asUnsigned(item);
           if (hash !== undefined) recordRef(refs, key, parentKey, hash);

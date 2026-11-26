@@ -198,7 +198,18 @@ export function PanelLeftIcon(props: IconProps): ReactNode {
 export function DiffIcon(props: IconProps): ReactNode {
   return (
     <IconFrame {...props}>
-      <path d="M4 2.5v5M1.5 5h5M12 8.5v5M9.5 11h5" />
+      <rect x="1.75" y="2.25" width="5" height="11.5" rx="0.75" />
+      <rect x="9.25" y="2.25" width="5" height="11.5" rx="0.75" />
+      <path d="M3 5h2.5M3 7.25h2.5M10.5 8.75H13M10.5 11h2.5" />
+    </IconFrame>
+  );
+}
+
+export function SwapIcon(props: IconProps): ReactNode {
+  return (
+    <IconFrame {...props}>
+      <path d="M12.5 5H4.5M6.5 3 4.5 5l2 2" />
+      <path d="M3.5 11h8M9.5 9l2 2-2 2" />
     </IconFrame>
   );
 }

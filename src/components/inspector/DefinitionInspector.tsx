@@ -30,6 +30,8 @@ import {
   ChevronDownIcon,
   CloseIcon,
   CopyIcon,
+  CheckIcon,
+  DiffIcon,
   DownloadIcon,
   LinkIcon,
   MaximizeIcon,
@@ -43,6 +45,7 @@ import { BungieIcon } from '../BungieIcon';
 import { activateOnMiddleClick, preventMiddleClickAutoScroll } from '../middleClick';
 import { scrollTabIntoView } from '../../utils/scrollTabIntoView';
 import { JsonTree } from './JsonTree';
+import { useDiffBucketStore } from '../../stores/diffBucket';
 import styles from './DefinitionInspector.module.scss';
 
 const LazyOverviewTab = lazy(() =>
@@ -112,8 +115,10 @@ export interface DefinitionInspectorProps {
   variantsLoading: boolean;
   references: ReverseReferenceResponse | null;
   referencesLoading: boolean;
-  pinnedDetail: DefinitionDetailPayload | null;
-  pinnedLoading: boolean;
+  baseDetail: DefinitionDetailPayload | null;
+  targetDetail: DefinitionDetailPayload | null;
+  baseLoading: boolean;
+  targetLoading: boolean;
   clarityEntry: ClarityDescriptionEntry | null;
   clarityLoading: boolean;
   showClarity: boolean;
@@ -127,7 +132,7 @@ export interface DefinitionInspectorProps {
   onRetry: () => void;
 }
 
-type InspectorViewTab = InspectorTab | 'history';
+type InspectorViewTab = Exclude<InspectorTab, 'diff'> | 'history';
 
 const TABS: ReadonlyArray<{ id: InspectorViewTab; label: string; shortLabel: string }> = [
   { id: 'pretty', label: 'Formatted', shortLabel: 'Formatted' },
@@ -135,7 +140,6 @@ const TABS: ReadonlyArray<{ id: InspectorViewTab; label: string; shortLabel: str
   { id: 'variants', label: 'Variants', shortLabel: 'Vars' },
   { id: 'references', label: 'References', shortLabel: 'Refs' },
   { id: 'raw', label: 'Raw', shortLabel: 'Raw' },
-  { id: 'diff', label: 'Diff', shortLabel: 'Diff' },
   { id: 'history', label: 'History', shortLabel: 'Hist' },
 ];
 
@@ -151,8 +155,10 @@ function DefinitionInspectorImpl({
   variantsLoading,
   references,
   referencesLoading,
-  pinnedDetail,
-  pinnedLoading,
+  baseDetail,
+  targetDetail,
+  baseLoading,
+  targetLoading,
   clarityEntry,
   clarityLoading,
   showClarity,
@@ -172,7 +178,14 @@ function DefinitionInspectorImpl({
   const mobileInspectorOpen = useExplorerStore((s) => s.mobileInspectorOpen);
   const activeTab = useExplorerStore((s) => s.activeTab);
   const activeViewTab = activeTab as InspectorViewTab;
-  const pinnedDiffRef = useExplorerStore((s) => s.pinnedDiffRef);
+  const diffTabOpen = useDiffBucketStore((s) => s.diffTabOpen);
+  const diffTabActive = useDiffBucketStore((s) => s.diffTabActive);
+  const bucketItems = useDiffBucketStore((s) => s.items);
+  const openDiffTab = useDiffBucketStore((s) => s.openDiffTab);
+  const closeDiffTab = useDiffBucketStore((s) => s.closeDiffTab);
+  const focusDiffTab = useDiffBucketStore((s) => s.focusDiffTab);
+  const addDiffItem = useDiffBucketStore((s) => s.addItem);
+  const removeDiffItem = useDiffBucketStore((s) => s.removeItem);
   const inspectorMaximized = useExplorerStore((s) => s.inspectorMaximized);
   const closeSession = useExplorerStore((s) => s.closeSession);
   const closeOtherSessions = useExplorerStore((s) => s.closeOtherSessions);
@@ -183,8 +196,6 @@ function DefinitionInspectorImpl({
   const getEntryScroll = useExplorerStore((s) => s.getEntryScroll);
   const saveEntryScroll = useExplorerStore((s) => s.saveEntryScroll);
   const saveEntryJsonState = useExplorerStore((s) => s.saveEntryJsonState);
-  const pinForDiff = useExplorerStore((s) => s.pinForDiff);
-  const clearPinnedDiff = useExplorerStore((s) => s.clearPinnedDiff);
   const pushNotice = useExplorerStore((s) => s.pushNotice);
   const buildTabGroupShareUrl = useExplorerStore((s) => s.buildTabGroupShareUrl);
 
@@ -200,6 +211,9 @@ function DefinitionInspectorImpl({
   const sessionTabsScrollRef = useRef<HTMLDivElement | null>(null);
   const activeSessionTabRef = useRef<HTMLDivElement | null>(null);
   const sessionMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const diffOpenTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const diffBucketTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const [diffBucketPopoverOpen, setDiffBucketPopoverOpen] = useState(false);
   const activeBannerItemRef = useRef<HTMLButtonElement | null>(null);
   const [tabsOverflowing, setTabsOverflowing] = useState(false);
   const [tabsMenuOpen, setTabsMenuOpen] = useState(false);
@@ -236,6 +250,10 @@ function DefinitionInspectorImpl({
       return { definitionKey, tabs };
     });
   }, [activeViewTab, definitionKey]);
+
+  useEffect(() => {
+    if (!diffTabActive) setDiffBucketPopoverOpen(false);
+  }, [diffTabActive]);
 
   useEffect(() => {
     const element = sessionTabsScrollRef.current;
@@ -531,26 +549,59 @@ function DefinitionInspectorImpl({
   // Stable handlers for memoized child tabs: inline arrows here would defeat
   // `memo()` every time the inspector chrome (tabs, history banner, width)
   // re-renders.
-  const pinCurrentAsBaseline = useCallback(() => {
-    if (!currentRef) {
-      return;
+  const currentBucketItemKey = currentRef
+    ? `${currentRef.table}:${unsignedHash >>> 0}`
+    : '';
+  const currentInBucket = bucketItems.some((item) => item.key === currentBucketItemKey);
+  const toggleCurrentDiffItem = useCallback(() => {
+    if (!currentRef) return;
+    if (currentInBucket) {
+      removeDiffItem(currentBucketItemKey);
+    } else {
+      addDiffItem({
+        table: currentRef.table,
+        hash: unsignedHash,
+        name: itemName,
+        subtitle: itemSubtitle,
+        icon: iconPath,
+      });
     }
-    pinForDiff({
-      table: currentRef.table,
-      hash: unsignedHash,
-      label: itemName,
-      icon: iconPath,
-    });
-  }, [currentRef, iconPath, itemName, pinForDiff, unsignedHash]);
+    openDiffTab(false);
+  }, [
+    addDiffItem,
+    currentBucketItemKey,
+    currentInBucket,
+    currentRef,
+    iconPath,
+    itemName,
+    itemSubtitle,
+    openDiffTab,
+    removeDiffItem,
+    unsignedHash,
+  ]);
 
   const handleDiffVariant = useCallback(
     (variantRef: DefinitionRef) => {
-      flushScroll();
-      pinCurrentAsBaseline();
-      onNavigateRef(variantRef, false);
-      setActiveTab('diff');
+      if (!currentRef || !detail) return;
+      useDiffBucketStore.getState().openPairInDiff(
+        {
+          table: currentRef.table,
+          hash: unsignedHash,
+          name: itemName,
+          subtitle: itemSubtitle,
+          icon: iconPath,
+        },
+        {
+          table: variantRef.table,
+          hash: variantRef.hash,
+          name: variantRef.label ?? '',
+          subtitle: getShortTableName(variantRef.table),
+          icon: variantRef.icon,
+        },
+      );
+      setMobileInspectorOpen(true);
     },
-    [flushScroll, onNavigateRef, pinCurrentAsBaseline, setActiveTab],
+    [currentRef, detail, iconPath, itemName, itemSubtitle, setMobileInspectorOpen, unsignedHash],
   );
 
   const handleDownloadJson = useCallback(() => {
@@ -569,7 +620,7 @@ function DefinitionInspectorImpl({
     pushNotice({ tone: 'info', message: `Downloaded ${link.download}` });
   }, [detail, pushNotice]);
 
-  if (!currentRef) {
+  if (!currentRef && !diffTabOpen) {
     return null;
   }
 
@@ -603,8 +654,47 @@ function DefinitionInspectorImpl({
       )}
 
       {/* Open-definitions tab strip with tab-group sharing */}
-      {sessions.length >= 1 && (
+      {(sessions.length >= 1 || diffTabOpen) && (
         <div className={styles.sessionBar} role="tablist" aria-label="Open definitions">
+          {diffTabOpen ? (
+            <div
+              className={`${styles.sessionTab} ${styles.pinnedDiffTab} ${
+                diffTabActive ? styles.sessionTabActive : ''
+              }`}
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={diffTabActive}
+                className={styles.sessionTabBtn}
+                onClick={() => {
+                  focusDiffTab();
+                  setMobileInspectorOpen(true);
+                }}
+                title="Compare definitions in the Diff bucket"
+              >
+                <DiffIcon size={13} />
+                <span className={styles.sessionTabLabel}>Diff</span>
+                {bucketItems.length > 0 ? (
+                  <span className={styles.diffCount}>{bucketItems.length}</span>
+                ) : null}
+              </button>
+              <button
+                type="button"
+                className={styles.sessionCloseBtn}
+                aria-label="Close Diff tab"
+                title="Close Diff tab"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  closeDiffTab();
+                  setDiffBucketPopoverOpen(false);
+                  if (sessions.length === 0) setMobileInspectorOpen(false);
+                }}
+              >
+                <CloseIcon size={11} />
+              </button>
+            </div>
+          ) : null}
           <div
             ref={sessionTabsScrollRef}
             className={styles.sessionTabsScroll}
@@ -616,7 +706,7 @@ function DefinitionInspectorImpl({
             }}
           >
             {sessions.map((session, idx) => {
-              const isActive = idx === activeSessionIndex;
+              const isActive = !diffTabActive && idx === activeSessionIndex;
               const cur = session.history[session.historyIndex];
               const tabLabel = cur
                 ? cur.label || fallbackEntryLabel(cur)
@@ -696,7 +786,7 @@ function DefinitionInspectorImpl({
               </button>
             </div>
           )}
-          <button
+          {sessions.length > 0 ? <button
             type="button"
             className={styles.sessionShareBtn}
             onClick={() =>
@@ -723,6 +813,33 @@ function DefinitionInspectorImpl({
               {sessions.length > 1 ? `Share tabs (${sessions.length})` : 'Share'}
             </span>
           </button>
+          : null}
+          {!diffTabOpen ? (
+            <button
+              ref={diffOpenTriggerRef}
+              type="button"
+              className={styles.openDiffButton}
+              onClick={() => {
+                openDiffTab(true);
+                setMobileInspectorOpen(true);
+              }}
+              title={
+                bucketItems.length > 0
+                  ? `Open Diff tab (${bucketItems.length} in bucket)`
+                  : 'Open Diff tab'
+              }
+              aria-label={
+                bucketItems.length > 0
+                  ? `Open Diff tab, ${bucketItems.length} in bucket`
+                  : 'Open Diff tab'
+              }
+            >
+              <DiffIcon size={14} />
+              {bucketItems.length > 0 ? (
+                <span className={styles.diffDot}>{bucketItems.length}</span>
+              ) : null}
+            </button>
+          ) : null}
           {(tabsOverflowing || sessions.length >= 6) && (
             <Popover
               open={tabsMenuOpen}
@@ -862,9 +979,79 @@ function DefinitionInspectorImpl({
               </div>
             </Popover>
           )}
+          {diffTabActive ? (
+            <>
+              <button
+                type="button"
+                className={`${styles.iconBtn} ${styles.diffSessionAction} ${styles.desktopCloseBtn}`}
+                onClick={toggleInspectorMaximized}
+                aria-label={inspectorMaximized ? 'Restore split view' : 'Maximize inspector'}
+                title={inspectorMaximized ? 'Restore split view' : 'Maximize inspector'}
+              >
+                {inspectorMaximized ? <MinimizeIcon size={14} /> : <MaximizeIcon size={14} />}
+              </button>
+              <button
+                type="button"
+                className={`${styles.iconBtn} ${styles.diffSessionAction} ${styles.desktopCloseBtn}`}
+                onClick={() => {
+                  closeDiffTab();
+                  setDiffBucketPopoverOpen(false);
+                  if (sessions.length === 0) setMobileInspectorOpen(false);
+                }}
+                aria-label="Close Diff tab"
+                title="Close Diff tab"
+              >
+                <CloseIcon size={14} />
+              </button>
+            </>
+          ) : null}
         </div>
       )}
 
+      {diffTabActive ? (
+        <div className={`${styles.navBar} ${styles.diffNavBar}`}>
+          <button
+            type="button"
+            className={styles.mobileBackBtn}
+            onClick={handleMobileBackToResults}
+            aria-label="Back to results"
+            title="Back to results"
+          >
+            <ArrowLeftIcon size={15} />
+            <span>Results</span>
+          </button>
+          <button
+            type="button"
+            ref={diffBucketTriggerRef}
+            className={`${styles.iconBtn} ${styles.diffMobileBucketButton}`}
+            aria-haspopup="dialog"
+            aria-expanded={diffBucketPopoverOpen}
+            onClick={(event) => {
+              diffBucketTriggerRef.current = event.currentTarget;
+              setDiffBucketPopoverOpen((open) => !open);
+            }}
+            aria-label={`Open Diff bucket, ${bucketItems.length} items`}
+            title="Open Diff bucket"
+          >
+            <DiffIcon size={13} />
+            <span>Bucket ({bucketItems.length})</span>
+          </button>
+          <button
+            type="button"
+            className={`${styles.iconBtn} ${styles.diffMobileCloseButton}`}
+            onClick={() => {
+              closeDiffTab();
+              setDiffBucketPopoverOpen(false);
+              if (sessions.length === 0) setMobileInspectorOpen(false);
+            }}
+            aria-label="Close Diff tab"
+            title="Close Diff tab"
+          >
+            <CloseIcon size={14} />
+          </button>
+        </div>
+      ) : currentRef ? (
+      <>
       {/* Unified History / Current / Future timeline banner */}
       <div className={styles.navBar}>
         <div className={styles.navButtons}>
@@ -982,8 +1169,11 @@ function DefinitionInspectorImpl({
           <CloseIcon size={14} />
         </button>
       </div>
+      </>
+      ) : null}
 
       {/* Entity header */}
+      {!diffTabActive && currentRef ? (
       <div className={styles.entityHeader}>
         <div className={styles.entityIdentity}>
           <BungieIcon
@@ -1068,6 +1258,17 @@ function DefinitionInspectorImpl({
                   <span className="mono">{signedHash}</span>
                 </button>
               )}
+              <button
+                type="button"
+                className={`${styles.diffEntityButton} ${currentInBucket ? styles.diffEntityButtonOn : ''}`}
+                aria-pressed={currentInBucket}
+                title={currentInBucket ? 'Remove from Diff bucket' : 'Add to Diff bucket'}
+                aria-label={currentInBucket ? 'Remove from Diff bucket' : 'Add to Diff bucket'}
+                onClick={toggleCurrentDiffItem}
+              >
+                {currentInBucket ? <CheckIcon size={12} /> : <DiffIcon size={12} />}
+                <span>{currentInBucket ? 'In Diff' : 'Diff'}</span>
+              </button>
             </div>
           </div>
         </div>
@@ -1100,8 +1301,10 @@ function DefinitionInspectorImpl({
           </div>
         )}
       </div>
+      ) : null}
 
       {/* Equal-width centered tabs on phones, compact left-aligned on desktop */}
+      {!diffTabActive && currentRef ? (
       <div className={styles.tabBar} role="tablist" aria-label="Inspector views">
         {TABS.map((tab) => {
           const selected = activeViewTab === tab.id;
@@ -1132,8 +1335,38 @@ function DefinitionInspectorImpl({
           );
         })}
       </div>
+      ) : null}
 
       {/* Tab panel (captures scroll across every tab for history state persistence) */}
+      {diffTabOpen ? (
+        <div className={styles.diffPanel} hidden={!diffTabActive}>
+          <Suspense fallback={<InspectorTabFallback />}>
+            <LazyDiffTab
+              baseDetail={baseDetail}
+              targetDetail={targetDetail}
+              baseLoading={baseLoading}
+              targetLoading={targetLoading}
+              bucketOpen={diffBucketPopoverOpen}
+              setBucketOpen={setDiffBucketPopoverOpen}
+              bucketTriggerRef={diffBucketTriggerRef}
+              activeItem={
+                currentRef
+                  ? {
+                      table: currentRef.table,
+                      hash: unsignedHash,
+                      name: itemName,
+                      subtitle: itemSubtitle,
+                      icon: iconPath,
+                    }
+                  : null
+              }
+              onNavigateRef={navigateWithFlush}
+              onCopy={copyText}
+            />
+          </Suspense>
+        </div>
+      ) : null}
+      {!diffTabActive && currentRef ? (
       <div
         ref={tabPanelRef}
         className={styles.tabPanel}
@@ -1263,25 +1496,6 @@ function DefinitionInspectorImpl({
                 </div>
               </div>
             )}
-            {visitedTabs.has('diff') && (
-              <div
-                hidden={activeTab !== 'diff'}
-                className={styles.tabPanelSlot}
-                data-inspector-panel-active={activeTab === 'diff' ? 'true' : 'false'}
-              >
-                <Suspense fallback={<InspectorTabFallback />}>
-                  <LazyDiffTab
-                    current={detail}
-                    pinnedRef={pinnedDiffRef}
-                    pinnedDetail={pinnedDetail}
-                    pinnedLoading={pinnedLoading}
-                    onPinCurrent={pinCurrentAsBaseline}
-                    onClearPin={clearPinnedDiff}
-                    onNavigateRef={navigateWithFlush}
-                  />
-                </Suspense>
-              </div>
-            )}
             {visitedTabs.has('history') && (
               <div
                 hidden={activeViewTab !== 'history'}
@@ -1311,6 +1525,7 @@ function DefinitionInspectorImpl({
           </div>
         )}
       </div>
+      ) : null}
     </aside>
   );
 }

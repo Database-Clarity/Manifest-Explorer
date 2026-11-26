@@ -60,6 +60,87 @@
   }
 }
 
+.pinnedDiffTab {
+  position: relative;
+  z-index: 1;
+  max-width: 8rem;
+  border-right: 2px solid var(--line);
+  box-shadow: 1px 0 0 var(--hair);
+}
+
+.diffCount,
+.diffDot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1rem;
+  height: 1rem;
+  padding: 0 0.1875rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 12%, var(--col));
+  color: var(--accent-ink);
+  font-size: 0.625rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.openDiffButton {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  min-width: 2rem;
+  padding: 0 0.375rem;
+  border: 0;
+  border-left: 1px solid var(--hair);
+  background: var(--col);
+  color: var(--text2);
+  cursor: pointer;
+
+  &:hover {
+    background: var(--hover);
+    color: var(--text);
+  }
+  &:focus-visible { @include ctl.focus-ring; }
+
+  @include theme.mobile-or-coarse {
+    min-width: var(--tap);
+  }
+
+  .diffDot {
+    position: absolute;
+    top: 0.1875rem;
+    right: 0.125rem;
+    min-width: 0.75rem;
+    height: 0.75rem;
+    padding: 0 0.125rem;
+    font-size: 0.5625rem;
+  }
+}
+
+.diffSessionAction {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 2rem;
+  padding: 0;
+  border: 0;
+  border-left: 1px solid var(--hair);
+  border-radius: 0;
+  background: var(--col);
+
+  &:hover {
+    background: var(--hover);
+  }
+
+  @media (max-width: 900px) {
+    display: none;
+  }
+}
+
 .sessionOverflowWrap {
   position: relative;
   display: flex;
@@ -757,6 +838,29 @@
   }
 }
 
+.diffEntityButton {
+  @include ctl.quiet-button;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.1875rem;
+  min-height: 1.5rem;
+  padding: 0 0.375rem;
+  color: var(--text2);
+  font-size: 0.6875rem;
+  line-height: 1;
+
+  &:hover {
+    color: var(--accent-ink);
+  }
+  &:focus-visible { @include ctl.focus-ring; }
+}
+
+.diffEntityButtonOn,
+.diffEntityButtonOn:hover {
+  color: var(--accent-ink);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
 .hashBtnMuted {
   background: transparent;
   color: var(--text2);
@@ -896,6 +1000,63 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.diffPanel {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.diffPanel[hidden] {
+  display: none !important;
+}
+
+.diffNavBar {
+  gap: 0.375rem;
+
+  @media (min-width: 901px) {
+    display: none;
+  }
+}
+
+.diffMobileBucketButton,
+.diffMobileCloseButton {
+  flex: 0 0 auto;
+  height: var(--tap);
+  min-height: var(--tap);
+
+  @media (min-width: 901px) {
+    display: none;
+  }
+}
+
+.diffMobileBucketButton {
+  gap: 0.25rem;
+  margin-left: auto;
+  padding-inline: 0.375rem;
+  font-size: 0.75rem;
+  background: var(--ctl);
+  border-color: var(--ctl-edge);
+  color: var(--text);
+
+  @media (hover: hover) {
+    &:hover:not(:disabled) {
+      background: var(--ctl-hover);
+      border-color: var(--ctl-hover-edge);
+    }
+  }
+
+  @media (max-width: 900px) {
+    min-width: 0;
+  }
+}
+
+.diffMobileCloseButton {
+  min-width: var(--tap);
+  padding-inline: 0.375rem;
 }
 
 .tabPanelSlot {

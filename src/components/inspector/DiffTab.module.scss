@@ -1,0 +1,408 @@
+@use '../../styles/controls' as ctl;
+@use '../../styles/variables' as theme;
+
+.diffTab {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.compareHeader {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  flex: 0 0 auto;
+  min-width: 0;
+  padding: 0.375rem 0.5rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--col);
+}
+
+.selectGroup {
+  display: flex;
+  align-items: center;
+  gap: 0.3125rem;
+  flex: 1 1 0;
+  min-width: 0;
+  color: var(--text3);
+  font-size: 0.6875rem;
+  font-weight: 650;
+  text-transform: uppercase;
+}
+
+.itemSelect.itemSelect {
+  flex: 1 1 auto;
+  min-width: 0;
+  box-sizing: border-box;
+  height: 28px;
+  min-height: 28px;
+  font-size: 12px;
+}
+
+.triggerValue {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  width: 100%;
+  min-width: 0;
+}
+
+.triggerValueUnnamed {
+  gap: 0;
+}
+
+.triggerName {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.triggerHash {
+  flex: 0 0 auto;
+  color: var(--text3);
+  font-family: var(--code-font-family);
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.swapButton,
+.bucketButton {
+  @include ctl.button;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  box-sizing: border-box;
+  height: 28px;
+  min-height: 28px;
+  padding: 0 0.375rem;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.swapButton {
+  flex: 0 0 28px;
+  padding: 0;
+  font-size: 12px;
+
+  &:disabled {
+    opacity: 0.45;
+  }
+}
+
+.bucketButton {
+  flex: 0 0 auto;
+  color: var(--text2);
+  font-variant-numeric: tabular-nums;
+}
+
+.selectOption {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  min-width: 0;
+}
+
+.selectOptionText,
+.bucketItem > span {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.selectOptionText strong,
+.bucketItem strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.selectOptionText small,
+.bucketItem small {
+  overflow: hidden;
+  color: var(--text3);
+  font-family: var(--code-font-family);
+  font-size: 0.625rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bucketPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  min-width: 0;
+  font-size: 0.75rem;
+}
+
+.bucketList {
+  display: flex;
+  flex-direction: column;
+  max-height: min(55vh, 24rem);
+  overflow: auto;
+  border: 1px solid var(--hair);
+}
+
+.bucketRow {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  min-width: 0;
+  padding: 0.125rem;
+  border-bottom: 1px solid var(--hair);
+
+  &:last-child {
+    border-bottom: 0;
+  }
+}
+
+.bucketItem {
+  @include ctl.contain-focus-rings;
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 2rem;
+  padding: 0.125rem;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+
+  &:hover { background: var(--hover); }
+  &:focus-visible { @include ctl.focus-ring; }
+
+  @include theme.mobile-or-coarse {
+    min-height: var(--tap);
+  }
+}
+
+.assignActions {
+  display: flex;
+  align-items: center;
+  gap: 0.125rem;
+  flex: 0 0 auto;
+}
+
+.baseTargetBtn {
+  @include ctl.quiet-button;
+  min-width: 2.5rem;
+  min-height: 1.5rem;
+  padding: 0 0.375rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+
+  @include theme.mobile-or-coarse {
+    min-height: var(--tap);
+  }
+}
+
+.baseTargetBtnActive,
+.baseTargetBtnActive:hover:not(:disabled) {
+  color: var(--accent-ink);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: var(--accent-ink);
+}
+
+.removeButton {
+  @include ctl.quiet-button;
+  min-width: 1.75rem;
+  min-height: 1.75rem;
+  padding: 0;
+
+  @include theme.mobile-or-coarse {
+    min-width: var(--tap);
+    min-height: var(--tap);
+  }
+
+  &:hover { color: var(--danger); }
+}
+
+.bucketEmpty {
+  margin: 0;
+  padding: 0.5rem;
+  color: var(--text2);
+}
+
+.bucketFooter {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  padding-top: 0.25rem;
+  border-top: 1px solid var(--hair);
+
+  button {
+    @include ctl.quiet-button;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    min-height: 1.75rem;
+    padding: 0 0.375rem;
+    font-size: 0.6875rem;
+  }
+
+  .clearButton:hover { color: var(--danger); }
+}
+
+.emptyState {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  min-height: 0;
+  padding: 1rem;
+  color: var(--text2);
+  text-align: center;
+  font-size: 0.8125rem;
+
+  strong { color: var(--text); font-size: 0.875rem; }
+  > span { max-width: 27rem; }
+}
+
+.emptyActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.375rem;
+  margin-top: 0.25rem;
+
+  button {
+    @include ctl.button;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    min-height: 1.75rem;
+    padding: 0 0.5rem;
+    font-size: 0.75rem;
+  }
+}
+
+.loadingState {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem;
+}
+
+.viewer {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.viewer > * {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.modeToggle {
+  @include ctl.segmented-track;
+  display: inline-flex;
+  align-items: stretch;
+  box-sizing: border-box;
+  height: 28px;
+  min-height: 28px;
+  font-size: 12px;
+
+  button {
+    @include ctl.segmented-item;
+    box-sizing: border-box;
+    height: 22px;
+    min-height: 22px;
+    padding: 0 0.5rem;
+    font-size: 12px;
+  }
+
+  .modeActive {
+    @include ctl.segmented-active;
+  }
+}
+
+@include theme.mobile-or-coarse {
+  .itemSelect.itemSelect {
+    height: var(--tap);
+    min-height: var(--tap);
+    font-size: 12px;
+  }
+
+  .swapButton,
+  .bucketButton {
+    height: var(--tap);
+    min-height: var(--tap);
+  }
+
+  .swapButton {
+    flex-basis: var(--tap);
+    font-size: 12px;
+  }
+
+  .modeToggle {
+    height: var(--tap);
+    min-height: var(--tap);
+  }
+
+  .modeToggle button {
+    height: calc(var(--tap) - 6px);
+    min-height: calc(var(--tap) - 6px);
+  }
+}
+
+@media (max-width: 900px) {
+  .bucketButton {
+    display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .compareHeader {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--tap);
+    gap: 0.375rem;
+  }
+
+  .selectGroup {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.125rem;
+  }
+
+  .selectGroup:nth-of-type(2) {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .swapButton {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    align-self: center;
+    width: var(--tap);
+    height: var(--tap);
+    min-height: var(--tap);
+  }
+
+  .itemSelect {
+    width: 100%;
+  }
+}

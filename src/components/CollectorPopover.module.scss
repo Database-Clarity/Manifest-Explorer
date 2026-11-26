@@ -287,7 +287,8 @@
 
 .primaryAction,
 .actionBtn,
-.clearBtn {
+.clearBtn,
+.sendDiffBtn {
   @include ctl.button;
   font-size: 0.75rem;
   padding: 0 0.5rem;
@@ -309,6 +310,18 @@
   flex: 0 0 auto;
   font-size: 0.75rem;
   padding: 0 0.5rem;
+}
+
+.sendDiffBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.1875rem;
+  flex: 1;
+  min-width: 0;
+  color: var(--accent-ink);
+  font-size: 0.75rem;
+  white-space: nowrap;
 }
 
 @media (prefers-reduced-motion: reduce) {

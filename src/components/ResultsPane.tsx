@@ -24,6 +24,11 @@ import {
   getShortTableName,
 } from '../manifest/tables';
 import { useCollectorStore } from '../stores/collector';
+import {
+  DIFF_BUCKET_BULK_CAP,
+  useDiffBucketStore,
+  type NewDiffBucketItem,
+} from '../stores/diffBucket';
 import { useExplorerStore } from '../stores/explorer';
 import { useSettingsStore } from '../stores/settings';
 import {
@@ -32,6 +37,7 @@ import {
   CheckIcon,
   ChevronRightIcon,
   CloseIcon,
+  DiffIcon,
   GridIcon,
   LayersIcon,
   ListIcon,
@@ -362,6 +368,7 @@ interface ResultRowProps {
   active: boolean;
   cursor: boolean;
   collected: boolean;
+  inDiffBucket: boolean;
   collectMode: boolean;
   showTableColumn: boolean;
   showInlineTable: boolean;
@@ -370,6 +377,7 @@ interface ResultRowProps {
   positionStyle?: CSSProperties;
   onActivate: (item: SearchResultItem, index: number) => void;
   onCopyHash: (hash: number) => void;
+  onToggleDiff: (item: SearchResultItem) => void;
   artifactPerksCategory: boolean;
 }
 
@@ -381,6 +389,7 @@ const ListRow = memo(function ListRow({
   active,
   cursor,
   collected,
+  inDiffBucket,
   collectMode,
   showTableColumn,
   showInlineTable,
@@ -389,6 +398,7 @@ const ListRow = memo(function ListRow({
   artifactPerksCategory,
   onActivate,
   onCopyHash,
+  onToggleDiff,
 }: ResultRowProps): ReactNode {
   const tierColor = getTierColorVar(item.tierType);
   const parentArtifactName = item.parentArtifactName;
@@ -533,6 +543,36 @@ const ListRow = memo(function ListRow({
         {item.hash}
       </button>
       {collectMode && collected ? <CollectedBadge /> : null}
+      <button
+        type="button"
+        className={styles.diffAction}
+        aria-label={
+          inDiffBucket
+            ? `Remove ${itemLabel(item)} from Diff bucket`
+            : `Add ${itemLabel(item)} to Diff bucket`
+        }
+        aria-pressed={inDiffBucket}
+        title={inDiffBucket ? 'Remove from Diff bucket' : 'Add to Diff bucket'}
+        onClick={(event) => {
+          event.stopPropagation();
+          onToggleDiff(item);
+        }}
+        onKeyDown={stopActivationKeys}
+        onMouseDown={(event) => {
+          if (event.button === 1) {
+            event.preventDefault();
+            event.stopPropagation();
+          }
+        }}
+        onAuxClick={(event) => {
+          if (event.button === 1) {
+            event.preventDefault();
+            event.stopPropagation();
+          }
+        }}
+      >
+        {inDiffBucket ? <CheckIcon size={13} /> : <DiffIcon size={13} />}
+      </button>
     </div>
   );
 });
@@ -544,11 +584,13 @@ const GridCell = memo(function GridCell({
   active,
   cursor,
   collected,
+  inDiffBucket,
   collectMode,
   showGridTable = false,
   dateDisplay,
   artifactPerksCategory,
   onActivate,
+  onToggleDiff,
 }: ResultRowProps): ReactNode {
   const tierColor = getTierColorVar(item.tierType);
   const parentArtifactName = item.parentArtifactName;
@@ -648,6 +690,36 @@ const GridCell = memo(function GridCell({
         </span>
       </span>
       {collectMode && collected ? <CollectedBadge /> : null}
+      <button
+        type="button"
+        className={styles.diffAction}
+        aria-label={
+          inDiffBucket
+            ? `Remove ${itemLabel(item)} from Diff bucket`
+            : `Add ${itemLabel(item)} to Diff bucket`
+        }
+        aria-pressed={inDiffBucket}
+        title={inDiffBucket ? 'Remove from Diff bucket' : 'Add to Diff bucket'}
+        onClick={(event) => {
+          event.stopPropagation();
+          onToggleDiff(item);
+        }}
+        onKeyDown={stopActivationKeys}
+        onMouseDown={(event) => {
+          if (event.button === 1) {
+            event.preventDefault();
+            event.stopPropagation();
+          }
+        }}
+        onAuxClick={(event) => {
+          if (event.button === 1) {
+            event.preventDefault();
+            event.stopPropagation();
+          }
+        }}
+      >
+        {inDiffBucket ? <CheckIcon size={13} /> : <DiffIcon size={13} />}
+      </button>
     </div>
   );
 });
@@ -718,6 +790,9 @@ export const ResultsPane = memo(function ResultsPane({
   const collectMode = useCollectorStore((state) => state.collectMode);
   const toggleCollectMode = useCollectorStore((state) => state.toggleCollectMode);
   const collectedItems = useCollectorStore((state) => state.items);
+  const diffItems = useDiffBucketStore((state) => state.items);
+  const diffTabOpen = useDiffBucketStore((state) => state.diffTabOpen);
+  const openTabCount = sessionCount + (diffTabOpen ? 1 : 0);
 
   const [remPx, setRemPx] = useState(readRootRemPx);
   const [isNarrowPhone, setIsNarrowPhone] = useState(() => mediaMatches(MOBILE_QUERY));
@@ -859,6 +934,58 @@ export const ResultsPane = memo(function ResultsPane({
     }
     return keys;
   }, [collectedItems]);
+  const diffKeys = useMemo(() => new Set(diffItems.map((item) => item.key)), [diffItems]);
+
+  const toggleDiffItem = useCallback((item: SearchResultItem) => {
+    const diffStore = useDiffBucketStore.getState();
+    const key = `${item.table}:${item.hash >>> 0}`;
+    if (diffStore.items.some((entry) => entry.key === key)) {
+      diffStore.removeItem(key);
+      useExplorerStore.getState().pushNotice({
+        tone: 'info',
+        message: `Removed ${item.name || item.hash} from Diff bucket`,
+      });
+      return;
+    }
+    diffStore.addItem({
+      table: item.table,
+      hash: item.hash,
+      name: item.name,
+      subtitle: item.subtitle,
+      ...(item.icon ? { icon: item.icon } : {}),
+    });
+    const focus = useExplorerStore.getState().sessions.length === 0;
+    diffStore.openDiffTab(focus);
+    if (focus) {
+      useExplorerStore.getState().setMobileInspectorOpen(true);
+    }
+    useExplorerStore.getState().pushNotice({
+      tone: 'info',
+      message: `Added ${item.name || item.hash} to Diff bucket`,
+    });
+  }, []);
+
+  const addCurrentResultsToDiff = useCallback(() => {
+    const bucketItems: NewDiffBucketItem[] = results.map((item) => ({
+      table: item.table,
+      hash: item.hash,
+      name: item.name,
+      subtitle: item.subtitle,
+      ...(item.icon ? { icon: item.icon } : {}),
+    }));
+    const result = useDiffBucketStore.getState().addItems(bucketItems, { cap: 100 });
+    useDiffBucketStore.getState().openDiffTab(true);
+    useExplorerStore.getState().setMobileInspectorOpen(true);
+    useExplorerStore.getState().pushNotice({
+      tone: 'info',
+      message:
+        result.addedCount === 0
+          ? 'All matching results are already in the Diff bucket'
+          : result.truncated || results.length > 100
+            ? `Added ${result.addedCount} of first 100 results to Diff bucket`
+            : `Added ${result.addedCount} ${result.addedCount === 1 ? 'result' : 'results'} to Diff bucket`,
+    });
+  }, [results]);
 
   const hasDeepMatches = results.length > 0 && results[0]?.deepMatch !== undefined;
   const gridSidePad = remPx * GRID_SIDE_PAD_REM;
@@ -1495,6 +1622,7 @@ export const ResultsPane = memo(function ResultsPane({
                 active={itemKey === activeEntryKey}
                 cursor={index === clampedSelectedIndex}
                 collected={collectedKeys.has(itemKey)}
+                inDiffBucket={diffKeys.has(itemKey)}
                 collectMode={collectMode}
                 showTableColumn={false}
                 showInlineTable={false}
@@ -1508,6 +1636,7 @@ export const ResultsPane = memo(function ResultsPane({
                 artifactPerksCategory={artifactPerksCategory}
                 onActivate={handleActivate}
                 onCopyHash={handleCopyHash}
+                onToggleDiff={toggleDiffItem}
               />,
             );
           }
@@ -1534,6 +1663,7 @@ export const ResultsPane = memo(function ResultsPane({
                 active={itemKey === activeEntryKey}
                 cursor={index === clampedSelectedIndex}
                 collected={collectedKeys.has(itemKey)}
+                inDiffBucket={diffKeys.has(itemKey)}
                 collectMode={collectMode}
                 showTableColumn={false}
                 showInlineTable={false}
@@ -1541,6 +1671,7 @@ export const ResultsPane = memo(function ResultsPane({
                 dateDisplay={resultDateDisplay(item, sortMode, versionDates)}
                 artifactPerksCategory={artifactPerksCategory}
                 onActivate={handleActivate}
+                onToggleDiff={toggleDiffItem}
                 onCopyHash={handleCopyHash}
               />,
             );
@@ -1586,6 +1717,7 @@ export const ResultsPane = memo(function ResultsPane({
             active={itemKey === activeEntryKey}
             cursor={index === clampedSelectedIndex}
             collected={collectedKeys.has(itemKey)}
+            inDiffBucket={diffKeys.has(itemKey)}
             collectMode={collectMode}
             showTableColumn={showTableColumn}
             showInlineTable={showInlineTable}
@@ -1593,6 +1725,7 @@ export const ResultsPane = memo(function ResultsPane({
             artifactPerksCategory={artifactPerksCategory}
             onActivate={handleActivate}
             onCopyHash={handleCopyHash}
+            onToggleDiff={toggleDiffItem}
           />,
         );
       }
@@ -1618,6 +1751,7 @@ export const ResultsPane = memo(function ResultsPane({
             active={itemKey === activeEntryKey}
             cursor={index === clampedSelectedIndex}
             collected={collectedKeys.has(itemKey)}
+            inDiffBucket={diffKeys.has(itemKey)}
             collectMode={collectMode}
             showTableColumn={false}
             showInlineTable={showInlineTable}
@@ -1625,6 +1759,7 @@ export const ResultsPane = memo(function ResultsPane({
             dateDisplay={resultDateDisplay(item, sortMode, versionDates)}
             artifactPerksCategory={artifactPerksCategory}
             onActivate={handleActivate}
+            onToggleDiff={toggleDiffItem}
             onCopyHash={handleCopyHash}
           />,
         );
@@ -1657,6 +1792,7 @@ export const ResultsPane = memo(function ResultsPane({
     clampedSelectedIndex,
     collectMode,
     collectedKeys,
+    diffKeys,
     columns,
     collapsedResultGroups,
     firstGroupSectionIndex,
@@ -1677,6 +1813,7 @@ export const ResultsPane = memo(function ResultsPane({
     showGridTable,
     showTableColumn,
     toggleResultGroup,
+    toggleDiffItem,
     totalRows,
     versionDates,
     viewMode,
@@ -1695,6 +1832,19 @@ export const ResultsPane = memo(function ResultsPane({
           <span className={styles.summary} title={summaryText}>
             {headerSummaryText}
           </span>
+          {hasActiveFilters && totalMatches > 0 && results.length > 0 ? (
+            <button
+              type="button"
+              className={styles.bulkDiffButton}
+              onClick={addCurrentResultsToDiff}
+              title={`Add ${Math.min(results.length, DIFF_BUCKET_BULK_CAP)} loaded results to Diff bucket`}
+              aria-label={`Add ${Math.min(results.length, DIFF_BUCKET_BULK_CAP)} loaded results to Diff bucket`}
+              onKeyDown={stopActivationKeys}
+            >
+              <DiffIcon size={12} />
+              <span>Diff</span>
+            </button>
+          ) : null}
 
           {isNarrowPhone && hasTableFilter ? (
             <span className={styles.tableChip}>
@@ -1790,15 +1940,23 @@ export const ResultsPane = memo(function ResultsPane({
         </div>
 
         <div className={styles.controls}>
-          {isNarrowPhone && sessionCount > 0 ? (
+          {isNarrowPhone && openTabCount > 0 ? (
             <button
               type="button"
               className={styles.tabsBtn}
               onClick={() => setMobileInspectorOpen(true)}
-              aria-label={`Return to open tabs, ${sessionCount}`}
-              title={`Open tabs (${sessionCount})`}
+              aria-label={
+                sessionCount === 0 && diffTabOpen
+                  ? 'Return to Diff tab'
+                  : `Return to open tabs, ${openTabCount}`
+              }
+              title={
+                sessionCount === 0 && diffTabOpen
+                  ? 'Return to Diff tab'
+                  : `Open tabs (${openTabCount})`
+              }
             >
-              Tabs ({sessionCount})
+              {sessionCount === 0 && diffTabOpen ? 'Diff' : `Tabs (${openTabCount})`}
             </button>
           ) : null}
 

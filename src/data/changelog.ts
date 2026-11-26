@@ -28,6 +28,31 @@ export {
 
 export const CHANGELOG: readonly ChangelogEntry[] = [
   {
+    version: '2026.11.26-4',
+    date: 'Nov 26, 2026',
+    title: 'Diff bucket, top-level Diff tab, smarter inline diffs & unnamed hash pills',
+    summary: 'Replaced single-item diff pinning with a multi-item Diff bucket and pinned top-level Diff tab supporting Formatted view, cleaner JSON-aware diffs with readable inline highlights, and clickable pills for unnamed entries.',
+    sections: [
+      {
+        heading: 'Diff bucket & pinned top-level Diff tab',
+        items: [
+          'Replaced "Pin as diff base" with a persistent Diff bucket: the first item added defaults as Base, the second as Target, and you can switch freely between any items in the bucket using searchable dropdowns.',
+          'Moved Diff out of the per-entry subtabs into a top-level tab pinned to the left when open, preserving scroll and expansion state when switching back and forth with regular tabs.',
+          'Added subtle ways to populate and open the Diff bucket from result rows, bulk-adding current search results (up to 100), entity headers, Variants, the Collector popover, and a quiet tab-bar trigger.',
+          'Added the Formatted diff view inside the Diff tab alongside Split and Inline diffs, matching /history with Changes/Full filtering, inline unchanged expanders, and resolved hash icons/pills.',
+        ],
+      },
+      {
+        heading: 'Smarter JSON diffs & unnamed context pills',
+        items: [
+          'Ignored JSON trailing-comma-only differences in line diffs so adding or removing the last item in an array or object no longer marks the unchanged sibling line as removed and re-added.',
+          'Added conservative value-only inline diff highlights that pinpoint small changes without fragmenting sentences into unreadable slivers, plus sequence-aware array matching in Formatted diffs.',
+          'Resolved unnamed manifest definitions on JSON context pills (displayed cleanly as ShortTable #hash, e.g. PlugSet #731468111) so they can be clicked and opened just like named entries.',
+        ],
+      },
+    ],
+  },
+  {
     version: '2026.11.26-3',
     date: 'Nov 26, 2026',
     title: 'Diff view scrolling, unified touch toolbars & compact tablet layout',

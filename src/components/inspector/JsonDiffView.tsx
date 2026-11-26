@@ -62,7 +62,47 @@ function markedText(text: string, query: string): ReactNode {
   return fragments;
 }
 
-function syntaxLine(text: string, query: string): ReactNode[] {
+function markedDiffText(
+  text: string,
+  query: string,
+  offset: number,
+  spans: JsonDiffLine['inlineSpans'],
+  inlineClass: string | undefined,
+): ReactNode {
+  if (!spans?.length || !inlineClass) return markedText(text, query);
+  const boundaries = new Set<number>([0, text.length]);
+  for (const span of spans) {
+    const start = Math.max(0, span.start - offset);
+    const end = Math.min(text.length, span.end - offset);
+    if (end > start) {
+      boundaries.add(start);
+      boundaries.add(end);
+    }
+  }
+  const ordered = [...boundaries].sort((left, right) => left - right);
+  return ordered.slice(0, -1).map((start, index) => {
+    const end = ordered[index + 1]!;
+    const chunk = text.slice(start, end);
+    const highlighted = spans.some(
+      (span) => span.start <= offset + start && span.end >= offset + end,
+    );
+    const content = markedText(chunk, query);
+    return highlighted ? (
+      <mark className={inlineClass} key={`${start}:${end}`}>
+        {content}
+      </mark>
+    ) : (
+      <span key={`${start}:${end}`}>{content}</span>
+    );
+  });
+}
+
+function syntaxLine(
+  text: string,
+  query: string,
+  spans?: JsonDiffLine['inlineSpans'],
+  inlineClass?: string,
+): ReactNode[] {
   const parts: ReactNode[] = [];
   TOKEN_PATTERN.lastIndex = 0;
   let cursor = 0;
@@ -71,7 +111,9 @@ function syntaxLine(text: string, query: string): ReactNode[] {
     const token = match[0];
     const index = match.index;
     if (index > cursor) {
-      parts.push(markedText(text.slice(cursor, index), query));
+      parts.push(
+        markedDiffText(text.slice(cursor, index), query, cursor, spans, inlineClass),
+      );
     }
     let kind: TokenKind;
     if (token.startsWith('"')) {
@@ -85,30 +127,43 @@ function syntaxLine(text: string, query: string): ReactNode[] {
     }
     parts.push(
       <span className={styles[`token${kind[0]!.toUpperCase()}${kind.slice(1)}`]} key={index}>
-        {markedText(token, query)}
+        {markedDiffText(token, query, index, spans, inlineClass)}
       </span>,
     );
     cursor = index + token.length;
   }
   if (cursor < text.length) {
-    parts.push(markedText(text.slice(cursor), query));
+    parts.push(
+      markedDiffText(text.slice(cursor), query, cursor, spans, inlineClass),
+    );
   }
   return parts;
 }
 
 const diffSyntaxCache = new WeakMap<JsonDiffLine, Map<string, ReactNode[]>>();
 
-function syntaxDiffLine(line: JsonDiffLine, query: string): ReactNode[] {
+function syntaxDiffLine(
+  line: JsonDiffLine,
+  query: string,
+  text = line.text,
+): ReactNode[] {
   let byQuery = diffSyntaxCache.get(line);
   if (!byQuery) {
     byQuery = new Map();
     diffSyntaxCache.set(line, byQuery);
   }
-  const cached = byQuery.get(query);
+  const cacheKey = `${query}\u0000${text}`;
+  const cached = byQuery.get(cacheKey);
   if (cached) return cached;
 
-  const tokens = syntaxLine(line.text, query);
-  byQuery.set(query, tokens);
+  const inlineClass =
+    line.kind === 'removed'
+      ? styles.inlineRemoved
+      : line.kind === 'added'
+        ? styles.inlineAdded
+        : undefined;
+  const tokens = syntaxLine(text, query, line.inlineSpans, inlineClass);
+  byQuery.set(cacheKey, tokens);
   if (byQuery.size > 4) {
     const oldestQuery = byQuery.keys().next().value;
     if (oldestQuery !== undefined) byQuery.delete(oldestQuery);
@@ -259,7 +314,8 @@ function SplitCell({
         ? styles.removedLine
         : styles.contextLine;
   const lineNumber = side === 'before' ? line.oldLine : line.newLine;
-  const matches = !filter || line.text.toLowerCase().includes(filter.toLowerCase());
+  const text = side === 'before' ? line.beforeText ?? line.text : line.text;
+  const matches = !filter || text.toLowerCase().includes(filter.toLowerCase());
   const matchClass = filter
     ? matches
       ? styles.matchingLine
@@ -270,7 +326,7 @@ function SplitCell({
       <span className={styles.splitLineNumber} aria-hidden="true">
         {lineNumber ?? ''}
       </span>
-      <code className={styles.codeLine}>{syntaxDiffLine(line, filter)}</code>
+      <code className={styles.codeLine}>{syntaxDiffLine(line, filter, text)}</code>
     </div>
   );
 }

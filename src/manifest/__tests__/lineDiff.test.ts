@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  createInlineDiffSpans,
   createJsonLineDiff,
   groupJsonDiffLines,
   type JsonDiffLine,
@@ -47,6 +48,80 @@ describe('createJsonLineDiff', () => {
     expect(diff.added).toBe(0);
     expect(diff.removed).toBe(0);
     expect(diff.lines.every((line) => line.kind === 'context')).toBe(true);
+  });
+
+  it('treats structural trailing-comma differences as context with valid side text', () => {
+    const diff = createJsonLineDiff(
+      { traitIds: ['item.armor.head', 'releases.v460.season'] },
+      { traitIds: ['item.armor.head'] },
+    );
+    const sharedItem = diff.lines.find((line) => line.text.includes('item.armor.head'));
+
+    expect(diff.removed).toBe(1);
+    expect(diff.added).toBe(0);
+    expect(sharedItem).toMatchObject({
+      kind: 'context',
+      text: '    "item.armor.head"',
+      beforeText: '    "item.armor.head",',
+    });
+    expect(sharedItem?.inlineSpans).toBeUndefined();
+  });
+
+  it('highlights only the changed word inside a same-key JSON string', () => {
+    const spans = createInlineDiffSpans(
+      '  "displayName": "The old weapon name",',
+      '  "displayName": "The new weapon name",',
+    );
+
+    expect(spans).not.toBeNull();
+    expect(
+      '  "displayName": "The old weapon name",'.slice(
+        spans!.before[0]!.start,
+        spans!.before[0]!.end,
+      ),
+    ).toBe('old');
+    expect(
+      '  "displayName": "The new weapon name",'.slice(
+        spans!.after[0]!.start,
+        spans!.after[0]!.end,
+      ),
+    ).toBe('new');
+    expect(Object.isFrozen(spans!.before)).toBe(true);
+    expect(Object.isFrozen(spans!.before[0])).toBe(true);
+  });
+
+  it('keeps string quotes clean for a small edit inside one token', () => {
+    const before = '  "label": "favorite"';
+    const after = '  "label": "favourite"';
+    const spans = createInlineDiffSpans(before, after);
+
+    expect(spans).not.toBeNull();
+    expect(before.slice(spans!.before[0]!.start, spans!.before[0]!.end)).toBe('favorite');
+    expect(after.slice(spans!.after[0]!.start, spans!.after[0]!.end)).toBe('favourite');
+  });
+
+  it('falls back to the full value token rather than fragmenting a sentence', () => {
+    const before = '  "summary": "red longseparator blue longseparator green longseparator black"';
+    const after = '  "summary": "RED longseparator BLUE longseparator GREEN longseparator BLACK"';
+    const spans = createInlineDiffSpans(before, after);
+
+    expect(spans).not.toBeNull();
+    expect(spans!.before).toHaveLength(1);
+    expect(spans!.after).toHaveLength(1);
+    expect(before.slice(spans!.before[0]!.start, spans!.before[0]!.end)).toBe(
+      '"red longseparator blue longseparator green longseparator black"',
+    );
+  });
+
+  it('does not pair structural lines or standalone array values with dissimilarity', () => {
+    expect(createInlineDiffSpans('  "entry": {', '  "entry": [')).toBeNull();
+    const diff = createJsonLineDiff(['old value'], ['different item']);
+    expect(diff.lines.filter((line) => line.kind !== 'context')).toHaveLength(2);
+    expect(
+      diff.lines
+        .filter((line) => line.kind !== 'context')
+        .every((line) => line.inlineSpans === undefined),
+    ).toBe(true);
   });
 
   it('groups unchanged lines into hunks with three lines of default context', () => {

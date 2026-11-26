@@ -208,6 +208,14 @@ const PARENT_CONTEXT_TABLE: ReadonlyArray<readonly [string, string]> = [
   ['plugset', 'DestinyPlugSetDefinition'],
   ['sockettype', 'DestinySocketTypeDefinition'],
   ['socketcategory', 'DestinySocketCategoryDefinition'],
+  ['socket', 'DestinySocketTypeDefinition'],
+  ['perk', 'DestinySandboxPerkDefinition'],
+  ['category', 'DestinyItemCategoryDefinition'],
+  ['bucket', 'DestinyInventoryBucketDefinition'],
+  ['tier', 'DestinyItemTierTypeDefinition'],
+  ['unlock', 'DestinyUnlockDefinition'],
+  ['powercap', 'DestinyPowerCapDefinition'],
+  ['reward', 'DestinyInventoryItemDefinition'],
   ['damagetype', 'DestinyDamageTypeDefinition'],
   ['breakertype', 'DestinyBreakerTypeDefinition'],
   ['energytype', 'DestinyEnergyTypeDefinition'],
@@ -226,6 +234,7 @@ const PARENT_CONTEXT_TABLE: ReadonlyArray<readonly [string, string]> = [
   ['faction', 'DestinyFactionDefinition'],
   ['progression', 'DestinyProgressionDefinition'],
   ['item', 'DestinyInventoryItemDefinition'],
+  ['plug', 'DestinyInventoryItemDefinition'],
 ];
 
 /**

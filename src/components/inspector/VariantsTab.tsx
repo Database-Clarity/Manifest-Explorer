@@ -136,9 +136,7 @@ export const VariantsTab = memo(function VariantsTab({
                     <button
                       type="button"
                       className={styles.smallBtn}
-                      onClick={() =>
-                        onDiffVariant({ table: item.table, hash: item.hash })
-                      }
+                      onClick={() => onDiffVariant(itemNavRef)}
                       title="Compare fields against current definition"
                     >
                       <DiffIcon size={13} />

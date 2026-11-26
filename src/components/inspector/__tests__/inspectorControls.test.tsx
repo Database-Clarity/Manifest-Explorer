@@ -4,6 +4,9 @@ import { act, createElement, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DefinitionDetailPayload } from '../../../types/manifest';
+import { useDiffBucketStore } from '../../../stores/diffBucket';
+import { useExplorerStore } from '../../../stores/explorer';
+import { DiffTab } from '../DiffTab';
 import { JsonDiffView } from '../JsonDiffView';
 import { JsonTree } from '../JsonTree';
 import { OverviewTab } from '../OverviewTab';
@@ -84,6 +87,13 @@ afterEach(() => {
     for (const view of mounted.splice(0)) view.root.unmount();
   });
   document.body.replaceChildren();
+  useDiffBucketStore.setState({
+    items: [],
+    baseKey: null,
+    targetKey: null,
+    diffTabOpen: false,
+    diffTabActive: false,
+  });
 });
 
 describe('Inspector JSON controls', () => {
@@ -361,6 +371,58 @@ describe('JSON diff expansion and Wave-2 toolbar props', () => {
     ).toBe('Split');
     clickButton(host, 'Inline');
     expect(onLayoutChange).toHaveBeenCalledWith('inline');
+  });
+});
+
+describe('Pinned Diff tab content', () => {
+  it('offers the active definition from the empty bucket state', () => {
+    useDiffBucketStore.setState({
+      items: [],
+      baseKey: null,
+      targetKey: null,
+      diffTabOpen: true,
+      diffTabActive: true,
+    });
+    useExplorerStore.setState({
+      query: '',
+      results: [],
+      filters: {
+        table: 'all',
+        tierTypes: [],
+        damageTypes: [],
+        classTypes: [],
+        itemTypes: [],
+        itemCategoryHashes: [],
+        includeUnnamed: false,
+        unnamedMode: 'auto',
+        onlyRedacted: false,
+      },
+    });
+
+    const activeItem = {
+      table: 'DestinyInventoryItemDefinition',
+      hash: 123,
+      name: 'Test Item',
+      subtitle: 'Weapon',
+    };
+    const host = mount(
+      createElement(DiffTab, {
+        baseDetail: null,
+        targetDetail: null,
+        baseLoading: false,
+        targetLoading: false,
+        activeItem,
+        bucketOpen: false,
+        setBucketOpen: vi.fn(),
+        bucketTriggerRef: { current: null as HTMLButtonElement | null },
+        onNavigateRef: vi.fn(),
+        onCopy: vi.fn(),
+      }),
+    );
+
+    expect(host.textContent).toContain('Add definitions to compare');
+    clickButton(host, /Add active tab/);
+    expect(useDiffBucketStore.getState().items.map((item) => item.hash)).toEqual([123]);
   });
 });
 

@@ -124,16 +124,18 @@
   @include ctl.segmented-track;
   box-sizing: border-box;
   flex: 0 0 auto;
-  min-height: 1.75rem;
-  font-size: 0.75rem;
+  height: 28px;
+  min-height: 28px;
+  font-size: 12px;
 }
 
 .diffModeButton {
   @include ctl.segmented-item;
   box-sizing: border-box;
-  min-height: calc(1.75rem - 6px);
+  height: 22px;
+  min-height: 22px;
   padding: 0 0.5rem;
-  font-size: 0.75rem;
+  font-size: 12px;
 
   &[aria-pressed='true'],
   &[aria-pressed='true']:hover:not(:disabled) {
@@ -144,10 +146,11 @@
 .diffToolbarButton {
   @include ctl.button;
   box-sizing: border-box;
-  min-height: 1.75rem;
+  height: 28px;
+  min-height: 28px;
   padding: 0.125rem 0.375rem;
   font-family: inherit;
-  font-size: 0.75rem;
+  font-size: 12px;
 }
 
 .unchangedContextControl {
@@ -854,15 +857,18 @@
 
   .diffToolbarButton {
     box-sizing: border-box;
+    height: var(--tap);
     min-height: var(--tap);
+    font-size: 12px;
   }
 
-  .diffModes,
-  .searchModes {
+  .diffModes {
+    height: var(--tap);
     min-height: var(--tap);
   }
 
   .diffModeButton {
+    height: calc(var(--tap) - 6px);
     min-height: calc(var(--tap) - 6px);
   }
 

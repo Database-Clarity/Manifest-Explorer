@@ -2,10 +2,11 @@
 import { useState, type ReactNode, type RefObject } from 'react';
 import type { CollectorExportFormat } from '../stores/collector';
 import { formatCollectedItems, useCollectorStore, type CollectedItem } from '../stores/collector';
+import { useDiffBucketStore } from '../stores/diffBucket';
 import { fallbackEntryLabel, useExplorerStore } from '../stores/explorer';
 import { bungieAssetUrl } from '../manifest/hash';
 import { getShortTableName } from '../manifest/tables';
-import { BookmarkIcon, CheckIcon, CloseIcon, DownloadIcon, PlusIcon } from '../ui/Icons';
+import { BookmarkIcon, CheckIcon, CloseIcon, DiffIcon, DownloadIcon, PlusIcon } from '../ui/Icons';
 import { Popover } from '../ui/Popover';
 import { Select } from '../ui/Select';
 import { activateOnMiddleClick, preventMiddleClickAutoScroll } from './middleClick';
@@ -60,9 +61,12 @@ function CollectorPopoverBody({ open, onClose, anchorRef }: CollectorPopoverProp
   const toggleItem = useCollectorStore((state) => state.toggleItem);
   const removeItem = useCollectorStore((state) => state.removeItem);
   const clearAll = useCollectorStore((state) => state.clearAll);
+  const addDiffItems = useDiffBucketStore((state) => state.addItems);
+  const openDiffTab = useDiffBucketStore((state) => state.openDiffTab);
 
   const openInNewTab = useExplorerStore((state) => state.openInNewTab);
   const pushNotice = useExplorerStore((state) => state.pushNotice);
+  const setMobileInspectorOpen = useExplorerStore((state) => state.setMobileInspectorOpen);
 
   // Primitive selectors keep the popover render stitching cheap while still
   // tracking the active inspector definition (the store's `currentRef`).
@@ -156,6 +160,29 @@ function CollectorPopoverBody({ open, onClose, anchorRef }: CollectorPopoverProp
     }
     clearAll();
     pushNotice({ tone: 'info', message: 'Cleared collected items' });
+  }
+
+  function handleSendToDiff(): void {
+    const result = addDiffItems(
+      items.map(({ table, hash, name, subtitle, icon }) => ({
+        table,
+        hash,
+        name,
+        subtitle,
+        ...(icon ? { icon } : {}),
+      })),
+      { cap: items.length },
+    );
+    openDiffTab(true);
+    setMobileInspectorOpen(true);
+    pushNotice({
+      tone: 'info',
+      message:
+        result.addedCount === 0
+          ? 'All collected items are already in the Diff bucket'
+          : `Added ${result.addedCount} collected ${result.addedCount === 1 ? 'item' : 'items'} to Diff bucket`,
+    });
+    onClose();
   }
 
   return (
@@ -270,6 +297,17 @@ function CollectorPopoverBody({ open, onClose, anchorRef }: CollectorPopoverProp
         </div>
 
         <div className={styles.actions}>
+          {items.length > 0 ? (
+            <button
+              type="button"
+              className={styles.sendDiffBtn}
+              onClick={handleSendToDiff}
+              title="Add all collected items to the Diff bucket"
+            >
+              <DiffIcon size={12} />
+              Send to Diff
+            </button>
+          ) : null}
           <button
             type="button"
             className={styles.primaryAction}

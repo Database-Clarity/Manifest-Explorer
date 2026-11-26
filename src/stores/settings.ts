@@ -17,6 +17,8 @@ export type TouchSize = 'compact' | 'large';
 export type CodeFontFamily = 'system' | 'fira' | 'cascadia' | 'consolas';
 export type HistoryEntryViewMode = 'diff' | 'formatted';
 export type HistoryDiffLayout = 'inline' | 'split';
+export type ExplorerDiffViewMode = 'diff' | 'formatted';
+export type ExplorerDiffLayout = 'split' | 'inline';
 
 export interface SettingsValues {
   theme: ThemeMode;
@@ -39,6 +41,8 @@ export interface SettingsValues {
   groupBy: GroupBy;
   historyEntryViewMode: HistoryEntryViewMode;
   historyDiffLayout: HistoryDiffLayout;
+  explorerDiffViewMode: ExplorerDiffViewMode;
+  explorerDiffLayout: ExplorerDiffLayout;
 }
 
 export interface SettingsActions {
@@ -62,6 +66,8 @@ export interface SettingsActions {
   setGroupBy: (groupBy: GroupBy) => void;
   setHistoryEntryViewMode: (mode: HistoryEntryViewMode) => void;
   setHistoryDiffLayout: (layout: HistoryDiffLayout) => void;
+  setExplorerDiffViewMode: (mode: ExplorerDiffViewMode) => void;
+  setExplorerDiffLayout: (layout: ExplorerDiffLayout) => void;
   resetSettings: () => void;
 }
 
@@ -111,6 +117,8 @@ export const DEFAULT_SETTINGS: SettingsValues = {
   groupBy: 'none',
   historyEntryViewMode: 'diff',
   historyDiffLayout: 'split',
+  explorerDiffViewMode: 'diff',
+  explorerDiffLayout: 'split',
 };
 
 export const UI_SCALE_MIN = 85;
@@ -296,6 +304,16 @@ export function mergePersistedSettings(
       ['inline', 'split'] as const,
       currentState.historyDiffLayout,
     ),
+    explorerDiffViewMode: readEnum(
+      persistedState.explorerDiffViewMode,
+      ['diff', 'formatted'] as const,
+      currentState.explorerDiffViewMode,
+    ),
+    explorerDiffLayout: readEnum(
+      persistedState.explorerDiffLayout,
+      ['inline', 'split'] as const,
+      currentState.explorerDiffLayout,
+    ),
   };
 }
 
@@ -331,6 +349,8 @@ export const useSettingsStore = create<SettingsState>()(
         setHistoryEntryViewMode: (historyEntryViewMode) =>
           commit({ historyEntryViewMode }),
         setHistoryDiffLayout: (historyDiffLayout) => commit({ historyDiffLayout }),
+        setExplorerDiffViewMode: (explorerDiffViewMode) => commit({ explorerDiffViewMode }),
+        setExplorerDiffLayout: (explorerDiffLayout) => commit({ explorerDiffLayout }),
         resetSettings: () => {
           set(DEFAULT_SETTINGS);
           applySettingsToDom(get());
@@ -362,6 +382,8 @@ export const useSettingsStore = create<SettingsState>()(
         groupBy: state.groupBy,
         historyEntryViewMode: state.historyEntryViewMode,
         historyDiffLayout: state.historyDiffLayout,
+        explorerDiffViewMode: state.explorerDiffViewMode,
+        explorerDiffLayout: state.explorerDiffLayout,
       }),
       merge: mergePersistedSettings,
       onRehydrateStorage: () => (state) => {

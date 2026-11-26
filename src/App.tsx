@@ -24,6 +24,7 @@ import type { ChangelogDialogProps } from './components/ChangelogDialog';
 import * as manifestClient from './manifest/client';
 import { canonicalTableName, getShortTableName } from './manifest/tables';
 import { useCollectorStore } from './stores/collector';
+import { useDiffBucketStore } from './stores/diffBucket';
 import { useExplorerStore, type InspectorSession } from './stores/explorer';
 import { useSettingsStore } from './stores/settings';
 import { Header } from './components/Header';
@@ -59,7 +60,6 @@ const TAB_KEYS: readonly InspectorTab[] = [
   'variants',
   'references',
   'raw',
-  'diff',
 ];
 
 const DEFAULT_SEARCH_LIMIT = 2500;
@@ -98,6 +98,8 @@ const LazyChangelogDialog = lazy(async () => {
 
 let sessionSignatureSource: readonly InspectorSession[] | null = null;
 let cachedSessionRefSignature = '';
+const detailLoadedTableCounts = new Map<string, number>();
+const detailRefreshInFlight = new Map<string, number>();
 
 function getSessionRefSignature(sessions: readonly InspectorSession[]): string {
   if (sessions === sessionSignatureSource) return cachedSessionRefSignature;
@@ -222,13 +224,21 @@ function flushActiveInspectorDomScroll(): void {
   st.saveEntryScroll(st.activeTab, scroller.scrollTop);
 }
 
-function cacheDefinition(payload: DefinitionDetailPayload): DefinitionDetailPayload {
+function cacheDefinition(
+  payload: DefinitionDetailPayload,
+  loadedTableCount = useExplorerStore.getState().manifestStatus.loadedTableCount,
+): DefinitionDetailPayload {
   const key = cacheKey(payload.table, payload.hash);
   const cached = detailCache.get(key);
   if (cached && !cached.isLite && payload.isLite) {
     return cached;
   }
   detailCache.set(key, payload);
+  // Monotonic: two background refreshes can resolve out of order, so never let
+  // a slower, older refresh overwrite a higher stored table count.
+  if (loadedTableCount > (detailLoadedTableCounts.get(key) ?? 0)) {
+    detailLoadedTableCounts.set(key, loadedTableCount);
+  }
   return payload;
 }
 
@@ -365,8 +375,12 @@ export function App(): ReactNode {
   );
   const historyIndex = useExplorerStore((s) => s.historyIndex);
   const activeTab = useExplorerStore((s) => s.activeTab);
-  const pinnedDiffRef = useExplorerStore((s) => s.pinnedDiffRef);
   const mobileInspectorOpen = useExplorerStore((s) => s.mobileInspectorOpen);
+  const diffTabOpen = useDiffBucketStore((s) => s.diffTabOpen);
+  const diffTabActive = useDiffBucketStore((s) => s.diffTabActive);
+  const diffBucketItems = useDiffBucketStore((s) => s.items);
+  const diffBaseKey = useDiffBucketStore((s) => s.baseKey);
+  const diffTargetKey = useDiffBucketStore((s) => s.targetKey);
 
   const setManifestStatus = useExplorerStore((s) => s.setManifestStatus);
   const setTables = useExplorerStore((s) => s.setTables);
@@ -467,8 +481,16 @@ export function App(): ReactNode {
   const [referencesLoading, setReferencesLoading] = useState(false);
   const [refReloadCounter, setRefReloadCounter] = useState(0);
 
-  const [pinnedDetail, setPinnedDetail] = useState<DefinitionDetailPayload | null>(null);
-  const [pinnedLoading, setPinnedLoading] = useState(false);
+  const [baseDetailState, setBaseDetailState] = useState<{
+    key: string;
+    detail: DefinitionDetailPayload | null;
+    loading: boolean;
+  }>({ key: '', detail: null, loading: false });
+  const [targetDetailState, setTargetDetailState] = useState<{
+    key: string;
+    detail: DefinitionDetailPayload | null;
+    loading: boolean;
+  }>({ key: '', detail: null, loading: false });
 
   const [clarityEntry, setClarityEntry] = useState<ClarityDescriptionEntry | null>(null);
   const [clarityLoading, setClarityLoading] = useState(false);
@@ -769,6 +791,8 @@ export function App(): ReactNode {
       if (lastManifestVersionRef.current !== status.versionSignature) {
         lastManifestVersionRef.current = status.versionSignature;
         clearInspectorCaches();
+        detailLoadedTableCounts.clear();
+        detailRefreshInFlight.clear();
       }
       setManifestStatus(status);
     });
@@ -804,7 +828,15 @@ export function App(): ReactNode {
     }
     lastManifestVersionRef.current = manifestVersionSignature;
     clearInspectorCaches();
+    detailLoadedTableCounts.clear();
+    detailRefreshInFlight.clear();
   }, [manifestVersionSignature]);
+
+  useEffect(() => {
+    if (diffTabOpen && sessionsCount === 0 && !diffTabActive) {
+      useDiffBucketStore.getState().focusDiffTab();
+    }
+  }, [diffTabActive, diffTabOpen, sessionsCount]);
 
   // Background-resolve display names, icons & co-table flags for EVERY open tab
   // and EVERY history/future entry (including inactive tabs and hydrated URLs).
@@ -1126,6 +1158,36 @@ export function App(): ReactNode {
     }
 
     if (cached || !manifestReady) {
+      if (
+        cached &&
+        manifestReady &&
+        (detailLoadedTableCounts.get(key) ?? 0) < manifestLoadedTableCount &&
+        (detailRefreshInFlight.get(key) ?? -1) < manifestLoadedTableCount
+      ) {
+        const refreshCount = manifestLoadedTableCount;
+        detailRefreshInFlight.set(key, refreshCount);
+        void manifestClient
+          .getDefinition(currentRef.table, currentRef.hash, true)
+          .then((payload) => {
+            cacheDefinition(payload, refreshCount);
+            if (
+              payload.isLite &&
+              useExplorerStore.getState().manifestStatus.loadedTableCount > refreshCount
+            ) {
+              detailLoadedTableCounts.set(key, refreshCount);
+            }
+            if (seq === detailSeqRef.current) {
+              const refreshed = detailCache.get(key);
+              if (refreshed) setDetail(refreshed);
+            }
+          })
+          .catch(() => undefined)
+          .finally(() => {
+            if (detailRefreshInFlight.get(key) === refreshCount) {
+              detailRefreshInFlight.delete(key);
+            }
+          });
+      }
       return;
     }
 
@@ -1172,6 +1234,7 @@ export function App(): ReactNode {
     currentRef?.hash,
     locale,
     manifestReady,
+    manifestLoadedTableCount,
     manifestVersionSignature,
     showClarityDescriptions,
     detailReloadCounter,
@@ -1295,51 +1358,81 @@ export function App(): ReactNode {
     detailReloadCounter,
   ]);
 
-  // A pinned baseline reuses full details from the same bounded detail cache.
-  useLayoutEffect(() => {
-    if (!pinnedDiffRef) {
-      setPinnedDetail(null);
-      setPinnedLoading(false);
-      return;
-    }
-    const key = cacheKey(pinnedDiffRef.table, pinnedDiffRef.hash);
-    const cached = detailCache.get(key);
-    if (cached && !cached.isLite) {
-      setPinnedDetail(cached);
-      setPinnedLoading(false);
-      return;
-    }
-    if (!manifestReady) {
-      setPinnedDetail(cached ?? null);
-      setPinnedLoading(false);
-      return;
-    }
+  const baseBucketItem = diffBucketItems.find((item) => item.key === diffBaseKey) ?? null;
+  const targetBucketItem = diffBucketItems.find((item) => item.key === diffTargetKey) ?? null;
+  const activeBaseKey = baseBucketItem
+    ? cacheKey(baseBucketItem.table, baseBucketItem.hash)
+    : '';
+  const activeTargetKey = targetBucketItem
+    ? cacheKey(targetBucketItem.table, targetBucketItem.hash)
+    : '';
 
-    let cancelled = false;
-    setPinnedDetail(cached ?? null);
-    setPinnedLoading(true);
-    void manifestClient
-      .getDefinition(pinnedDiffRef.table, pinnedDiffRef.hash, true)
-      .then((payload) => {
-        const full = cacheDefinition(payload);
-        if (!cancelled) {
-          setPinnedDetail(full);
-          setPinnedLoading(Boolean(full.isLite));
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setPinnedLoading(false);
-        }
-      });
+  // Warm each selected side even while the Diff tab is in the background. A
+  // cached payload stays visible during refreshes as additional tables load.
+  useEffect(() => {
+    if (!diffTabOpen) return;
+    const loadSide = (
+      item: (typeof baseBucketItem),
+      setSide: typeof setBaseDetailState,
+    ): (() => void) => {
+      if (!item) {
+        setSide({ key: '', detail: null, loading: false });
+        return () => undefined;
+      }
+      const key = cacheKey(item.table, item.hash);
+      const cached = detailCache.get(key) ?? null;
+      const cachedTableCount = detailLoadedTableCounts.get(key) ?? 0;
+      const shouldRefresh =
+        !cached || Boolean(cached.isLite) || cachedTableCount < manifestLoadedTableCount;
+      setSide((previous) => ({
+        key,
+        detail: cached ?? (previous.key === key ? previous.detail : null),
+        loading: !cached && manifestReady,
+      }));
+      if (!manifestReady || !shouldRefresh) return () => undefined;
+
+      let cancelled = false;
+      const refreshCount = manifestLoadedTableCount;
+      void manifestClient
+        .getDefinition(item.table, item.hash, true)
+        .then(async (payload) => {
+          let full = cacheDefinition(payload, refreshCount);
+          if (full.isLite) {
+            await manifestClient.loadTable(item.table);
+            full = cacheDefinition(
+              await manifestClient.getDefinition(item.table, item.hash, true),
+              useExplorerStore.getState().manifestStatus.loadedTableCount,
+            );
+          }
+          if (!cancelled) {
+            setSide({ key, detail: full, loading: Boolean(full.isLite) });
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setSide((previous) =>
+              previous.key === key ? { ...previous, loading: false } : previous,
+            );
+          }
+        });
+      return () => {
+        cancelled = true;
+      };
+    };
+
+    const stopBase = loadSide(baseBucketItem, setBaseDetailState);
+    const stopTarget = loadSide(targetBucketItem, setTargetDetailState);
     return () => {
-      cancelled = true;
+      stopBase();
+      stopTarget();
     };
   }, [
-    pinnedDiffRef?.table,
-    pinnedDiffRef?.hash,
-    locale,
+    diffTabOpen,
+    baseBucketItem?.key,
+    targetBucketItem?.key,
     manifestReady,
+    manifestLoadedTableCount,
+    locale,
     manifestVersionSignature,
   ]);
 
@@ -1465,6 +1558,8 @@ export function App(): ReactNode {
 
   const handleClearCache = useCallback(() => {
     clearInspectorCaches();
+    detailLoadedTableCounts.clear();
+    detailRefreshInFlight.clear();
     void manifestClient
       .clearCache()
       .then(() => {
@@ -1479,6 +1574,8 @@ export function App(): ReactNode {
   const handleLocaleChange = useCallback(
     (nextLocale: BungieLocale) => {
       clearInspectorCaches();
+      detailLoadedTableCounts.clear();
+      detailRefreshInFlight.clear();
       setLocale(nextLocale);
       pushNotice({ tone: 'info', message: `Switched language to ${nextLocale}` });
     },
@@ -1684,7 +1781,15 @@ export function App(): ReactNode {
       }
       if (
         event.target instanceof HTMLElement &&
-        event.target.closest('[data-select-trigger], [data-select-popup], [role="combobox"]')
+        event.target.closest('[data-select-popup]')
+      ) {
+        return;
+      }
+      if (
+        event.key !== 'Escape' &&
+        !(event.altKey && event.key.toLowerCase() === 'w') &&
+        event.target instanceof HTMLElement &&
+        event.target.closest('[data-select-trigger]')
       ) {
         return;
       }
@@ -1718,9 +1823,15 @@ export function App(): ReactNode {
         return;
       }
 
-      if (event.altKey && event.key.toLowerCase() === 'w' && currentRef) {
+      const { diffTabOpen: liveDiffTabOpen, diffTabActive: liveDiffTabActive } =
+        useDiffBucketStore.getState();
+
+      if (event.altKey && event.key.toLowerCase() === 'w' && (currentRef || liveDiffTabOpen)) {
         event.preventDefault();
-        if (sessionsCount > 1) {
+        if (liveDiffTabActive) {
+          useDiffBucketStore.getState().closeDiffTab();
+          if (sessionsCount === 0) setMobileInspectorOpen(false);
+        } else if (sessionsCount > 1) {
           closeSession(activeSessionIndex);
         } else {
           closeInspector();
@@ -1746,10 +1857,16 @@ export function App(): ReactNode {
       }
 
       if (isEditableTarget(event.target)) {
-        if (event.key === 'Escape') {
-          (event.target as HTMLElement).blur();
+        const isClosedSelectTrigger =
+          event.target instanceof HTMLElement &&
+          Boolean(event.target.closest('[data-select-trigger]')) &&
+          !document.querySelector('[data-select-open]');
+        if (!(event.key === 'Escape' && isClosedSelectTrigger)) {
+          if (event.key === 'Escape') {
+            (event.target as HTMLElement).blur();
+          }
+          return;
         }
-        return;
       }
 
       if (event.key === '?' && !event.ctrlKey && !event.metaKey) {
@@ -1766,7 +1883,10 @@ export function App(): ReactNode {
         if (document.querySelector('[role="dialog"]')) {
           return;
         }
-        if (currentRef) {
+        if (liveDiffTabActive) {
+          useDiffBucketStore.getState().closeDiffTab();
+          if (sessionsCount === 0) setMobileInspectorOpen(false);
+        } else if (currentRef) {
           closeInspector();
         }
         return;
@@ -1885,7 +2005,10 @@ export function App(): ReactNode {
     selectedResultIndex,
     sessionsCount,
     setActiveTab,
+    setMobileInspectorOpen,
     setSelectedResultIndex,
+    diffTabActive,
+    diffTabOpen,
   ]);
 
   return (
@@ -1971,7 +2094,7 @@ export function App(): ReactNode {
               />
             )}
 
-            {currentRef && (!isNarrowLayout || mobileInspectorOpen) && (
+            {(currentRef || diffTabOpen) && (!isNarrowLayout || mobileInspectorOpen) && (
               <Suspense fallback={null}>
                 <LazyDefinitionInspector
                   width={inspectorWidth}
@@ -1985,8 +2108,18 @@ export function App(): ReactNode {
                   variantsLoading={variantsLoading}
                   references={references}
                   referencesLoading={referencesLoading}
-                  pinnedDetail={pinnedDetail}
-                  pinnedLoading={pinnedLoading}
+                  baseDetail={
+                    baseDetailState.key === activeBaseKey
+                      ? baseDetailState.detail
+                      : null
+                  }
+                  targetDetail={
+                    targetDetailState.key === activeTargetKey
+                      ? targetDetailState.detail
+                      : null
+                  }
+                  baseLoading={baseDetailState.key === activeBaseKey && baseDetailState.loading}
+                  targetLoading={targetDetailState.key === activeTargetKey && targetDetailState.loading}
                   clarityEntry={clarityEntry}
                   clarityLoading={clarityLoading}
                   showClarity={showClarityDescriptions}

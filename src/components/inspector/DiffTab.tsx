@@ -43,6 +43,7 @@ function triggerLabel(item: DiffBucketItem): ReactNode {
 
   return (
     <span className={`${styles.triggerValue} ${!name ? styles.triggerValueUnnamed : ''}`}>
+      {item.icon ? <BungieIcon icon={item.icon} size={18} className={styles.triggerIcon} /> : null}
       <span className={styles.triggerName}>{prefix}</span>
       <span className={styles.triggerHash}>{name ? item.hash : `#${item.hash}`}</span>
     </span>

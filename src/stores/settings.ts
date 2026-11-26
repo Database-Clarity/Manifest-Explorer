@@ -35,6 +35,12 @@ export interface SettingsValues {
   railCollapsed: boolean;
   railWidth: number;
   inspectorWidth: number;
+  /**
+   * Persisted width of the results list while the inspector is open. The
+   * inspector now claims the remaining space, so the tables rail and the
+   * results list never steal width from each other.
+   */
+  resultsWidth: number;
   fuzzySearch: boolean;
   fuzziness: number;
   queryPrecedence: QueryPrecedence;
@@ -60,6 +66,7 @@ export interface SettingsActions {
   toggleRail: () => void;
   setRailWidth: (width: number) => void;
   setInspectorWidth: (width: number) => void;
+  setResultsWidth: (width: number) => void;
   setFuzzySearch: (enabled: boolean) => void;
   setFuzziness: (value: number) => void;
   setQueryPrecedence: (mode: QueryPrecedence) => void;
@@ -81,6 +88,19 @@ export const FUZZINESS_MIN = 0.15;
 export const FUZZINESS_MAX = 0.6;
 export const FUZZINESS_STEP = 0.05;
 export const FUZZINESS_DEFAULT = 0.35;
+
+/**
+ * The results list must stay usable in a single column: its header (count,
+ * Diff shortcut, sort, list/grid toggle) fits inside 280px with room to spare.
+ */
+export const RESULTS_WIDTH_MIN = 280;
+export const RESULTS_WIDTH_MAX = 4000;
+export const RESULTS_WIDTH_DEFAULT = 440;
+/**
+ * Rendered floor for the inspector (24rem at the default 16px root size). The
+ * results pane max width always leaves at least this much room on the right.
+ */
+export const INSPECTOR_MIN_WIDTH = 384;
 
 export type FuzzinessLevel = 'Strict' | 'Balanced' | 'Loose';
 
@@ -111,6 +131,7 @@ export const DEFAULT_SETTINGS: SettingsValues = {
   railCollapsed: true,
   railWidth: 224,
   inspectorWidth: 1280,
+  resultsWidth: RESULTS_WIDTH_DEFAULT,
   fuzzySearch: false,
   fuzziness: FUZZINESS_DEFAULT,
   queryPrecedence: 'dim',
@@ -176,6 +197,33 @@ function normalizeRailWidth(value: number): number {
 
 function normalizeInspectorWidth(value: number): number {
   return Math.round(clamp(value, INSPECTOR_WIDTH_MIN, INSPECTOR_WIDTH_MAX));
+}
+
+function normalizeResultsWidth(value: number): number {
+  return Math.round(clamp(value, RESULTS_WIDTH_MIN, RESULTS_WIDTH_MAX));
+}
+
+/**
+ * Upper bound for the results pane while the inspector is open. The inspector
+ * keeps at least {@link INSPECTOR_MIN_WIDTH}px of the workspace after the
+ * tables rail and results list have taken their independent widths.
+ */
+export function maxResultsWidth(workspaceWidth: number, railWidth: number): number {
+  if (!Number.isFinite(workspaceWidth) || workspaceWidth <= 0) {
+    return RESULTS_WIDTH_MAX;
+  }
+  const rail = Number.isFinite(railWidth) && railWidth > 0 ? railWidth : 0;
+  return Math.max(
+    RESULTS_WIDTH_MIN,
+    Math.floor(workspaceWidth - rail - INSPECTOR_MIN_WIDTH),
+  );
+}
+
+/** Clamp a results width to the usable `[280, max]` window. */
+export function clampResultsWidth(width: number, maxWidth: number): number {
+  const upper = Math.max(RESULTS_WIDTH_MIN, Math.round(maxWidth));
+  const value = Number.isFinite(width) ? width : RESULTS_WIDTH_DEFAULT;
+  return Math.round(clamp(value, RESULTS_WIDTH_MIN, upper));
 }
 
 function normalizeFuzziness(value: number): number {
@@ -287,6 +335,9 @@ export function mergePersistedSettings(
     inspectorWidth: normalizeInspectorWidth(
       readNumber(persistedState.inspectorWidth, currentState.inspectorWidth),
     ),
+    resultsWidth: normalizeResultsWidth(
+      readNumber(persistedState.resultsWidth, currentState.resultsWidth),
+    ),
     fuzzySearch: readBoolean(persistedState.fuzzySearch, currentState.fuzzySearch),
     fuzziness: normalizeFuzziness(readNumber(persistedState.fuzziness, currentState.fuzziness)),
     queryPrecedence: readEnum(
@@ -342,6 +393,8 @@ export const useSettingsStore = create<SettingsState>()(
         setRailWidth: (railWidth) => commit({ railWidth: normalizeRailWidth(railWidth) }),
         setInspectorWidth: (inspectorWidth) =>
           commit({ inspectorWidth: normalizeInspectorWidth(inspectorWidth) }),
+        setResultsWidth: (resultsWidth) =>
+          commit({ resultsWidth: normalizeResultsWidth(resultsWidth) }),
         setFuzzySearch: (fuzzySearch) => commit({ fuzzySearch }),
         setFuzziness: (fuzziness) => commit({ fuzziness: normalizeFuzziness(fuzziness) }),
         setQueryPrecedence: (queryPrecedence) => commit({ queryPrecedence }),
@@ -376,6 +429,7 @@ export const useSettingsStore = create<SettingsState>()(
         railCollapsed: state.railCollapsed,
         railWidth: state.railWidth,
         inspectorWidth: state.inspectorWidth,
+        resultsWidth: state.resultsWidth,
         fuzzySearch: state.fuzzySearch,
         fuzziness: state.fuzziness,
         queryPrecedence: state.queryPrecedence,

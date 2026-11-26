@@ -2,6 +2,8 @@
 @use '../styles/variables' as theme;
 
 .header {
+  position: relative;
+  z-index: 70;
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
@@ -166,21 +168,40 @@
 
 /** The search field owns its Filters action so it reads as one control. */
 .searchCluster {
+  --search-row-height: calc(1.75rem - 2px);
   display: flex;
   align-items: center;
+  position: relative;
   gap: 0.375rem;
   flex: 1 1 auto;
   min-width: 0;
+  max-width: 46rem;
+  height: var(--search-row-height);
 
   @include theme.mobile {
+    --search-row-height: calc(var(--tap) - 2px);
+    align-self: flex-start;
     gap: 0.25rem;
+  }
+}
+
+.searchDuration {
+  flex: 0 0 auto;
+  margin-left: -0.125rem;
+  color: var(--text3);
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+
+  @media (max-width: 1240px) {
+    display: none;
   }
 }
 
 .searchField {
   @include ctl.field;
-  --search-row-height: calc(1.75rem - 2px);
-  position: relative;
+  position: absolute;
+  inset: 0 0 auto 0;
   display: flex;
   align-items: flex-start;
   box-sizing: border-box;
@@ -188,11 +209,14 @@
   min-width: 0;
   max-width: 46rem;
   padding: 0;
+  z-index: 1;
 }
 
 .searchFieldFocused {
   @include ctl.focus-ring;
+  z-index: 72;
   border-color: var(--accent-ink);
+  box-shadow: var(--shadow);
 }
 
 .searchIconWrap {
@@ -210,19 +234,17 @@
 }
 
 .searchInput {
+  --search-pad-y: calc((var(--search-row-height) - 1lh) / 2);
   display: block;
   box-sizing: border-box;
   flex: 1 1 auto;
   width: auto;
   min-width: 0;
-  height: var(--search-row-height);
-  max-height: 7.5rem;
-  min-height: var(--search-row-height);
-  margin: 0;
-  padding-top: 0.25rem;
-  padding-bottom: 0.25rem;
-  padding-left: 0;
-  padding-right: 0;
+  height: 1lh;
+  max-height: 1lh;
+  min-height: 1lh;
+  margin: var(--search-pad-y) 0;
+  padding: 0;
   overflow-x: hidden;
   overflow-y: hidden;
   resize: none;
@@ -236,27 +258,29 @@
   white-space: nowrap;
   text-overflow: ellipsis;
   overflow-wrap: normal;
-  transition: height 120ms ease;
+  transition: none;
 
   &::placeholder {
     color: var(--text3);
   }
 
   &:focus {
-    height: auto;
+    height: 1lh;
+    max-height: 3lh;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     overflow-y: auto;
     text-overflow: clip;
+    scrollbar-gutter: stable;
   }
 
   @include theme.mobile-or-coarse {
-    height: var(--search-row-height);
-    min-height: var(--search-row-height);
-    padding-top: 0.625rem;
-    padding-bottom: 0.625rem;
     font-size: var(--ctl-text);
     @include ctl.ios-field-text;
+
+    &:focus {
+      max-height: 3lh;
+    }
   }
 }
 
@@ -317,6 +341,15 @@
 
   &:focus-visible {
     @include ctl.focus-ring;
+  }
+}
+
+.saveSearch {
+  @extend .clearSearch;
+  color: var(--text3);
+
+  &[aria-pressed='true'] {
+    color: var(--warn);
   }
 }
 
@@ -390,6 +423,12 @@
     height: var(--search-row-height);
     margin: 0;
   }
+
+  .saveSearch {
+    width: var(--tap);
+    height: var(--tap);
+    margin: 0;
+  }
 }
 
 .locale {
@@ -451,8 +490,12 @@
 }
 
 @include theme.mobile-or-coarse {
-  .searchField {
+  .searchCluster {
     --search-row-height: calc(var(--tap) - 2px);
+  }
+
+  .searchField {
+    --search-pad-y: 0.625rem;
   }
 }
 
@@ -480,8 +523,6 @@
 
   .barSearchFocused {
     align-items: flex-start;
-    min-height: var(--tap);
-    transition: min-height 120ms ease;
 
     .brand,
     .pageNav,
@@ -495,7 +536,7 @@
       align-items: flex-start;
       flex: 1 1 0;
       width: 100%;
-      min-height: var(--tap);
+      height: var(--search-row-height);
     }
 
     .searchField {
@@ -507,8 +548,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .searchInput,
-  .barSearchFocused {
+  .searchInput {
     transition: none;
   }
 }

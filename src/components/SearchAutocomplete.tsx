@@ -1,6 +1,8 @@
 /// <reference types="vite/client" />
 import { memo, useLayoutEffect, useRef, type ReactNode } from 'react';
 import type { FilterOption, TableStatus } from '../types/manifest';
+import { ClockIcon, StarFilledIcon } from '../ui/Icons';
+import type { SearchHistoryEntry } from '../stores/searchHistory';
 import styles from './SearchAutocomplete.module.scss';
 
 /**
@@ -49,12 +51,21 @@ export interface SearchAutocompleteCatalog {
 export interface SearchAutocompleteProps {
   /** Base id from `useId`; option ids derive from it for aria-activedescendant. */
   id: string;
-  suggestions: readonly SearchSuggestion[];
+  items: readonly SearchMenuItem[];
   /** Index of the highlighted row, or -1 when nothing is highlighted yet. */
   highlightIndex: number;
   onHighlight: (index: number) => void;
-  onAccept: (suggestion: SearchSuggestion) => void;
+  onAccept: (item: SearchMenuItem) => void;
+  onDeleteRecent: (entry: SearchHistoryEntry) => void;
+  historyCount: number;
+  maxHeight?: number;
 }
+
+export type SearchMenuItem =
+  | { kind: 'filter'; suggestion: SearchSuggestion }
+  | { kind: 'saved' | 'recent'; entry: SearchHistoryEntry }
+  | { kind: 'history' }
+  | { kind: 'help' };
 
 export interface SearchSuggestionResult {
   query: string;
@@ -774,10 +785,13 @@ function cx(...parts: Array<string | false | null | undefined>): string {
  */
 export const SearchAutocomplete = memo(function SearchAutocomplete({
   id,
-  suggestions,
+  items,
   highlightIndex,
   onHighlight,
   onAccept,
+  onDeleteRecent,
+  historyCount,
+  maxHeight,
 }: SearchAutocompleteProps): ReactNode {
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -791,7 +805,7 @@ export const SearchAutocomplete = memo(function SearchAutocomplete({
     const list = listRef.current;
     if (!list) return;
 
-    const options = list.children;
+    const options = list.querySelectorAll<HTMLElement>('[role="option"]');
     const activeEl = options.item(highlightIndex);
     if (!(activeEl instanceof HTMLElement)) return;
 
@@ -816,12 +830,23 @@ export const SearchAutocomplete = memo(function SearchAutocomplete({
     } else if (desiredBottom > scrollTop + list.clientHeight) {
       list.scrollTop = desiredBottom - list.clientHeight;
     }
-  }, [highlightIndex, suggestions]);
+  }, [highlightIndex, items]);
 
-  if (suggestions.length === 0) return null;
+  if (items.length === 0) return null;
+
+  const hintKind = items[highlightIndex]?.kind ?? items[0]?.kind;
+  const hintText =
+    hintKind === 'filter'
+      ? 'Tab/Enter insert'
+      : 'Enter run';
+
+  let section: 'saved' | 'recent' | 'filter' | null = null;
 
   return (
-    <div className={styles.panel}>
+    <div
+      className={styles.panel}
+      style={maxHeight !== undefined ? { maxHeight: `min(22rem, ${maxHeight}px)` } : undefined}
+    >
       <div
         ref={listRef}
         className={styles.list}
@@ -829,36 +854,122 @@ export const SearchAutocomplete = memo(function SearchAutocomplete({
         id={`${id}-list`}
         aria-label="Search suggestions"
       >
-        {suggestions.map((suggestion, index) => {
+        {items.map((item, index) => {
+          const itemSection =
+            item.kind === 'saved' || item.kind === 'recent' || item.kind === 'filter'
+              ? item.kind
+              : null;
+          const heading =
+            itemSection !== null && itemSection !== section
+              ? itemSection === 'saved'
+                ? 'Saved'
+                : itemSection === 'recent'
+                  ? 'Recent'
+                  : 'Filters'
+              : null;
+          section = itemSection ?? section;
+
           const active = index === highlightIndex;
+          const optionProps = {
+            id: `${id}-option-${index}`,
+            role: 'option' as const,
+            'aria-selected': active,
+            className: cx(styles.option, active && styles.optionActive),
+            onMouseDown: (event: React.MouseEvent<HTMLDivElement>) => event.preventDefault(),
+            onClick: () => onAccept(item),
+            onMouseEnter: () => onHighlight(index),
+          };
+
+          if (item.kind === 'filter') {
+            const suggestion = item.suggestion;
+            return (
+              <div key={suggestion.id}>
+                {heading && <div className={styles.section} role="presentation">{heading}</div>}
+                <div
+                  {...optionProps}
+                  title={`${suggestion.insert} — ${suggestion.label}`}
+                >
+                  {suggestion.dot !== undefined ? (
+                    <span
+                      className={styles.dot}
+                      style={{ background: suggestion.dot }}
+                      aria-hidden="true"
+                    />
+                  ) : (
+                    <span className={styles.dotSpacer} aria-hidden="true" />
+                  )}
+                  <span className={styles.token}>{suggestion.token}</span>
+                  <span className={styles.label}>{suggestion.label}</span>
+                  {suggestion.count !== undefined && (
+                    <span className={styles.count}>{NUMBER_FORMAT.format(suggestion.count)}</span>
+                  )}
+                </div>
+              </div>
+            );
+          }
+
+          if (item.kind === 'saved' || item.kind === 'recent') {
+            const entry = item.entry;
+            return (
+              <div key={`${item.kind}:${entry.id}`}>
+                {heading && <div className={styles.section} role="presentation">{heading}</div>}
+                <div
+                  {...optionProps}
+                  className={cx(optionProps.className, styles.historyOption)}
+                  title={entry.name ? `${entry.name} — ${entry.query}` : entry.query}
+                >
+                  <span className={item.kind === 'saved' ? styles.savedIcon : styles.recentIcon}>
+                    {item.kind === 'saved' ? (
+                      <StarFilledIcon size={12} />
+                    ) : (
+                      <ClockIcon size={12} />
+                    )}
+                  </span>
+                  <span className={styles.historyText}>
+                    {entry.name ? (
+                      <>
+                        <strong className={styles.historyName}>{entry.name}</strong>
+                        <span className={styles.historyQuery}>{entry.query}</span>
+                      </>
+                    ) : (
+                      <span className={styles.historyQuery}>{entry.query}</span>
+                    )}
+                  </span>
+                  {item.kind === 'recent' && (
+                    <button
+                      type="button"
+                      className={styles.deleteRecent}
+                      aria-label={`Remove recent search ${entry.query}`}
+                      title="Remove from recent searches"
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                      }}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onDeleteRecent(entry);
+                      }}
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          }
+
+          section = null;
           return (
-            <div
-              key={suggestion.id}
-              id={`${id}-option-${index}`}
-              role="option"
-              aria-selected={active}
-              className={cx(styles.option, active && styles.optionActive)}
-              title={`${suggestion.insert} — ${suggestion.label}`}
-              onMouseDown={(event) => {
-                // Keep focus in the search input while accepting the click.
-                event.preventDefault();
-                onAccept(suggestion);
-              }}
-              onMouseEnter={() => onHighlight(index)}
-            >
-              {suggestion.dot !== undefined ? (
-                <span
-                  className={styles.dot}
-                  style={{ background: suggestion.dot }}
-                  aria-hidden="true"
-                />
+            <div key={item.kind}>
+              {item.kind === 'history' ? (
+                <div {...optionProps} className={cx(optionProps.className, styles.actionOption)}>
+                  <span>Search history…</span>
+                  {historyCount > 0 && <span className={styles.historyBadge}>{historyCount}</span>}
+                </div>
               ) : (
-                <span className={styles.dotSpacer} aria-hidden="true" />
-              )}
-              <span className={styles.token}>{suggestion.token}</span>
-              <span className={styles.label}>{suggestion.label}</span>
-              {suggestion.count !== undefined && (
-                <span className={styles.count}>{NUMBER_FORMAT.format(suggestion.count)}</span>
+                <div {...optionProps} className={cx(optionProps.className, styles.actionOption)}>
+                  <span>Search syntax help…</span>
+                </div>
               )}
             </div>
           );
@@ -867,7 +978,7 @@ export const SearchAutocomplete = memo(function SearchAutocomplete({
       <div className={styles.footer} aria-hidden="true">
         <span>↑↓ navigate</span>
         <span>·</span>
-        <span>Tab/Enter insert</span>
+        <span>{hintText}</span>
         <span>·</span>
         <span>Esc dismiss</span>
       </div>

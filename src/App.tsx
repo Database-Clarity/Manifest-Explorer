@@ -26,7 +26,13 @@ import { canonicalTableName, getShortTableName } from './manifest/tables';
 import { useCollectorStore } from './stores/collector';
 import { useDiffBucketStore } from './stores/diffBucket';
 import { useExplorerStore, type InspectorSession } from './stores/explorer';
-import { useSettingsStore } from './stores/settings';
+import {
+  clampResultsWidth,
+  maxResultsWidth,
+  useSettingsStore,
+} from './stores/settings';
+import { useSearchHistoryStore } from './stores/searchHistory';
+import { hasPositiveTableScopeInQuery } from './manifest/query';
 import { Header } from './components/Header';
 import { ResultsPane } from './components/ResultsPane';
 import { StatusBar } from './components/StatusBar';
@@ -307,6 +313,11 @@ export function App(): ReactNode {
       typeof window !== 'undefined' &&
       window.matchMedia('(max-width: 900px)').matches,
   );
+  const workspaceRef = useRef<HTMLElement | null>(null);
+  const resultsPaneRef = useRef<HTMLElement | null>(null);
+  const [workspaceWidth, setWorkspaceWidth] = useState(
+    () => (typeof window === 'undefined' ? 0 : window.innerWidth),
+  );
   const lastManifestVersionRef = useRef(
     useExplorerStore.getState().manifestStatus.versionSignature,
   );
@@ -331,6 +342,24 @@ export function App(): ReactNode {
     setAppUpdateDismissed(false);
   }, []);
 
+  // Track the workspace width so the results pane can be clamped against the
+  // tables rail and the inspector's 384px minimum while the window resizes.
+  useLayoutEffect(() => {
+    const element = workspaceRef.current;
+    if (!element) {
+      return;
+    }
+    const measure = (): void => setWorkspaceWidth(element.clientWidth);
+    measure();
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', measure);
+      return () => window.removeEventListener('resize', measure);
+    }
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
   // Settings
   const locale = useSettingsStore((s) => s.locale);
   const bungieApiKey = useSettingsStore((s) => s.bungieApiKey);
@@ -339,14 +368,14 @@ export function App(): ReactNode {
   const groupBy = useSettingsStore((s) => s.groupBy);
   const railCollapsed = useSettingsStore((s) => s.railCollapsed);
   const railWidth = useSettingsStore((s) => s.railWidth);
-  const inspectorWidth = useSettingsStore((s) => s.inspectorWidth);
+  const resultsWidth = useSettingsStore((s) => s.resultsWidth);
   const fuzzySearch = useSettingsStore((s) => s.fuzzySearch);
   const fuzziness = useSettingsStore((s) => s.fuzziness);
   const queryPrecedence = useSettingsStore((s) => s.queryPrecedence);
   const setLocale = useSettingsStore((s) => s.setLocale);
   const toggleRail = useSettingsStore((s) => s.toggleRail);
   const setRailWidth = useSettingsStore((s) => s.setRailWidth);
-  const setInspectorWidth = useSettingsStore((s) => s.setInspectorWidth);
+  const setResultsWidth = useSettingsStore((s) => s.setResultsWidth);
 
   // Explorer state
   const deepSearch = useExplorerStore((s) => s.deepSearch);
@@ -1650,6 +1679,18 @@ export function App(): ReactNode {
         return;
       }
 
+      const searchState = useExplorerStore.getState();
+      useSearchHistoryStore.getState().recordSearch(
+        searchState.query,
+        {
+          table: hasPositiveTableScopeInQuery(searchState.query)
+            ? 'all'
+            : searchState.filters.table,
+          deepSearch: searchState.deepSearch,
+        },
+        'result',
+      );
+
       const wasMobileInspectorOpen = useExplorerStore.getState().mobileInspectorOpen;
       flushActiveInspectorDomScroll();
       const rawFilter = item.deepMatch
@@ -1806,9 +1847,9 @@ export function App(): ReactNode {
   }, [currentRef]);
   const handleToggleRail = useCallback(() => toggleRail(), [toggleRail]);
   const handleRailResize = useCallback((width: number) => setRailWidth(width), [setRailWidth]);
-  const handleInspectorResize = useCallback(
-    (width: number) => setInspectorWidth(width),
-    [setInspectorWidth],
+  const handleResultsResize = useCallback(
+    (width: number) => setResultsWidth(width),
+    [setResultsWidth],
   );
 
   const handleSwitchSession = useCallback(
@@ -2058,6 +2099,14 @@ export function App(): ReactNode {
     diffTabOpen,
   ]);
 
+  // The inspector owns the leftover width on desktop, so the results list keeps
+  // its own persisted width and never shrinks when the tables rail opens.
+  const inspectorOpen = Boolean(currentRef || diffTabOpen);
+  const effectiveRailWidth = railCollapsed ? 16 : railWidth;
+  const resultsMaxWidth = maxResultsWidth(workspaceWidth, effectiveRailWidth);
+  const renderedResultsWidth = clampResultsWidth(resultsWidth, resultsMaxWidth);
+  const resultsOwnedWidth = !isNarrowLayout && inspectorOpen && !inspectorMaximized;
+
   return (
     <div className={styles.shell}>
       <Header
@@ -2099,7 +2148,7 @@ export function App(): ReactNode {
         </section>
       )}
 
-      <main className={styles.workspace}>
+      <main ref={workspaceRef} className={styles.workspace}>
         {isHistoryRoute ? (
           <Suspense
             fallback={
@@ -2133,6 +2182,10 @@ export function App(): ReactNode {
               ? !mobileInspectorOpen
               : !inspectorMaximized) && (
               <ResultsPane
+                paneRef={resultsPaneRef}
+                width={renderedResultsWidth}
+                maxWidth={resultsMaxWidth}
+                ownedWidth={resultsOwnedWidth}
                 onOpenItem={handleOpenResult}
                 onRetryBoot={handleRetryBoot}
                 onLoadMore={handleLoadMore}
@@ -2147,8 +2200,12 @@ export function App(): ReactNode {
             {(currentRef || diffTabOpen) && (!isNarrowLayout || mobileInspectorOpen) && (
               <Suspense fallback={null}>
                 <LazyDefinitionInspector
-                  width={inspectorWidth}
-                  onResize={handleInspectorResize}
+                  width={renderedResultsWidth}
+                  resultsMaxWidth={resultsMaxWidth}
+                  resultsPaneRef={resultsPaneRef}
+                  workspaceWidth={workspaceWidth}
+                  railWidth={effectiveRailWidth}
+                  onResize={handleResultsResize}
                   currentRef={currentRef}
                   detail={detail}
                   loading={detailLoading}

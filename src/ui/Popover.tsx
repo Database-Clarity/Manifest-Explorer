@@ -22,6 +22,12 @@ export interface PopoverProps {
   label: string;
   /** Optional fixed width, for example `18rem`. Clamped to the viewport. */
   width?: string;
+  /** Focus this element when the panel opens, instead of leaving focus on the anchor. */
+  initialFocusRef?: RefObject<HTMLElement | null>;
+  /** Return focus to the anchor on close. Defaults to true; set false for mobile flows. */
+  restoreFocus?: boolean;
+  /** Extra class merged onto the panel, for panel-owned layout (padding, scroll regions). */
+  panelClassName?: string;
   children: ReactNode;
 }
 
@@ -42,6 +48,9 @@ export function Popover({
   align = 'start',
   label,
   width,
+  initialFocusRef,
+  restoreFocus = true,
+  panelClassName,
   children,
 }: PopoverProps) {
   const panelRef = useRef<HTMLDivElement>(null);
@@ -124,6 +133,13 @@ export function Popover({
     };
   }, [open, align, anchorRef]);
 
+  useLayoutEffect(() => {
+    if (!open || !initialFocusRef?.current) {
+      return;
+    }
+    initialFocusRef.current.focus({ preventScroll: true });
+  }, [open, initialFocusRef]);
+
   useEffect(() => {
     if (!open) {
       return;
@@ -169,7 +185,7 @@ export function Popover({
   }, [open, anchorRef]);
 
   useEffect(() => {
-    if (!open) {
+    if (!open || !restoreFocus) {
       return;
     }
 
@@ -179,7 +195,7 @@ export function Popover({
         anchor.focus({ preventScroll: true });
       }
     };
-  }, [open, anchorRef]);
+  }, [open, anchorRef, restoreFocus]);
 
   if (!open) {
     return null;
@@ -199,9 +215,10 @@ export function Popover({
       ref={panelRef}
       role="dialog"
       aria-label={label}
-      className={styles.panel}
+      className={panelClassName ? `${styles.panel} ${panelClassName}` : styles.panel}
       style={panelStyle}
       data-popover="true"
+      tabIndex={-1}
     >
       {children}
     </div>,

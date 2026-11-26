@@ -178,9 +178,7 @@ function bannerButton(host: HTMLElement, label: string | RegExp): HTMLButtonElem
 }
 
 function bulkDiffButton(host: HTMLElement): HTMLButtonElement | null {
-  return host.querySelector<HTMLButtonElement>(
-    'button[aria-label$="loaded results to Diff bucket"]',
-  );
+  return host.querySelector<HTMLButtonElement>('button[class*="diffBannerAdd"]');
 }
 
 function openDiffShortcutButton(host: HTMLElement): HTMLButtonElement | null {
@@ -316,6 +314,8 @@ describe('Diff controls stay behind the Diff tab gate', () => {
     const host = renderResultsPane();
     expect(rowDiffButtons(host).length).toBeGreaterThan(0);
     expect(bulkDiffButton(host)).not.toBeNull();
+    expect(bulkDiffButton(host)?.disabled).toBe(true);
+    expect(bulkDiffButton(host)?.textContent?.trim()).toBe('All added');
 
     act(() => bannerButton(host, 'Done')?.click());
 

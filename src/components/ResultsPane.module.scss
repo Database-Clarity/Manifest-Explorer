@@ -3,14 +3,32 @@
 
 .pane {
   display: flex;
-  flex: 1;
+  flex: 1 1 auto;
   flex-direction: column;
+  width: auto;
   min-width: 0;
   min-height: 0;
   height: 100%;
   overflow: hidden;
   background: var(--col);
   color: var(--text);
+}
+
+// While the inspector is open the results list owns a persisted width and the
+// inspector absorbs all remaining space. Toggling the tables rail then only
+// resizes the inspector, never the results list.
+.paneOwned {
+  flex: 0 0 auto;
+  width: var(--results-w, 27.5rem);
+  min-width: 17.5rem;
+  max-width: var(--results-max-w, calc(100% - 24rem));
+
+  // The inspector is a full-screen sheet below 900px; the list must fill.
+  @media (max-width: 900px) {
+    flex: 1 1 auto;
+    width: auto;
+    max-width: none;
+  }
 }
 
 .header {
@@ -83,6 +101,14 @@
   line-height: 1.25;
 }
 
+.bulkDiffButtonCompact {
+  padding-inline: 0.3125rem;
+
+  .diffShortcutLabel {
+    display: none;
+  }
+}
+
 .chips {
   display: flex;
   flex-wrap: nowrap;
@@ -100,7 +126,9 @@
   display: inline-flex;
   align-items: center;
   gap: 0.125rem;
-  max-width: 11rem;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: min(11rem, 100%);
   min-height: 1.25rem;
   padding: 0 0.125rem 0 0.375rem;
   background: var(--strip);

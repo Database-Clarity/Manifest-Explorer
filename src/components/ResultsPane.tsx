@@ -9,6 +9,7 @@ import {
   type CSSProperties,
   type KeyboardEvent,
   type ReactNode,
+  type Ref,
 } from 'react';
 import type {
   SearchFilters,
@@ -61,6 +62,17 @@ export interface ResultsPaneProps {
   hiddenUnnamedCount?: number;
   /** Entries in the active table/query scope before unnamed filtering. */
   scopeEntryCount?: number;
+  /** Live DOM ref so the inspector resize handle can measure this pane. */
+  paneRef?: Ref<HTMLElement>;
+  /**
+   * Owned width in px while the inspector is open. When omitted (or
+   * `ownedWidth` is false) the pane fills the workspace instead.
+   */
+  width?: number;
+  /** Upper bound for the owned width that keeps the inspector at least 384px. */
+  maxWidth?: number;
+  /** True when the inspector is open on desktop and this pane owns its width. */
+  ownedWidth?: boolean;
 }
 
 const OVERSCAN_ROWS = 10;
@@ -746,6 +758,10 @@ export const ResultsPane = memo(function ResultsPane({
   loadingMore,
   hiddenUnnamedCount = 0,
   scopeEntryCount = 0,
+  paneRef,
+  width = 0,
+  maxWidth = 0,
+  ownedWidth = false,
 }: ResultsPaneProps): ReactNode {
   const results = useExplorerStore((state) => state.results);
   const totalMatches = useExplorerStore((state) => state.totalMatches);
@@ -1018,8 +1034,19 @@ export const ResultsPane = memo(function ResultsPane({
   }, [results]);
 
   const addAllDiffCount = Math.min(results.length, DIFF_BUCKET_BULK_CAP);
-  const addAllDiffLabel =
-    results.length > DIFF_BUCKET_BULK_CAP
+  const allLoadedInDiff = useMemo(() => {
+    if (addAllDiffCount === 0) return false;
+    for (let index = 0; index < addAllDiffCount; index += 1) {
+      const entry = results[index];
+      if (!entry || !diffKeys.has(`${entry.table}:${entry.hash >>> 0}`)) {
+        return false;
+      }
+    }
+    return true;
+  }, [addAllDiffCount, diffKeys, results]);
+  const addAllDiffLabel = allLoadedInDiff
+    ? 'All added'
+    : results.length > DIFF_BUCKET_BULK_CAP
       ? `+ Add ${DIFF_BUCKET_BULK_CAP}`
       : `+ Add all (${addAllDiffCount})`;
 
@@ -1115,6 +1142,13 @@ export const ResultsPane = memo(function ResultsPane({
             : 'Searching definitions…'
           : 'Preparing Destiny 2 manifest…';
 
+  const compactHeaderSummary =
+    isNarrowPhone || (viewportWidth > 0 && viewportWidth < 340);
+  const compactDiffShortcut =
+    isNarrowPhone || (viewportWidth > 0 && viewportWidth < 380);
+  const showHeaderChips =
+    hasActiveFilters && !(viewportWidth > 0 && viewportWidth < 360);
+
   const baseSummaryText =
     searching && !hasResults
       ? deepSearch
@@ -1122,6 +1156,14 @@ export const ResultsPane = memo(function ResultsPane({
         : 'Searching…'
       : hasActiveFilters
         ? `${formatCount(totalMatches)} matches · ${formatDuration(searchDurationMs)}`
+        : `${formatCount(totalMatches)} results`;
+  const compactBaseSummaryText =
+    searching && !hasResults
+      ? deepSearch
+        ? 'Scanning JSON…'
+        : 'Searching…'
+      : hasActiveFilters
+        ? `${formatCount(totalMatches)} matches`
         : `${formatCount(totalMatches)} results`;
   const dateStatusNote =
     isDateSort(sortMode) && entryDatesStatus === 'loading'
@@ -1133,14 +1175,16 @@ export const ResultsPane = memo(function ResultsPane({
     ? `${baseSummaryText} · ${dateStatusNote}`
     : baseSummaryText;
 
-  // Mobile keeps the header on one row: the full matches · duration summary is
-  // too wide, so show just the compact tabular count.
+  // Keep the header on one crisp row: omit the timing suffix (shown beside the
+  // search bar on wide screens) and fall back to the tabular count when tight.
   const headerSummaryText =
-    isNarrowPhone && !(searching && !hasResults)
+    compactHeaderSummary && !(searching && !hasResults)
       ? dateStatusNote
         ? `${formatCount(totalMatches)} · ${dateStatusNote}`
         : formatCount(totalMatches)
-      : summaryText;
+      : dateStatusNote
+        ? `${compactBaseSummaryText} · ${dateStatusNote}`
+        : compactBaseSummaryText;
 
   const sortSections = useMemo<readonly SelectSection<SortField>[]>(
     () => [
@@ -1862,7 +1906,19 @@ export const ResultsPane = memo(function ResultsPane({
   ]);
 
   return (
-    <section className={styles.pane} aria-label="Search results">
+    <section
+      ref={paneRef}
+      className={joinClasses(styles.pane, ownedWidth ? styles.paneOwned : '')}
+      style={
+        ownedWidth
+          ? ({
+              '--results-w': `${Math.max(0, width)}px`,
+              '--results-max-w': `${Math.max(0, maxWidth)}px`,
+            } as CSSProperties)
+          : undefined
+      }
+      aria-label="Search results"
+    >
       <header className={styles.header}>
         <div
           className={joinClasses(
@@ -1873,30 +1929,6 @@ export const ResultsPane = memo(function ResultsPane({
           <span className={styles.summary} title={summaryText}>
             {headerSummaryText}
           </span>
-          {!diffTabOpen ? (
-            <button
-              type="button"
-              className={styles.bulkDiffButton}
-              onClick={openDiffTabFromHeader}
-              title={
-                diffItems.length > 0
-                  ? `Open Diff tab (${diffItems.length} in bucket)`
-                  : 'Open Diff tab'
-              }
-              aria-label={
-                diffItems.length > 0
-                  ? `Open Diff tab (${diffItems.length} in bucket)`
-                  : 'Open Diff tab'
-              }
-              onKeyDown={stopActivationKeys}
-            >
-              <DiffIcon size={12} />
-              <span>Diff</span>
-              {diffItems.length > 0 ? (
-                <span className={styles.diffShortcutCount}>{diffItems.length}</span>
-              ) : null}
-            </button>
-          ) : null}
 
           {isNarrowPhone && hasTableFilter ? (
             <span className={styles.tableChip}>
@@ -1916,7 +1948,7 @@ export const ResultsPane = memo(function ResultsPane({
             </span>
           ) : null}
 
-          {hasActiveFilters ? (
+          {showHeaderChips ? (
             <div className={styles.chips} role="group" aria-label="Active filters">
               {deepSearch ? (
                 <span className={styles.chip}>
@@ -1992,6 +2024,34 @@ export const ResultsPane = memo(function ResultsPane({
         </div>
 
         <div className={styles.controls}>
+          {!diffTabOpen ? (
+            <button
+              type="button"
+              className={joinClasses(
+                styles.bulkDiffButton,
+                compactDiffShortcut ? styles.bulkDiffButtonCompact : '',
+              )}
+              onClick={openDiffTabFromHeader}
+              title={
+                diffItems.length > 0
+                  ? `Open Diff tab (${diffItems.length} in bucket)`
+                  : 'Open Diff tab'
+              }
+              aria-label={
+                diffItems.length > 0
+                  ? `Open Diff tab (${diffItems.length} in bucket)`
+                  : 'Open Diff tab'
+              }
+              onKeyDown={stopActivationKeys}
+            >
+              <DiffIcon size={12} />
+              <span className={styles.diffShortcutLabel}>Diff</span>
+              {diffItems.length > 0 ? (
+                <span className={styles.diffShortcutCount}>{diffItems.length}</span>
+              ) : null}
+            </button>
+          ) : null}
+
           {isNarrowPhone && sessionCount > 0 ? (
             <button
               type="button"
@@ -2122,9 +2182,10 @@ export const ResultsPane = memo(function ResultsPane({
               <button
                 type="button"
                 className={styles.diffBannerAdd}
+                disabled={allLoadedInDiff}
                 onClick={addCurrentResultsToDiff}
-                title={`Add ${addAllDiffCount} loaded results to the Diff bucket`}
-                aria-label={`Add ${addAllDiffCount} loaded results to Diff bucket`}
+                title={allLoadedInDiff ? 'All loaded results are already in the Diff bucket' : `Add ${addAllDiffCount} loaded results to the Diff bucket`}
+                aria-label={allLoadedInDiff ? 'All loaded results are already in the Diff bucket' : `Add ${addAllDiffCount} loaded results to Diff bucket`}
                 onKeyDown={stopActivationKeys}
               >
                 {addAllDiffLabel}

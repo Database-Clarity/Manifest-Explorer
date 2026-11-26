@@ -26,6 +26,15 @@ import { BUNGIE_LOCALES } from '../types/manifest';
 import { useCollectorStore } from '../stores/collector';
 import { useExplorerStore } from '../stores/explorer';
 import { useSettingsStore } from '../stores/settings';
+import {
+  isRecordableSearch,
+  normalizeSearchKey,
+  useSearchHistoryStore,
+  type SearchHistoryEntry,
+  type SearchRecordSource,
+  type SearchScope,
+} from '../stores/searchHistory';
+import { hasPositiveTableScopeInQuery } from '../manifest/query';
 import { countQueryFilterTokens } from '../utils/queryTokens';
 import {
   ArrowLeftIcon,
@@ -38,13 +47,17 @@ import {
   ManifestMark,
   SearchIcon,
   SettingsIcon,
+  StarFilledIcon,
+  StarIcon,
 } from '../ui/Icons';
 import {
   SearchAutocomplete,
   applySearchSuggestion,
   buildSearchSuggestions,
+  type SearchMenuItem,
   type SearchSuggestion,
 } from './SearchAutocomplete';
+import { SearchHistoryPopover } from './SearchHistoryPopover';
 import { Select } from '../ui/Select';
 import styles from './Header.module.scss';
 
@@ -121,16 +134,25 @@ function formatBadge(count: number): string {
   return count > 99 ? '99+' : String(count);
 }
 
+function formatSearchDuration(milliseconds: number): string {
+  if (!Number.isFinite(milliseconds) || milliseconds <= 0) return '< 1 ms';
+  if (milliseconds < 10) return `${milliseconds.toFixed(1)} ms`;
+  if (milliseconds < 1000) return `${Math.round(milliseconds)} ms`;
+  return `${(milliseconds / 1000).toFixed(2)} s`;
+}
+
 /** Stable empty list so the closed autocomplete state never allocates. */
 const EMPTY_SUGGESTIONS: readonly SearchSuggestion[] = [];
 
 function resizeSearchTextarea(input: HTMLTextAreaElement, focused: boolean): void {
-  input.style.height = '';
   if (!focused) {
+    input.style.height = '';
     input.style.overflowY = 'hidden';
+    input.scrollTop = 0;
     return;
   }
 
+  input.style.height = '0px';
   const maxHeight = Number.parseFloat(window.getComputedStyle(input).maxHeight) || 120;
   const contentHeight = input.scrollHeight;
   const desiredHeight = Math.min(contentHeight, maxHeight);
@@ -158,6 +180,8 @@ export const Header = memo(function Header({
     () => hasUnseenChangelogMeta(),
   );
   const [searchFocused, setSearchFocused] = useState(false);
+  const [searchComposing, setSearchComposing] = useState(false);
+  const [historyPopoverOpen, setHistoryPopoverOpen] = useState(false);
   const [isMobileViewport, setIsMobileViewport] = useState(
     () =>
       typeof window !== 'undefined' &&
@@ -170,6 +194,13 @@ export const Header = memo(function Header({
   const [suggestionsDismissed, setSuggestionsDismissed] = useState(false);
   const suggestionListId = useId();
 
+  const searchFieldRef = useRef<HTMLDivElement>(null);
+  const suppressBlurRecordRef = useRef(false);
+  const closeMenuOnFocusRef = useRef(false);
+  const lastRunKeyRef = useRef('');
+  const idlePendingRef = useRef(false);
+  const idleTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+  const [dropdownMaxHeight, setDropdownMaxHeight] = useState<number>();
   const brandRef = useRef<HTMLButtonElement>(null);
   const filtersDesktopRef = useRef<HTMLButtonElement>(null);
   const collectorDesktopRef = useRef<HTMLButtonElement>(null);
@@ -178,14 +209,20 @@ export const Header = memo(function Header({
   const query = useExplorerStore((state) => state.query);
   const setQuery = useExplorerStore((state) => state.setQuery);
   const deepSearch = useExplorerStore((state) => state.deepSearch);
+  const setDeepSearch = useExplorerStore((state) => state.setDeepSearch);
+  const filters = useExplorerStore((state) => state.filters);
   const tableFilter = useExplorerStore((state) => state.filters.table);
   const includeUnnamed = useExplorerStore((state) => state.filters.includeUnnamed);
+  const searchDurationMs = useExplorerStore((state) => state.searchDurationMs);
+  const totalMatches = useExplorerStore((state) => state.totalMatches);
+  const searching = useExplorerStore((state) => state.searching);
   const setTableFilter = useExplorerStore((state) => state.setTableFilter);
   const setMobileInspectorOpen = useExplorerStore((state) => state.setMobileInspectorOpen);
   const tables = useExplorerStore((state) => state.tables);
   const filterCatalog = useExplorerStore((state) => state.filterCatalog);
 
   const locale = useSettingsStore((state) => state.locale);
+  const historyEntries = useSearchHistoryStore((state) => state.entries);
 
   const collectedCount = useCollectorStore((state) => state.items.length);
   const collectMode = useCollectorStore((state) => state.collectMode);
@@ -206,6 +243,36 @@ export const Header = memo(function Header({
     deepSearch,
     tableFilter,
     isMobileViewport,
+  );
+  const hasNonDefaultFilters =
+    filters.table !== 'all' ||
+    filters.includeUnnamed ||
+    filters.onlyRedacted ||
+    filters.tierTypes.length > 0 ||
+    filters.damageTypes.length > 0 ||
+    filters.classTypes.length > 0 ||
+    filters.itemTypes.length > 0 ||
+    filters.itemCategoryHashes.length > 0 ||
+    (filters.unnamedMode !== undefined && filters.unnamedMode !== 'auto');
+
+  const currentScope: SearchScope = {
+    table: hasPositiveTableScopeInQuery(query) ? 'all' : tableFilter,
+    deepSearch,
+  };
+
+  const savedEntries = useMemo(
+    () =>
+      historyEntries
+        .filter((entry) => entry.saved || Boolean(entry.name))
+        .sort((a, b) => b.lastUsage - a.lastUsage),
+    [historyEntries],
+  );
+  const recentEntries = useMemo(
+    () =>
+      historyEntries
+        .filter((entry) => !entry.saved && !entry.name)
+        .sort((a, b) => b.lastUsage - a.lastUsage),
+    [historyEntries],
   );
 
   useEffect(() => {
@@ -241,21 +308,144 @@ export const Header = memo(function Header({
     return () => window.removeEventListener('resize', resizeSearch);
   }, [searchInputRef]);
 
+  useEffect(() => {
+    const field = searchFieldRef.current;
+    if (!field) return;
+
+    const updateDropdownSpace = (): void => {
+      const rect = field.getBoundingClientRect();
+      const viewport = window.visualViewport;
+      const viewportBottom = viewport
+        ? viewport.offsetTop + viewport.height
+        : window.innerHeight;
+      setDropdownMaxHeight(Math.max(0, viewportBottom - rect.bottom - 8));
+    };
+
+    updateDropdownSpace();
+    const observer = typeof ResizeObserver === 'undefined'
+      ? null
+      : new ResizeObserver(updateDropdownSpace);
+    observer?.observe(field);
+    window.visualViewport?.addEventListener('resize', updateDropdownSpace);
+    window.visualViewport?.addEventListener('scroll', updateDropdownSpace);
+    window.addEventListener('resize', updateDropdownSpace);
+    return () => {
+      observer?.disconnect();
+      window.visualViewport?.removeEventListener('resize', updateDropdownSpace);
+      window.visualViewport?.removeEventListener('scroll', updateDropdownSpace);
+      window.removeEventListener('resize', updateDropdownSpace);
+    };
+  }, [searchFieldRef]);
+
   // Tokenizing the catalog (115 sources, 28 seasons, categories) only matters
   // while the dropdown can actually appear; skip it whenever the input is not
   // focused or the list was dismissed with Escape.
   const suggestions: readonly SearchSuggestion[] = useMemo(
     () =>
-      searchFocused && !suggestionsDismissed
+      searchFocused
         ? buildSearchSuggestions(query, searchCaret, filterCatalog, tables)
         : EMPTY_SUGGESTIONS,
-    [searchFocused, suggestionsDismissed, query, searchCaret, filterCatalog, tables],
+    [searchFocused, query, searchCaret, filterCatalog, tables],
   );
-  const autocompleteOpen = searchFocused && !suggestionsDismissed && suggestions.length > 0;
+  const isEmptySearch = query.trim().length === 0;
+  const normalizedQuery = normalizeSearchKey(query);
+  const matchingHistoryItems = useMemo(() => {
+    if (isEmptySearch) {
+      return [
+        ...savedEntries.slice(0, 4).map((entry) => ({ kind: 'saved' as const, entry })),
+        ...recentEntries.slice(0, 6).map((entry) => ({ kind: 'recent' as const, entry })),
+      ];
+    }
+
+    const queryText = query.trim().toLocaleLowerCase();
+    const matches = (entry: SearchHistoryEntry): boolean =>
+      normalizeSearchKey(entry.query) !== normalizedQuery &&
+      (entry.query.toLocaleLowerCase().includes(queryText) ||
+        (entry.name?.toLocaleLowerCase().includes(queryText) ?? false) ||
+        normalizeSearchKey(entry.query).includes(normalizedQuery) ||
+        (entry.name ? normalizeSearchKey(entry.name).includes(normalizedQuery) : false));
+    return [
+      ...savedEntries.filter(matches).slice(0, 4).map((entry) => ({ kind: 'saved' as const, entry })),
+      ...recentEntries.filter(matches).slice(0, 4).map((entry) => ({ kind: 'recent' as const, entry })),
+    ].slice(0, 4);
+  }, [isEmptySearch, savedEntries, recentEntries, query, normalizedQuery]);
+
+  const menuItems: readonly SearchMenuItem[] = useMemo(() => {
+    if (!searchFocused) return [];
+    if (isEmptySearch) {
+      return [
+        ...matchingHistoryItems,
+        { kind: 'history' },
+        { kind: 'help' },
+      ];
+    }
+    return [
+      ...suggestions.map((suggestion) => ({ kind: 'filter' as const, suggestion })),
+      ...matchingHistoryItems,
+      ...(historyEntries.length > 0 ? [{ kind: 'history' as const }] : []),
+    ];
+  }, [searchFocused, isEmptySearch, matchingHistoryItems, suggestions, historyEntries.length]);
+  const autocompleteOpen = searchFocused && !suggestionsDismissed && menuItems.length > 0;
   const activeSuggestionIndex =
-    autocompleteOpen && suggestionIndex >= 0 && suggestionIndex < suggestions.length
+    autocompleteOpen && suggestionIndex >= 0 && suggestionIndex < menuItems.length
       ? suggestionIndex
       : -1;
+  const savedEntry = historyEntries.find(
+    (entry) => entry.saved && normalizeSearchKey(entry.query) === normalizedQuery,
+  );
+  const isCurrentSaved = savedEntry !== undefined;
+  const savedTitle = savedEntry
+    ? savedEntry.name
+      ? `Saved as "${savedEntry.name}" — click to unsave`
+      : 'Saved search — click to unsave'
+    : 'Save search';
+
+  const recordSearch = useCallback((value: string, scope: SearchScope, source: SearchRecordSource) => {
+    if (!isRecordableSearch(value)) return;
+    idlePendingRef.current = false;
+    if (idleTimerRef.current !== null) {
+      window.clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = null;
+    }
+    useSearchHistoryStore.getState().recordSearch(value, scope, source);
+    lastRunKeyRef.current = normalizeSearchKey(value);
+  }, []);
+
+  useEffect(() => {
+    if (idleTimerRef.current !== null) {
+      window.clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = null;
+    }
+    if (
+      !searchFocused ||
+      searchComposing ||
+      !idlePendingRef.current ||
+      !isRecordableSearch(query)
+    ) {
+      return;
+    }
+
+    idleTimerRef.current = window.setTimeout(() => {
+      idleTimerRef.current = null;
+      idlePendingRef.current = false;
+      if (normalizeSearchKey(query) === lastRunKeyRef.current) return;
+      recordSearch(query, currentScope, 'idle');
+    }, 2500);
+
+    return () => {
+      if (idleTimerRef.current !== null) {
+        window.clearTimeout(idleTimerRef.current);
+        idleTimerRef.current = null;
+      }
+    };
+  }, [
+    searchFocused,
+    searchComposing,
+    query,
+    currentScope.table,
+    currentScope.deepSearch,
+    recordSearch,
+  ]);
 
   const filtersAnchorRef = filtersDesktopRef;
   const filtersAlign = 'end';
@@ -292,7 +482,7 @@ export const Header = memo(function Header({
       setUndoQuery(query);
     }
     setQuery('');
-    searchInputRef.current?.focus();
+    searchInputRef.current?.focus({ preventScroll: true });
   }
 
   /** Restores the snapshot taken by the clear button and keeps the caret at the end. */
@@ -303,7 +493,7 @@ export const Header = memo(function Header({
     setSuggestionIndex(-1);
     const input = searchInputRef.current;
     if (input) {
-      input.focus();
+      input.focus({ preventScroll: true });
       window.requestAnimationFrame(() => {
         input.setSelectionRange(restored.length, restored.length);
       });
@@ -321,7 +511,8 @@ export const Header = memo(function Header({
   }
 
   function handleSearchChange(event: ChangeEvent<HTMLTextAreaElement>): void {
-    const value = event.target.value.replace(/\r?\n+/g, ' ');
+    const value = event.target.value;
+    idlePendingRef.current = true;
     setQuery(value);
     setSearchCaret(Math.min(event.target.selectionStart ?? value.length, value.length));
     setSuggestionIndex(-1);
@@ -331,11 +522,23 @@ export const Header = memo(function Header({
   function handleSearchFocus(event: FocusEvent<HTMLTextAreaElement>): void {
     setSearchFocused(true);
     setSearchCaret(event.currentTarget.selectionStart ?? event.currentTarget.value.length);
-    setSuggestionsDismissed(false);
+    if (closeMenuOnFocusRef.current) {
+      closeMenuOnFocusRef.current = false;
+      setSuggestionsDismissed(true);
+    } else {
+      setSuggestionsDismissed(false);
+    }
   }
 
   function handleSearchBlur(): void {
+    if (suppressBlurRecordRef.current || historyPopoverOpen) {
+      suppressBlurRecordRef.current = false;
+    } else {
+      recordSearch(query, currentScope, 'blur');
+    }
     setSearchFocused(false);
+    setSearchComposing(false);
+    idlePendingRef.current = false;
     setSuggestionIndex(-1);
     setSuggestionsDismissed(false);
   }
@@ -370,12 +573,67 @@ export const Header = memo(function Header({
     setSuggestionsDismissed(false);
 
     if (input) {
-      input.focus();
+      input.focus({ preventScroll: true });
       window.requestAnimationFrame(() => {
         input.setSelectionRange(result.caret, result.caret);
       });
     }
   }, [query, searchCaret]);
+
+  const runHistoryEntry = useCallback((entry: SearchHistoryEntry): void => {
+    setHistoryPopoverOpen(false);
+    setQuery(entry.query);
+    setDeepSearch(entry.scope.deepSearch);
+    setTableFilter(entry.scope.table);
+    setUndoQuery(null);
+    setSearchCaret(entry.query.length);
+    setSuggestionIndex(-1);
+    recordSearch(entry.query, entry.scope, 'menu');
+
+    const input = searchInputRef.current;
+    if (input && isMobileViewport) {
+      suppressBlurRecordRef.current = true;
+      input.blur();
+      window.requestAnimationFrame(() => {
+        input.setSelectionRange(entry.query.length, entry.query.length);
+      });
+    } else if (input) {
+      closeMenuOnFocusRef.current = document.activeElement !== input;
+      input.focus({ preventScroll: true });
+      window.requestAnimationFrame(() => {
+        input.setSelectionRange(entry.query.length, entry.query.length);
+      });
+    }
+    setSuggestionsDismissed(true);
+  }, [isMobileViewport, recordSearch, setDeepSearch, setQuery, setTableFilter]);
+
+  function openSearchHistory(): void {
+    setSuggestionsDismissed(true);
+    setSuggestionIndex(-1);
+    setHistoryPopoverOpen(true);
+    suppressBlurRecordRef.current = true;
+    if (isMobileViewport) {
+      searchInputRef.current?.blur();
+    }
+  }
+
+  function handleAcceptMenuItem(item: SearchMenuItem): void {
+    if (item.kind === 'filter') {
+      acceptSuggestion(item.suggestion);
+      return;
+    }
+    if (item.kind === 'saved' || item.kind === 'recent') {
+      runHistoryEntry(item.entry);
+      return;
+    }
+    if (item.kind === 'history') {
+      openSearchHistory();
+      return;
+    }
+    setSuggestionsDismissed(true);
+    setSuggestionIndex(-1);
+    onOpenHelp();
+  }
 
   function handleSearchKeyDown(event: KeyboardEvent<HTMLTextAreaElement>): void {
     const input = event.currentTarget;
@@ -394,10 +652,20 @@ export const Header = memo(function Header({
     }
 
     const caret = input.selectionStart ?? input.value.length;
-    const current =
+    const currentSuggestions =
       caret === searchCaret
         ? suggestions
         : buildSearchSuggestions(query, caret, filterCatalog, tables);
+    const current =
+      caret === searchCaret
+        ? menuItems
+        : [
+            ...currentSuggestions.map((suggestion) => ({
+              kind: 'filter' as const,
+              suggestion,
+            })),
+            ...menuItems.filter((item) => item.kind !== 'filter'),
+          ];
     const open = searchFocused && !suggestionsDismissed && current.length > 0;
 
     if (event.key === 'Escape') {
@@ -410,24 +678,50 @@ export const Header = memo(function Header({
       return;
     }
 
+    if (
+      (event.key === 'Delete' || event.key === 'Backspace') &&
+      event.shiftKey &&
+      suggestionIndex >= 0 &&
+      current[suggestionIndex]?.kind === 'recent'
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      const selected = current[suggestionIndex];
+      if (selected?.kind === 'recent') {
+        useSearchHistoryStore.getState().remove(selected.entry.id);
+      }
+      setSuggestionIndex(-1);
+      return;
+    }
+
     if (event.key === 'Enter') {
       if (open && suggestionIndex >= 0 && suggestionIndex < current.length) {
         const chosen = current[suggestionIndex];
         if (chosen) {
           event.preventDefault();
           event.stopPropagation();
-          acceptSuggestion(chosen);
+          handleAcceptMenuItem(chosen);
           return;
         }
       }
       event.preventDefault();
-      if (isMobileViewport) input.blur();
+      recordSearch(query, currentScope, 'enter');
+      if (isMobileViewport) {
+        suppressBlurRecordRef.current = true;
+        input.blur();
+      }
       return;
     }
 
-    if (!open) return;
-
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      if (suggestionsDismissed && event.key === 'ArrowDown' && searchFocused && current.length > 0) {
+        event.preventDefault();
+        event.stopPropagation();
+        setSuggestionsDismissed(false);
+        setSuggestionIndex(0);
+        return;
+      }
+      if (!open) return;
       event.preventDefault();
       event.stopPropagation();
       const forward = event.key === 'ArrowDown';
@@ -440,17 +734,16 @@ export const Header = memo(function Header({
     }
 
     if (event.key === 'Tab') {
-      if (event.shiftKey) return;
-      const index =
-        suggestionIndex >= 0 && suggestionIndex < current.length ? suggestionIndex : 0;
-      const chosen = current[index];
-      if (!chosen) return;
+      if (!open || event.shiftKey) return;
+      const chosen =
+        suggestionIndex >= 0 && suggestionIndex < current.length
+          ? current[suggestionIndex]
+          : current.find((item) => item.kind === 'filter');
+      if (chosen?.kind !== 'filter') return;
       event.preventDefault();
       event.stopPropagation();
-      acceptSuggestion(chosen);
-      return;
+      acceptSuggestion(chosen.suggestion);
     }
-
   }
 
   const filtersOpen = menu?.name === 'filters';
@@ -545,7 +838,10 @@ export const Header = memo(function Header({
 
           {activePage !== 'history' && (
           <div className={styles.searchCluster}>
-            <div className={cx(styles.searchField, searchFocused && styles.searchFieldFocused)}>
+            <div
+              ref={searchFieldRef}
+              className={cx(styles.searchField, searchFocused && styles.searchFieldFocused)}
+            >
               <span className={styles.searchIconWrap} aria-hidden="true">
                 <SearchIcon size={14} className={styles.searchIcon} />
               </span>
@@ -560,6 +856,8 @@ export const Header = memo(function Header({
                 onClick={handleSearchClick}
                 onKeyDown={handleSearchKeyDown}
                 onKeyUp={handleSearchKeyUp}
+                onCompositionStart={() => setSearchComposing(true)}
+                onCompositionEnd={() => setSearchComposing(false)}
                 placeholder={
                   isMobileViewport
                     ? deepSearch
@@ -581,11 +879,31 @@ export const Header = memo(function Header({
                 }
                 autoComplete="off"
                 autoCorrect="off"
+                autoCapitalize="none"
                 spellCheck={false}
+                data-gramm="false"
+                data-gramm_editor="false"
+                data-enable-grammarly="false"
+                data-lt-active="false"
                 enterKeyHint="search"
                 wrap="soft"
               />
               <div className={styles.searchActions}>
+                {query.trim().length > 0 && (
+                  <button
+                    type="button"
+                    className={styles.saveSearch}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() =>
+                      useSearchHistoryStore.getState().toggleSaveQuery(query, currentScope)
+                    }
+                    aria-pressed={isCurrentSaved}
+                    aria-label={savedTitle}
+                    title={savedTitle}
+                  >
+                    {isCurrentSaved ? <StarFilledIcon size={13} /> : <StarIcon size={13} />}
+                  </button>
+                )}
                 {query.length > 0 ? (
                   <button
                     type="button"
@@ -629,16 +947,29 @@ export const Header = memo(function Header({
                   )}
                 </button>
               </div>
-              <SearchAutocomplete
-                id={suggestionListId}
-                suggestions={suggestions}
-                highlightIndex={activeSuggestionIndex}
-                onHighlight={setSuggestionIndex}
-                onAccept={acceptSuggestion}
-              />
+              {autocompleteOpen && (
+                <SearchAutocomplete
+                  id={suggestionListId}
+                  items={menuItems}
+                  highlightIndex={activeSuggestionIndex}
+                  onHighlight={setSuggestionIndex}
+                  onAccept={handleAcceptMenuItem}
+                  onDeleteRecent={(entry) => useSearchHistoryStore.getState().remove(entry.id)}
+                  historyCount={historyEntries.length}
+                  maxHeight={dropdownMaxHeight}
+                />
+              )}
             </div>
           </div>
           )}
+          {activePage !== 'history' &&
+            !searching &&
+            totalMatches >= 0 &&
+            (query.trim().length > 0 || hasNonDefaultFilters || deepSearch) && (
+              <span className={styles.searchDuration} aria-label="Search duration">
+                {formatSearchDuration(searchDurationMs)}
+              </span>
+            )}
 
           <Select<BungieLocale>
             align="end"
@@ -702,6 +1033,18 @@ export const Header = memo(function Header({
         </div>
 
       </header>
+
+      <SearchHistoryPopover
+        open={historyPopoverOpen}
+        onClose={() => {
+          setHistoryPopoverOpen(false);
+          suppressBlurRecordRef.current = false;
+        }}
+        anchorRef={searchFieldRef}
+        onRunEntry={runHistoryEntry}
+        onOpenHelp={onOpenHelp}
+        restoreFocus={!isMobileViewport}
+      />
 
       {brandOpen && isMobileViewport && (
         <Suspense fallback={null}>

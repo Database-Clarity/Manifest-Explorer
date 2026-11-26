@@ -85,6 +85,15 @@ export function ClearSearchInput({
   return (
     <span className={cx(styles.wrap, wrapperClassName)}>
       <input
+        // Default Grammarly / spellcheck / LanguageTool opt-out for query-like
+        // fields. Callers can override any of these through `inputProps`.
+        autoCapitalize="none"
+        spellCheck={false}
+        autoCorrect="off"
+        data-gramm="false"
+        data-gramm_editor="false"
+        data-enable-grammarly="false"
+        data-lt-active="false"
         {...inputProps}
         ref={inputRef}
         type="search"

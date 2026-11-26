@@ -28,6 +28,31 @@ export {
 
 export const CHANGELOG: readonly ChangelogEntry[] = [
   {
+    version: '2026.11.26-5',
+    date: 'Nov 26, 2026',
+    title: 'Search history, saved & named searches, independent 3-pane resizing & Diff polish',
+    summary: 'Added DIM-style search history with pinned and named searches, fixed multiline search clipping, made Tables and Results widths independent with smooth zero-deadzone resizing, and polished Diff layout and scrolling.',
+    sections: [
+      {
+        heading: 'Search history, saved searches & search bar polish',
+        items: [
+          'Added search history directly to the search bar: focusing shows a compact single-line dropdown of your saved and recent searches, with a "Search history…" popover for browsing the full scrollable list (wrapping long queries up to 3 lines), sorting by Recent, Most used, or A–Z, starring/pinning, naming searches, and clearing recent history while keeping saved searches.',
+          'Fixed long multiline search queries clipping above the header or shifting the workspace downward, and turned off spellcheck and Grammarly underlines in search inputs.',
+          'Added keyboard undo (Ctrl+Z / Cmd+Z) after clicking any search bar clear button, and debounced search URL updates until typing settles.',
+          'Moved the search timing indicator beside the search bar on wide screens (hiding it cleanly on narrower viewports) so the Results header stays uncluttered.',
+        ],
+      },
+      {
+        heading: 'Independent 3-pane resizing & Diff polish',
+        items: [
+          'Gave the Tables rail and Results pane independent widths that both resize against the Inspector pane instead of stealing space from each other, lowered the minimum Results width to 280px for a tighter single-column layout, and fixed the resize drag deadzone.',
+          'Kept the Results header Diff shortcut from getting hidden behind the sort dropdown when the Tables rail is open.',
+          'Extended the Diff tab viewer all the way to the bottom of the pane, added item icons beside names in the Base and Target selectors, and restored smooth scroll chaining when scrolling past the top or bottom of inline Diff cards and popovers.',
+        ],
+      },
+    ],
+  },
+  {
     version: '2026.11.26-4',
     date: 'Nov 26, 2026',
     title: 'Diff bucket, top-level Diff tab, smarter inline diffs & unnamed hash pills',

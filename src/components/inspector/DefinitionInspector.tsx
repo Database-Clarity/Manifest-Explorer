@@ -10,6 +10,7 @@ import {
   useState,
   type PointerEvent,
   type ReactNode,
+  type RefObject,
   type UIEvent,
 } from 'react';
 import type {
@@ -23,7 +24,12 @@ import type {
 import { toSignedHash, toUnsignedHash } from '../../manifest/hash';
 import { getShortTableName } from '../../manifest/tables';
 import { fallbackEntryLabel, useExplorerStore } from '../../stores/explorer';
-import { useSettingsStore } from '../../stores/settings';
+import {
+  RESULTS_WIDTH_MIN,
+  clampResultsWidth,
+  maxResultsWidth,
+  useSettingsStore,
+} from '../../stores/settings';
 import {
   ArrowLeftIcon,
   ArrowRightIcon,
@@ -104,8 +110,20 @@ function isDefinitionEnhanced(data: Record<string, unknown> | undefined): boolea
 }
 
 export interface DefinitionInspectorProps {
+  /**
+   * Live rendered width of the results pane. The separator drags this value
+   * directly, so the inspector simply absorbs whatever space is left.
+   */
   width: number;
   onResize: (width: number) => void;
+  /** Upper bound for the results pane that keeps the inspector >= 384px. */
+  resultsMaxWidth?: number;
+  /** Ref to the live results pane, used to measure the rendered width. */
+  resultsPaneRef?: RefObject<HTMLElement | null>;
+  /** Measured width of the workspace flex row (0 while unmeasured). */
+  workspaceWidth?: number;
+  /** Effective width of the tables rail (collapsed rail is 1rem). */
+  railWidth?: number;
   currentRef: DefinitionRef | null;
   detail: DefinitionDetailPayload | null;
   loading: boolean;
@@ -146,6 +164,10 @@ const TABS: ReadonlyArray<{ id: InspectorViewTab; label: string; shortLabel: str
 function DefinitionInspectorImpl({
   width,
   onResize,
+  resultsMaxWidth,
+  resultsPaneRef,
+  workspaceWidth = 0,
+  railWidth = 0,
   currentRef,
   detail,
   loading,
@@ -206,7 +228,12 @@ function DefinitionInspectorImpl({
   const activeEntry =
     historyIndex >= 0 ? history[historyIndex] : undefined;
 
-  const dragStartRef = useRef<{ x: number; startWidth: number } | null>(null);
+  const dragStartRef = useRef<{
+    x: number;
+    startWidth: number;
+    width: number;
+  } | null>(null);
+  const paneRef = useRef<HTMLElement | null>(null);
   const tabPanelRef = useRef<HTMLDivElement | null>(null);
   const sessionTabsScrollRef = useRef<HTMLDivElement | null>(null);
   const activeSessionTabRef = useRef<HTMLDivElement | null>(null);
@@ -462,25 +489,59 @@ function DefinitionInspectorImpl({
     [pushNotice],
   );
 
+  const liveResultsMaxWidth = useMemo(
+    () =>
+      Math.max(
+        RESULTS_WIDTH_MIN,
+        resultsMaxWidth ?? maxResultsWidth(workspaceWidth, railWidth),
+      ),
+    [railWidth, resultsMaxWidth, workspaceWidth],
+  );
+
   const handleResizePointerDown = useCallback(
     (event: PointerEvent<HTMLDivElement>) => {
       event.preventDefault();
       const target = event.currentTarget;
       target.setPointerCapture(event.pointerId);
-      dragStartRef.current = { x: event.clientX, startWidth: width };
+
+      // Start from the LIVE rendered width, not the persisted prop: CSS clamps
+      // (or a narrowed window) can leave the stored value far above what the
+      // user actually sees, which used to create a huge drag deadzone before
+      // the pane started moving. Measuring the sibling DOM node guarantees the
+      // first pixel of movement maps 1:1 onto the rendered pane.
+      const previousSibling = paneRef.current?.previousElementSibling;
+      const measured =
+        resultsPaneRef?.current?.getBoundingClientRect().width ??
+        (previousSibling instanceof HTMLElement
+          ? previousSibling.getBoundingClientRect().width
+          : 0);
+      const startWidth =
+        Number.isFinite(measured) && measured > 0
+          ? Math.round(measured)
+          : clampResultsWidth(width, liveResultsMaxWidth);
+      dragStartRef.current = { x: event.clientX, startWidth, width: startWidth };
     },
-    [width],
+    [liveResultsMaxWidth, resultsPaneRef, width],
   );
 
   const handleResizePointerMove = useCallback(
     (event: PointerEvent<HTMLDivElement>) => {
-      if (!dragStartRef.current) {
+      const drag = dragStartRef.current;
+      if (!drag) {
         return;
       }
-      const delta = dragStartRef.current.x - event.clientX;
-      onResize(dragStartRef.current.startWidth + delta);
+      // Dragging right widens the results list (and narrows the inspector).
+      const nextWidth = clampResultsWidth(
+        drag.startWidth + (event.clientX - drag.x),
+        liveResultsMaxWidth,
+      );
+      if (nextWidth === drag.width) {
+        return;
+      }
+      drag.width = nextWidth;
+      onResize(nextWidth);
     },
-    [onResize],
+    [liveResultsMaxWidth, onResize],
   );
 
   const handleResizePointerUp = useCallback(() => {
@@ -635,8 +696,8 @@ function DefinitionInspectorImpl({
 
   return (
     <aside
+      ref={paneRef}
       className={`${styles.pane} ${inspectorMaximized ? styles.paneMaximized : ''}`}
-      style={{ '--inspector-w': `${width}px` } as React.CSSProperties}
       aria-label="Definition inspector"
     >
       {!inspectorMaximized && (
@@ -644,19 +705,33 @@ function DefinitionInspectorImpl({
           className={styles.resizeHandle}
           role="separator"
           aria-orientation="vertical"
-          aria-label="Resize inspector pane"
+          aria-label="Resize results pane"
+          aria-valuemin={RESULTS_WIDTH_MIN}
+          aria-valuemax={liveResultsMaxWidth}
+          aria-valuenow={Math.round(width)}
+          aria-valuetext={`${Math.round(width)} pixels wide`}
           tabIndex={0}
           onPointerDown={handleResizePointerDown}
           onPointerMove={handleResizePointerMove}
           onPointerUp={handleResizePointerUp}
+          onPointerCancel={handleResizePointerUp}
+          onLostPointerCapture={handleResizePointerUp}
           onKeyDown={(e) => {
             const step = e.shiftKey ? 32 : 8;
+            // ArrowRight makes the results list wider and the inspector
+            // narrower, matching the physical drag direction.
             if (e.key === 'ArrowLeft') {
               e.preventDefault();
-              onResize(width + step);
+              onResize(clampResultsWidth(width - step, liveResultsMaxWidth));
             } else if (e.key === 'ArrowRight') {
               e.preventDefault();
-              onResize(width - step);
+              onResize(clampResultsWidth(width + step, liveResultsMaxWidth));
+            } else if (e.key === 'Home') {
+              e.preventDefault();
+              onResize(RESULTS_WIDTH_MIN);
+            } else if (e.key === 'End') {
+              e.preventDefault();
+              onResize(liveResultsMaxWidth);
             }
           }}
         />

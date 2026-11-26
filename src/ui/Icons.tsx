@@ -285,6 +285,44 @@ export function BookmarkIcon(props: IconProps): ReactNode {
   );
 }
 
+export function StarIcon(props: IconProps): ReactNode {
+  return (
+    <IconFrame {...props}>
+      <path d="M8 2.3l1.72 3.5 3.86.56-2.79 2.72.66 3.84L8 11.1l-3.45 1.82.66-3.84L2.42 6.36l3.86-.56L8 2.3Z" />
+    </IconFrame>
+  );
+}
+
+export function StarFilledIcon(props: IconProps): ReactNode {
+  return (
+    <IconFrame {...props}>
+      <path
+        d="M8 2.3l1.72 3.5 3.86.56-2.79 2.72.66 3.84L8 11.1l-3.45 1.82.66-3.84L2.42 6.36l3.86-.56L8 2.3Z"
+        fill="currentColor"
+        stroke="none"
+      />
+    </IconFrame>
+  );
+}
+
+export function ClockIcon(props: IconProps): ReactNode {
+  return (
+    <IconFrame {...props}>
+      <circle cx="8" cy="8" r="5.5" />
+      <path d="M8 4.5V8l2.4 1.4" />
+    </IconFrame>
+  );
+}
+
+export function PencilIcon(props: IconProps): ReactNode {
+  return (
+    <IconFrame {...props}>
+      <path d="M11.1 2.5 13.5 4.9 5.9 12.5 3 13l.5-2.9 7.6-7.6Z" />
+      <path d="m9.9 3.7 2.4 2.4" />
+    </IconFrame>
+  );
+}
+
 export function HelpIcon(props: IconProps): ReactNode {
   return (
     <IconFrame {...props}>

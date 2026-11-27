@@ -375,31 +375,36 @@
 @media (max-width: 640px) {
   .compareHeader {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) var(--tap);
-    gap: 0.375rem;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    gap: 0.1875rem;
+    padding: 0.375rem 0.375rem;
   }
 
   .selectGroup {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 0.125rem;
-  }
+    min-width: 0;
+    gap: 0;
 
-  .selectGroup:nth-of-type(2) {
-    grid-column: 1;
-    grid-row: 2;
+    > span {
+      display: none;
+    }
   }
 
   .swapButton {
-    grid-column: 2;
-    grid-row: 1 / span 2;
     align-self: center;
     width: var(--tap);
     height: var(--tap);
     min-height: var(--tap);
   }
 
-  .itemSelect {
+  // Buy the BASE/TARGET triggers a few more text pixels at phone widths:
+  // tighter trigger internals plus the reduced header gutters above. Swap
+  // keeps the full --tap square, so the middle column never gets crowded.
+  .triggerValue {
+    gap: 0.25rem;
+  }
+
+  .itemSelect.itemSelect {
     width: 100%;
+    padding-inline: 0.375rem;
   }
 }

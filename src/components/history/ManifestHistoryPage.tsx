@@ -471,7 +471,14 @@ const ReleaseOverview = memo(function ReleaseOverview({
     >
       <header className={styles.releaseHeader}>
         <div>
-          <h2 className={styles.releaseHeading}>
+          <h2
+            className={styles.releaseHeading}
+            title={
+              release.version
+                ? `Bungie version ${release.version}`
+                : `Version index ${release.v}`
+            }
+          >
             <span>{formatDate(releaseDate)}</span>
             {resolveManifestReleaseName(releaseDate) && (
               <span className={styles.releaseBadge}>

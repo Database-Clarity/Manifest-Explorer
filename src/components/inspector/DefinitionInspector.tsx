@@ -740,6 +740,16 @@ function DefinitionInspectorImpl({
       {/* Open-definitions tab strip with tab-group sharing */}
       {(sessions.length >= 1 || diffTabOpen) && (
         <div className={styles.sessionBar} role="tablist" aria-label="Open definitions">
+          <button
+            type="button"
+            className={styles.sessionBackBtn}
+            onClick={handleMobileBackToResults}
+            aria-label="Back to results"
+            title="Back to results"
+          >
+            <ArrowLeftIcon size={15} />
+            <span>Results</span>
+          </button>
           {diffTabOpen ? (
             <div
               className={`${styles.sessionTab} ${styles.pinnedDiffTab} ${
@@ -1067,7 +1077,7 @@ function DefinitionInspectorImpl({
             <>
               <button
                 type="button"
-                className={`${styles.iconBtn} ${styles.diffSessionAction} ${styles.desktopCloseBtn}`}
+                className={`${styles.iconBtn} ${styles.sessionAction} ${styles.desktopCloseBtn}`}
                 onClick={toggleInspectorMaximized}
                 aria-label={inspectorMaximized ? 'Restore split view' : 'Maximize inspector'}
                 title={inspectorMaximized ? 'Restore split view' : 'Maximize inspector'}
@@ -1076,7 +1086,7 @@ function DefinitionInspectorImpl({
               </button>
               <button
                 type="button"
-                className={`${styles.iconBtn} ${styles.diffSessionAction} ${styles.desktopCloseBtn}`}
+                className={`${styles.iconBtn} ${styles.sessionAction} ${styles.desktopCloseBtn}`}
                 onClick={() => {
                   closeDiffTab();
                   setDiffBucketPopoverOpen(false);
@@ -1088,67 +1098,38 @@ function DefinitionInspectorImpl({
                 <CloseIcon size={14} />
               </button>
             </>
-          ) : null}
+          ) : (
+            <>
+              <button
+                type="button"
+                className={`${styles.iconBtn} ${styles.sessionAction} ${styles.desktopCloseBtn}`}
+                onClick={toggleInspectorMaximized}
+                aria-label={inspectorMaximized ? 'Restore split view' : 'Maximize inspector'}
+                title={inspectorMaximized ? 'Restore split view' : 'Maximize inspector'}
+              >
+                {inspectorMaximized ? <MinimizeIcon size={14} /> : <MaximizeIcon size={14} />}
+              </button>
+              <button
+                type="button"
+                className={`${styles.iconBtn} ${styles.sessionAction} ${styles.desktopCloseBtn}`}
+                onClick={() =>
+                  sessions.length > 1 ? closeSession(activeSessionIndex) : closeInspector()
+                }
+                aria-label={sessions.length > 1 ? 'Close tab' : 'Close inspector'}
+                title={sessions.length > 1 ? 'Close tab (Alt+W)' : 'Close inspector (Esc)'}
+              >
+                <CloseIcon size={14} />
+              </button>
+            </>
+          )}
         </div>
       )}
 
-      {diffTabActive ? (
-        <div className={`${styles.navBar} ${styles.diffNavBar}`}>
-          <button
-            type="button"
-            className={styles.mobileBackBtn}
-            onClick={handleMobileBackToResults}
-            aria-label="Back to results"
-            title="Back to results"
-          >
-            <ArrowLeftIcon size={15} />
-            <span>Results</span>
-          </button>
-          <button
-            type="button"
-            ref={diffBucketTriggerRef}
-            className={`${styles.iconBtn} ${styles.diffMobileBucketButton}`}
-            aria-haspopup="dialog"
-            aria-expanded={diffBucketPopoverOpen}
-            onClick={(event) => {
-              diffBucketTriggerRef.current = event.currentTarget;
-              setDiffBucketPopoverOpen((open) => !open);
-            }}
-            aria-label={`Open Diff bucket, ${bucketItems.length} items`}
-            title="Open Diff bucket"
-          >
-            <DiffIcon size={13} />
-            <span>Bucket ({bucketItems.length})</span>
-          </button>
-          <button
-            type="button"
-            className={`${styles.iconBtn} ${styles.diffMobileCloseButton}`}
-            onClick={() => {
-              closeDiffTab();
-              setDiffBucketPopoverOpen(false);
-              if (sessions.length === 0) setMobileInspectorOpen(false);
-            }}
-            aria-label="Close Diff tab"
-            title="Close Diff tab"
-          >
-            <CloseIcon size={14} />
-          </button>
-        </div>
-      ) : currentRef ? (
+      {!diffTabActive && currentRef && history.length > 1 ? (
       <>
       {/* Unified History / Current / Future timeline banner */}
       <div className={styles.navBar}>
         <div className={styles.navButtons}>
-          <button
-            type="button"
-            className={styles.mobileBackBtn}
-            onClick={handleMobileBackToResults}
-            aria-label="Back to results"
-            title="Back to results"
-          >
-            <ArrowLeftIcon size={15} />
-            <span>Results</span>
-          </button>
           <button
             type="button"
             className={styles.iconBtn}
@@ -1230,28 +1211,6 @@ function DefinitionInspectorImpl({
             );
           })}
         </nav>
-
-        <button
-          type="button"
-          className={`${styles.iconBtn} ${styles.desktopCloseBtn}`}
-          onClick={toggleInspectorMaximized}
-          aria-label={inspectorMaximized ? 'Restore split view' : 'Maximize inspector'}
-          title={inspectorMaximized ? 'Restore split view' : 'Maximize inspector'}
-        >
-          {inspectorMaximized ? <MinimizeIcon size={14} /> : <MaximizeIcon size={14} />}
-        </button>
-
-        <button
-          type="button"
-          className={`${styles.iconBtn} ${styles.desktopCloseBtn}`}
-          onClick={() =>
-            sessions.length > 1 ? closeSession(activeSessionIndex) : closeInspector()
-          }
-          aria-label={sessions.length > 1 ? 'Close tab' : 'Close inspector'}
-          title={sessions.length > 1 ? 'Close tab (Alt+W)' : 'Close inspector (Esc)'}
-        >
-          <CloseIcon size={14} />
-        </button>
       </div>
       </>
       ) : null}
@@ -1276,7 +1235,9 @@ function DefinitionInspectorImpl({
               )}
             </div>
             <div className={styles.entityMetaRow}>
-              <span className={styles.tableLabel}>{currentRef.table}</span>
+              <span className={styles.tableLabel} title={currentRef.table}>
+                {getShortTableName(currentRef.table)}
+              </span>
               {itemSubtitle && itemSubtitle !== getShortTableName(currentRef.table) && (
                 <span
                   className={styles.subLabel}
@@ -1355,37 +1316,41 @@ function DefinitionInspectorImpl({
                   <span>{currentInBucket ? 'In Diff' : 'Diff'}</span>
                 </button>
               ) : null}
+              {/* Same-hash cross-table switcher, folded inline to avoid a full row. */}
+              {detail && detail.coTables.length > 0 && (
+                <span
+                  className={styles.coTableInline}
+                  role="group"
+                  aria-label="Same hash in other tables"
+                >
+                  <span className={styles.coTableLabel}>Also in:</span>
+                  {detail.coTables.map((table) => (
+                    <button
+                      key={table}
+                      type="button"
+                      className={styles.coTableBtn}
+                      title={table}
+                      onClick={(e) =>
+                        navigateWithFlush(
+                          { table, hash: unsignedHash },
+                          e.ctrlKey || e.metaKey || e.shiftKey,
+                        )
+                      }
+                      onMouseDown={preventMiddleClickAutoScroll}
+                      onAuxClick={(e) => {
+                        activateOnMiddleClick(e, () =>
+                          navigateWithFlush({ table, hash: unsignedHash }, true),
+                        );
+                      }}
+                    >
+                      {getShortTableName(table)}
+                    </button>
+                  ))}
+                </span>
+              )}
             </div>
           </div>
         </div>
-
-        {/* Same-hash cross-table switcher */}
-        {detail && detail.coTables.length > 0 && (
-          <div className={styles.coTableStrip} aria-label="Same hash in other tables">
-            <span className={styles.coTableLabel}>Also in:</span>
-            {detail.coTables.map((table) => (
-              <button
-                key={table}
-                type="button"
-                className={styles.coTableBtn}
-                onClick={(e) =>
-                  navigateWithFlush(
-                    { table, hash: unsignedHash },
-                    e.ctrlKey || e.metaKey || e.shiftKey,
-                  )
-                }
-                onMouseDown={preventMiddleClickAutoScroll}
-                onAuxClick={(e) => {
-                  activateOnMiddleClick(e, () =>
-                    navigateWithFlush({ table, hash: unsignedHash }, true),
-                  );
-                }}
-              >
-                {getShortTableName(table)}
-              </button>
-            ))}
-          </div>
-        )}
       </div>
       ) : null}
 
@@ -1420,6 +1385,30 @@ function DefinitionInspectorImpl({
             </button>
           );
         })}
+        {detail && activeViewTab === 'raw' ? (
+          <div className={styles.tabBarActions}>
+            <button
+              type="button"
+              className={styles.actionBtn}
+              onClick={() => copyText(rawJsonText, 'Copied raw JSON')}
+              aria-label="Copy JSON"
+              title="Copy JSON"
+            >
+              <CopyIcon size={13} />
+              <span className={styles.actionLabel}>Copy JSON</span>
+            </button>
+            <button
+              type="button"
+              className={styles.actionBtn}
+              onClick={handleDownloadJson}
+              aria-label="Download .json"
+              title="Download .json"
+            >
+              <DownloadIcon size={13} />
+              <span className={styles.actionLabel}>Download .json</span>
+            </button>
+          </div>
+        ) : null}
       </div>
       ) : null}
 

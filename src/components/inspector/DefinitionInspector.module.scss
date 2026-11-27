@@ -10,6 +10,8 @@
   display: flex;
   flex-direction: column;
   min-height: 0;
+  container-name: inspector-pane;
+  container-type: inline-size;
   background: var(--page);
   border-left: 1px solid var(--line);
 
@@ -124,20 +126,23 @@
   }
 }
 
-.diffSessionAction {
+.sessionAction {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
   width: 2rem;
+  height: 100%;
   padding: 0;
   border: 0;
   border-left: 1px solid var(--hair);
   border-radius: 0;
   background: var(--col);
+  color: var(--text2);
 
   &:hover {
     background: var(--hover);
+    color: var(--text);
   }
 
   @media (max-width: 900px) {
@@ -548,12 +553,40 @@
   flex-shrink: 0;
 }
 
-.mobileBackBtn {
-  @include ctl.button;
+.sessionBackBtn {
+  @include ctl.contain-focus-rings;
   display: none;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  flex: 0 0 auto;
+  align-self: stretch;
+  height: 100%;
+  padding: 0 0.625rem;
+  border: 0;
+  border-right: 1px solid var(--hair);
+  background: var(--col);
+  color: var(--text2);
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+
+  @media (hover: hover) {
+    &:hover {
+      color: var(--text);
+      background: var(--hover);
+    }
+  }
+
+  &:focus-visible {
+    @include ctl.focus-ring;
+  }
 
   @media (max-width: 900px) {
     display: inline-flex;
+    min-width: var(--tap);
   }
 }
 
@@ -748,19 +781,25 @@
 .entityMetaRow {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 0.25rem 0.5rem;
   font-size: 0.75rem;
+  min-width: 0;
 }
 
 .tableLabel {
+  flex-shrink: 0;
   color: var(--text2);
   font-family: var(--code-font-family);
 }
 
 .subLabel {
+  min-width: 0;
+  overflow: hidden;
   color: var(--text2);
   font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .parentArtifactBtn {
@@ -880,15 +919,17 @@
   @include ctl.button;
 }
 
-.coTableStrip {
+.coTableInline {
   @include ctl.contain-focus-rings;
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 0.25rem;
   flex-wrap: wrap;
+  gap: 0.25rem;
+  min-width: 0;
+  margin-left: 0.25rem;
+  padding-left: 0.5rem;
+  border-left: 1px solid var(--hair);
   font-size: 0.75rem;
-  padding-top: 0.25rem;
-  border-top: 1px solid var(--hair);
 }
 
 .coTableLabel {
@@ -950,6 +991,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex: 0 0 auto;
   min-width: 0;
   min-height: 2rem;
   padding: 0 0.6875rem;
@@ -1025,49 +1067,53 @@
   display: none !important;
 }
 
-.diffNavBar {
-  gap: 0.375rem;
-
-  @media (min-width: 901px) {
-    display: none;
-  }
-}
-
-.diffMobileBucketButton,
-.diffMobileCloseButton {
-  flex: 0 0 auto;
-  height: var(--tap);
-  min-height: var(--tap);
-
-  @media (min-width: 901px) {
-    display: none;
-  }
-}
-
-.diffMobileBucketButton {
+.tabBarActions {
+  position: sticky;
+  right: 0;
+  display: flex;
+  align-items: center;
   gap: 0.25rem;
+  flex: 0 0 auto;
   margin-left: auto;
-  padding-inline: 0.375rem;
-  font-size: 0.75rem;
-  background: var(--ctl);
-  border-color: var(--ctl-edge);
-  color: var(--text);
+  padding: 0 0.375rem;
+  background: var(--chrome);
+  border-left: 1px solid var(--hair);
 
-  @media (hover: hover) {
-    &:hover:not(:disabled) {
-      background: var(--ctl-hover);
-      border-color: var(--ctl-hover-edge);
-    }
+  .actionBtn {
+    min-height: 1.5rem;
+    padding: 0 0.5rem;
+    font-size: 0.75rem;
   }
 
-  @media (max-width: 900px) {
-    min-width: 0;
+  @media (max-width: 700px) {
+    display: none;
   }
 }
 
-.diffMobileCloseButton {
-  min-width: var(--tap);
-  padding-inline: 0.375rem;
+@container inspector-pane (max-width: 44rem) {
+  .tabBarActions .actionBtn {
+    box-sizing: border-box;
+    flex: 0 0 1.75rem;
+    width: 1.75rem;
+    min-width: 1.75rem;
+    height: 1.75rem;
+    min-height: 1.75rem;
+    padding: 0;
+  }
+
+  .tabBarActions .actionLabel {
+    display: none;
+  }
+}
+
+@container inspector-pane (max-width: 34rem) {
+  .tabLabelFull {
+    display: none;
+  }
+
+  .tabLabelShort {
+    display: inline-block;
+  }
 }
 
 .tabPanelSlot {
@@ -1113,6 +1159,11 @@
   background: var(--col);
   border-bottom: 1px solid var(--hair);
   flex-shrink: 0;
+
+  // Desktop folds these actions into the empty right side of `.tabBar`.
+  @media (min-width: 701px) {
+    display: none;
+  }
 
   .actionBtn {
     font-size: 0.75rem;

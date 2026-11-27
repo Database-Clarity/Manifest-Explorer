@@ -131,11 +131,33 @@ async function waitForCapturePaint(page) {
   await page.locator('footer[aria-label="Manifest status"] [role="status"]')
     .filter({ hasText: 'Ready' })
     .waitFor({ timeout: 90_000 });
+  await delay(600);
   await page.evaluate(async () => {
     await document.fonts.ready;
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      const visibleImages = [...document.images].filter((image) => {
+        const bounds = image.getBoundingClientRect();
+        return bounds.width > 0 && bounds.height > 0 && (image.currentSrc || image.getAttribute('src'));
+      });
+      const pending = visibleImages.filter((image) => !image.complete);
+      if (pending.length === 0) break;
+      await Promise.race([
+        Promise.all(
+          pending.map(
+            (image) =>
+              new Promise((resolve) => {
+                image.addEventListener('load', resolve, { once: true });
+                image.addEventListener('error', resolve, { once: true });
+              }),
+          ),
+        ),
+        new Promise((resolve) => setTimeout(resolve, 1500)),
+      ]);
+    }
     const visibleImages = [...document.images].filter((image) => {
       const bounds = image.getBoundingClientRect();
-      return bounds.width > 0 && bounds.height > 0 && image.currentSrc;
+      return bounds.width > 0 && bounds.height > 0 && (image.currentSrc || image.getAttribute('src'));
     });
     await Promise.all(
       visibleImages.map((image) =>
@@ -152,7 +174,7 @@ async function waitForCapturePaint(page) {
       return (
         bounds.width > 0 &&
         bounds.height > 0 &&
-        image.currentSrc &&
+        (image.currentSrc || image.getAttribute('src')) &&
         (!image.complete || image.naturalWidth === 0)
       );
     }).length,

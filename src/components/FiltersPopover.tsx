@@ -16,6 +16,7 @@ import { ClearSearchInput } from '../ui/ClearSearchInput';
 import { Popover } from '../ui/Popover';
 import {
   clearQueryFilterTokens,
+  countQueryFilterTokens,
   hasQueryToken,
   toggleQueryToken,
   toggleQueryTokenInGroup,
@@ -400,6 +401,20 @@ function FiltersPopoverBody({
   const fuzzinessTier = fuzzinessLevel(fuzziness);
   const tableScoped = tableFilter !== 'all' || hasPositiveTableScopeInQuery(query);
   const effectiveIncludeUnnamed = isUnnamedIncluded(filters, query);
+  // Reset used to sit in the header even with nothing to clear. Only offer it
+  // when a store filter, table scope, unnamed override, or query filter token
+  // would actually change.
+  const hasResettableFilters =
+    tableFilter !== 'all' ||
+    filters.tierTypes.length > 0 ||
+    filters.damageTypes.length > 0 ||
+    filters.classTypes.length > 0 ||
+    filters.itemTypes.length > 0 ||
+    filters.itemCategoryHashes.length > 0 ||
+    filters.includeUnnamed ||
+    filters.onlyRedacted ||
+    filters.unnamedMode !== 'auto' ||
+    countQueryFilterTokens(query) > 0;
 
   function refreshPinnedSources(): void {
     setPinnedSources(
@@ -650,9 +665,11 @@ function FiltersPopoverBody({
               </div>
             )}
           </div>
-          <button type="button" className={styles.resetBtn} onClick={handleReset}>
-            Reset filters
-          </button>
+          {hasResettableFilters ? (
+            <button type="button" className={styles.resetBtn} onClick={handleReset}>
+              Reset filters
+            </button>
+          ) : null}
         </div>
 
         <section className={cx(styles.group, styles.tableGroup)}>

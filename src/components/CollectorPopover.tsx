@@ -277,55 +277,61 @@ function CollectorPopoverBody({ open, onClose, anchorRef }: CollectorPopoverProp
             ))}
           </div>
         ) : (
-          <p className={styles.empty}>
-            No collected items yet. Use “Collect current item” for the open definition, or turn on
-            collect mode and click results.
-          </p>
+          <div className={styles.empty}>
+            <p className={styles.emptyTitle}>No collected items yet</p>
+            <p className={styles.emptyHint}>
+              Collect the open definition or turn on collect mode.
+            </p>
+          </div>
         )}
 
-        <div className={styles.exportRow}>
-          <label className={styles.exportLabel} htmlFor="collector-export-format">
-            Export format
-          </label>
-          <Select<CollectorExportFormat>
-            id="collector-export-format"
-            className={styles.exportSelect}
-            minPopupWidth="11rem"
-            value={format}
-            onChange={setFormat}
-            options={EXPORT_OPTIONS.map(([value, label]) => ({ value, label }))}
-          />
-        </div>
+        {/* Export controls do nothing without items, so the empty popover stays
+            a short headline + hint instead of showing ~76px of dead UI. */}
+        {items.length > 0 ? (
+          <>
+            <div className={styles.exportRow}>
+              <label className={styles.exportLabel} htmlFor="collector-export-format">
+                Export format
+              </label>
+              <Select<CollectorExportFormat>
+                id="collector-export-format"
+                className={styles.exportSelect}
+                minPopupWidth="11rem"
+                value={format}
+                onChange={setFormat}
+                options={EXPORT_OPTIONS.map(([value, label]) => ({ value, label }))}
+              />
+            </div>
 
-        <div className={styles.actions}>
-          {items.length > 0 ? (
-            <button
-              type="button"
-              className={styles.sendDiffBtn}
-              onClick={handleSendToDiff}
-              title="Add all collected items to the Diff bucket"
-            >
-              <DiffIcon size={12} />
-              Send to Diff
-            </button>
-          ) : null}
-          <button
-            type="button"
-            className={styles.primaryAction}
-            onClick={() => {
-              void handleCopy();
-            }}
-          >
-            Copy export
-          </button>
-          <button type="button" className={styles.actionBtn} onClick={handleDownload}>
-            <DownloadIcon size={12} />
-            Download
-          </button>
-          <button type="button" className={styles.clearBtn} onClick={handleClear}>
-            Clear
-          </button>
-        </div>
+            <div className={styles.actions}>
+              <button
+                type="button"
+                className={styles.sendDiffBtn}
+                onClick={handleSendToDiff}
+                title="Add all collected items to the Diff bucket"
+              >
+                <DiffIcon size={12} />
+                Send to Diff
+              </button>
+              <button
+                type="button"
+                className={styles.primaryAction}
+                onClick={() => {
+                  void handleCopy();
+                }}
+              >
+                Copy export
+              </button>
+              <button type="button" className={styles.actionBtn} onClick={handleDownload}>
+                <DownloadIcon size={12} />
+                Download
+              </button>
+              <button type="button" className={styles.clearBtn} onClick={handleClear}>
+                Clear
+              </button>
+            </div>
+          </>
+        ) : null}
       </div>
     </Popover>
   );

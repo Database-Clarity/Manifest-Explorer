@@ -208,12 +208,14 @@ export const ReferencesTab = memo(function ReferencesTab({
   return (
     <div className={styles.scrollBody} data-inspector-scroll="true">
       {response && (
-        <div className={styles.metaHeader}>
+        <div
+          className={styles.metaHeader}
+          title={`Scan finished in ${response.durationMs.toFixed(0)} ms`}
+        >
           <span>
             {response.references.length} referencing{' '}
             {response.references.length === 1 ? 'definition' : 'definitions'} across{' '}
-            {response.scannedTables.length} loaded tables ({response.durationMs.toFixed(0)}{' '}
-            ms)
+            {response.scannedTables.length} loaded tables
           </span>
         </div>
       )}

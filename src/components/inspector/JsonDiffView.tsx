@@ -4,7 +4,12 @@ import {
   groupJsonDiffLines,
   type JsonDiffLine,
 } from '../../manifest/lineDiff';
-import { ArrowDownIcon, ArrowUpIcon } from '../../ui/Icons';
+import {
+  ArrowDownIcon,
+  ArrowUpIcon,
+  CopyIcon,
+  DownloadIcon,
+} from '../../ui/Icons';
 import styles from './JsonDiffView.module.scss';
 
 export interface JsonDiffViewProps {
@@ -646,7 +651,8 @@ export const JsonDiffView = memo(function JsonDiffView({
           <span className={styles.summary}>
             <strong className={styles.addedCount}>+{diff.added}</strong>
             <span aria-hidden="true"> / </span>
-            <strong className={styles.removedCount}>−{diff.removed}</strong> lines
+            <strong className={styles.removedCount}>−{diff.removed}</strong>
+            <span className={styles.summaryLabel}> lines</span>
           </span>
         </div>
         <div className={styles.toolbarActions}>
@@ -697,12 +703,26 @@ export const JsonDiffView = memo(function JsonDiffView({
             {expandAll ? 'Collapse unchanged' : 'Expand all'}
           </button>
           {onCopy && (
-            <button type="button" className={styles.toolbarBtn} onClick={copyDiff}>
-              Copy
+            <button
+              type="button"
+              className={`${styles.toolbarBtn} ${styles.iconToolbarBtn}`}
+              onClick={copyDiff}
+              aria-label="Copy JSON diff"
+              title="Copy JSON diff"
+            >
+              <CopyIcon size={14} />
+              <span className={styles.btnLabel}>Copy</span>
             </button>
           )}
-          <button type="button" className={styles.toolbarBtn} onClick={downloadJson}>
-            Download .json
+          <button
+            type="button"
+            className={`${styles.toolbarBtn} ${styles.iconToolbarBtn}`}
+            onClick={downloadJson}
+            aria-label="Download JSON snapshot"
+            title="Download JSON snapshot"
+          >
+            <DownloadIcon size={14} />
+            <span className={styles.btnLabel}>Download .json</span>
           </button>
         </div>
       </div>

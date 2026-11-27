@@ -28,6 +28,29 @@ export {
 
 export const CHANGELOG: readonly ChangelogEntry[] = [
   {
+    version: '2026.11.27-2',
+    date: 'Nov 27, 2026',
+    title: 'More workspace, less chrome',
+    summary: 'Reclaimed vertical and horizontal screen space across the Inspector, Results Grid, Diff, Popovers, and /history — keeping toolbars on single rows and showing more entries and code at once.',
+    sections: [
+      {
+        heading: 'Inspector, Diff & Lightbox density',
+        items: [
+          'Removed the empty Inspector navigation bar when a tab has no back/forward trail (moving Maximize, Close, and mobile Results into the tab strip), folded "Also in" co-table links inline beside the hash, and moved desktop Raw Copy/Download actions into the tab bar.',
+          'Compacted the mobile Diff Base/Swap/Target header onto one row, switched Diff and Formatted JSON toolbar actions to crisp icon buttons at narrow widths so toolbars stay single-row, and tightened the mobile Image Lightbox controls into two clean rows.',
+          'Tightened the mobile Inspector History header and cards (starting cards collapsed on phones so you can scan revisions first), and moved References scan duration into a tooltip.',
+        ],
+      },
+      {
+        heading: 'Results Grid, Popovers & /history',
+        items: [
+          'Expanded the Results Grid to fit two compact columns at the default pane width (~2.4× more visible entries at once) while keeping full hashes intact.',
+          'Kept /history change-type filters on a single row by hiding empty Unclassified/Reclassified pills, removed duplicated desktop Bungie version lines already shown in the sidebar, and trimmed empty or inactive controls from Collector, Search History, Filters, Settings, and the mobile What’s New header.',
+        ],
+      },
+    ],
+  },
+  {
     version: '2026.11.27-1',
     date: 'Nov 27, 2026',
     title: 'Site-wide toolbar, scaling & mobile polish',

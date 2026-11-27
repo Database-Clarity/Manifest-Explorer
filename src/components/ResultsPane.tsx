@@ -80,11 +80,16 @@ const LIST_ROW_REM = 3;
 const LIST_ROW_REM_COARSE = 3.375;
 const LIST_ROW_DEEP_REM = 4;
 const LIST_ROW_DEEP_REM_COARSE = 4.375;
-const GRID_ROW_REM = 5;
-const GRID_ROW_REM_COARSE = 5.5;
-const GRID_ROW_DEEP_REM = 6;
-const GRID_ROW_DEEP_REM_COARSE = 6.5;
-const GRID_MIN_CELL_PX = 280;
+// Grid cards pack a 36px icon beside three tight text lines (~53px tall), so a
+// 4.125rem pitch keeps every card crisp while fitting ~25% more rows per screen
+// than the old 5rem pitch. Deep-match rows keep a little extra breathing room.
+const GRID_ROW_REM = 4.125;
+const GRID_ROW_REM_COARSE = 4.625;
+const GRID_ROW_DEEP_REM = 5.25;
+const GRID_ROW_DEEP_REM_COARSE = 5.75;
+// 200px is the true minimum for a 36px icon + 6px gap + ~147px of label, so the
+// default 440px results pane now fits two columns instead of one 80px-tall list.
+const GRID_MIN_CELL_PX = 200;
 const GRID_SIDE_PAD_REM = 0.5;
 const GRID_GUTTER_REM = 0.5;
 const GRID_TOP_PAD_REM = 0.5;
@@ -645,7 +650,7 @@ const GridCell = memo(function GridCell({
         icon={item.icon}
         watermark={item.iconWatermark}
         isEnhanced={item.isEnhanced}
-        size={40}
+        size={36}
       />
       <span className={styles.gridText}>
         <span className={styles.gridName}>{itemLabel(item)}</span>
@@ -687,7 +692,7 @@ const GridCell = memo(function GridCell({
               {item.deepMatch.path}
             </span>
           ) : (
-            <span className={styles.gridHash}>
+            <span className={styles.gridHash} title={String(item.hash)}>
               {dateDisplay ? (
                 <time dateTime={dateDisplay.dateTime} title={dateDisplay.title}>
                   {dateDisplay.label}

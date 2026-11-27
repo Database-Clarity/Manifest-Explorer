@@ -57,6 +57,15 @@ const MONTH_YEAR_FORMATTER = new Intl.DateTimeFormat('en-US', {
   timeZone: 'UTC',
 });
 
+/** Phones start with every release collapsed so the update list is scannable. */
+function prefersCompactHistory(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(max-width: 700px)').matches
+  );
+}
+
 export interface HistoryTabProps {
   table: string;
   hash: number;
@@ -282,7 +291,7 @@ const RevisionCard = memo(function RevisionCard({
             rel="noopener noreferrer"
             aria-label={`Open ${patchNote.label} patch notes on Bungie.net`}
           >
-            <span>Patch notes</span>
+            <span className={styles.historyPatchNotesLabel}>Patch notes</span>
             <ExternalLinkIcon size={12} />
           </a>
         )}
@@ -365,9 +374,11 @@ export const HistoryTab = memo(function HistoryTab({
     setFromVersion(initialFrom === undefined ? '' : String(initialFrom));
     setToVersion(CURRENT_VERSION);
     setExpandedVersion(
-      result.revisions.find((revision) => revision.k === 'm')?.v ??
-        result.revisions[0]?.v ??
-        null,
+      prefersCompactHistory()
+        ? null
+        : result.revisions.find((revision) => revision.k === 'm')?.v ??
+            result.revisions[0]?.v ??
+            null,
     );
   }, [result]);
 
@@ -489,21 +500,26 @@ export const HistoryTab = memo(function HistoryTab({
   const hasRevisions = result.revisions.length > 0;
   const oldestRevision = result.revisions[result.revisions.length - 1];
   const newestRevision = result.revisions[0];
+  const summaryCount = `${result.revisions.length} ${
+    result.revisions.length === 1 ? 'update' : 'updates'
+  }`;
   const summary =
     oldestRevision && newestRevision
-      ? `${result.revisions.length} ${
-          result.revisions.length === 1 ? 'update' : 'updates'
-        } · ${formatDate(oldestRevision.version.date, false)} → ${formatDate(
+      ? `${summaryCount} · ${formatDate(oldestRevision.version.date, false)} → ${formatDate(
           newestRevision.version.date,
           false,
         )}`
       : 'No recorded updates';
+  const compactSummary = oldestRevision && newestRevision ? summaryCount : summary;
 
   return (
     <div className={styles.historyTab} data-inspector-scroll="true">
       <header className={styles.historyHeader}>
         <div className={styles.historyHeaderTop}>
-          <p className={styles.historySummary}>{summary}</p>
+          <p className={styles.historySummary} title={summary}>
+            <span className={styles.historySummaryFull}>{summary}</span>
+            <span className={styles.historySummaryShort}>{compactSummary}</span>
+          </p>
           <ClearSearchInput
             className={styles.historyFilter}
             wrapperClassName={styles.historyFilterWrap}

@@ -36,6 +36,8 @@ import {
   CloseIcon,
   CopyIcon,
   ExternalLinkIcon,
+  MaximizeIcon,
+  MinimizeIcon,
 } from '../../ui/Icons';
 import { ClearSearchInput } from '../../ui/ClearSearchInput';
 import {
@@ -2761,17 +2763,23 @@ export const JsonTree = memo(function JsonTree({
           ) : null}
           <button
             type="button"
-            className={styles.toolBtn}
+            className={`${styles.toolBtn} ${styles.treeExpandBtn}`}
             onClick={() => resetExpansion('expand')}
+            aria-label="Expand all JSON nodes"
+            title="Expand all JSON nodes"
           >
-            Expand
+            <MaximizeIcon size={14} />
+            <span className={styles.toolBtnLabel}>Expand</span>
           </button>
           <button
             type="button"
-            className={styles.toolBtn}
+            className={`${styles.toolBtn} ${styles.treeCollapseBtn}`}
             onClick={() => resetExpansion('collapse')}
+            aria-label="Collapse all JSON nodes"
+            title="Collapse all JSON nodes"
           >
-            Collapse
+            <MinimizeIcon size={14} />
+            <span className={styles.toolBtnLabel}>Collapse</span>
           </button>
         </div>
       )}

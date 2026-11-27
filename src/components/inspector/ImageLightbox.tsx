@@ -955,67 +955,69 @@ export function ImageLightbox({
             </div>
           </div>
 
-          <div className={styles.group}>
-            <span className={styles.groupLabel}>Zoom</span>
-            <div className={styles.zoomGroup} role="group" aria-label="Zoom level">
-              <button
-                type="button"
-                className={`${styles.zoomBtn} ${
-                  zoom === 'fit' ? styles.zoomBtnActive : ''
-                }`}
-                onClick={() => setZoom('fit')}
-                aria-pressed={zoom === 'fit'}
-                title="Fit image to the viewer"
-              >
-                Fit
-              </button>
-              {ZOOM_LEVELS.map((level) => (
+          <div className={styles.toolbarRow}>
+            <div className={styles.group}>
+              <span className={styles.groupLabel}>Zoom</span>
+              <div className={styles.zoomGroup} role="group" aria-label="Zoom level">
                 <button
-                  key={level}
                   type="button"
                   className={`${styles.zoomBtn} ${
-                    zoom === level ? styles.zoomBtnActive : ''
+                    zoom === 'fit' ? styles.zoomBtnActive : ''
                   }`}
-                  onClick={() => setZoom(level)}
-                  aria-pressed={zoom === level}
-                  title={`${level}× zoom`}
+                  onClick={() => setZoom('fit')}
+                  aria-pressed={zoom === 'fit'}
+                  title="Fit image to the viewer"
                 >
-                  {level}×
+                  Fit
                 </button>
-              ))}
+                {ZOOM_LEVELS.map((level) => (
+                  <button
+                    key={level}
+                    type="button"
+                    className={`${styles.zoomBtn} ${
+                      zoom === level ? styles.zoomBtnActive : ''
+                    }`}
+                    onClick={() => setZoom(level)}
+                    aria-pressed={zoom === level}
+                    title={`${level}× zoom`}
+                  >
+                    {level}×
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
 
-          {mode === 'nearest' && (
-            <label className={styles.toggle}>
-              <input
-                type="checkbox"
-                checked={exactDevicePixels}
-                onChange={(event) => setExactDevicePixels(event.target.checked)}
-                title="Exact device pixels (1:1 DPR)"
-                aria-label="Exact device pixels (1:1 DPR)"
-              />
-              <span>1:1 DPR</span>
-            </label>
-          )}
+            {mode === 'nearest' && (
+              <label className={styles.toggle}>
+                <input
+                  type="checkbox"
+                  checked={exactDevicePixels}
+                  onChange={(event) => setExactDevicePixels(event.target.checked)}
+                  title="Exact device pixels (1:1 DPR)"
+                  aria-label="Exact device pixels (1:1 DPR)"
+                />
+                <span>1:1 DPR</span>
+              </label>
+            )}
 
-          <div className={styles.group}>
-            <span className={styles.groupLabel}>Backdrop</span>
-            <div className={styles.segmented} role="group" aria-label="Preview backdrop">
-              {BACKDROP_OPTIONS.map((option) => (
-                <button
-                  key={option.value}
-                  type="button"
-                  className={`${styles.segment} ${
-                    backdrop === option.value ? styles.segmentActive : ''
-                  }`}
-                  onClick={() => setBackdrop(option.value)}
-                  aria-pressed={backdrop === option.value}
-                  title={`${option.label} backdrop`}
-                >
-                  {option.label}
-                </button>
-              ))}
+            <div className={styles.group}>
+              <span className={styles.groupLabel}>Backdrop</span>
+              <div className={styles.segmented} role="group" aria-label="Preview backdrop">
+                {BACKDROP_OPTIONS.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    className={`${styles.segment} ${
+                      backdrop === option.value ? styles.segmentActive : ''
+                    }`}
+                    onClick={() => setBackdrop(option.value)}
+                    aria-pressed={backdrop === option.value}
+                    title={`${option.label} backdrop`}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
         </div>

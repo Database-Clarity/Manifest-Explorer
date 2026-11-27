@@ -2,6 +2,7 @@
 @use '../../styles/variables' as theme;
 
 .viewer {
+  container-type: inline-size;
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
@@ -59,6 +60,10 @@
 .removedCount {
   color: var(--del-text);
   font-weight: 700;
+}
+
+.summaryLabel {
+  white-space: nowrap;
 }
 
 .toolbarActions {
@@ -153,6 +158,72 @@
 
 .toolbarBtn {
   font-family: inherit;
+}
+
+.iconToolbarBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+}
+
+.btnLabel {
+  white-space: nowrap;
+}
+
+@container (max-width: 42rem) {
+  .toolbar {
+    flex-wrap: nowrap;
+    gap: 0.25rem;
+    padding-inline: 0.375rem;
+  }
+
+  .toolbarInfo {
+    gap: 0.25rem;
+  }
+
+  .toolbarLeading button {
+    padding-inline: 0.125rem;
+    font-size: 0.6875rem;
+  }
+
+  .summary {
+    font-size: 0.6875rem;
+  }
+
+  .summaryLabel {
+    display: none;
+  }
+
+  .toolbarActions {
+    flex-wrap: nowrap;
+    gap: 0.125rem;
+  }
+
+  .layoutButton,
+  .layoutButtonActive {
+    padding-inline: 0.3125rem;
+  }
+
+  .wrapToggle {
+    gap: 0.1875rem;
+    padding-inline: 0.25rem;
+    font-size: 0.6875rem;
+  }
+
+  .toolbarBtn {
+    padding-inline: 0.25rem;
+    font-size: 0.6875rem;
+  }
+
+  .iconToolbarBtn {
+    width: 1.75rem;
+    padding: 0;
+  }
+
+  .btnLabel {
+    display: none;
+  }
 }
 
 .diffViewport,
@@ -549,6 +620,14 @@
     min-height: var(--tap);
   }
 
+  .iconToolbarBtn {
+    // Coarse pointers need a full touch target, but a wide touchscreen laptop
+    // keeps the text label visible: grow to at least --tap instead of forcing
+    // a square, which would crush the label into the icon.
+    min-width: var(--tap);
+    min-height: var(--tap);
+  }
+
   .collapsedRegion button,
   .renderMore button {
     min-height: var(--tap);
@@ -604,6 +683,18 @@
   }
 
   .layoutToggle {
+    display: none;
+  }
+
+  // At phone widths the label is hidden, so the button can become a square
+  // touch target. This matches the narrow-container rule above; wide coarse
+  // pointers never reach it and therefore keep their visible label.
+  .iconToolbarBtn {
+    width: var(--tap);
+    padding: 0;
+  }
+
+  .btnLabel {
     display: none;
   }
 

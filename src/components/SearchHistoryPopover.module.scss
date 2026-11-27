@@ -106,7 +106,8 @@
 
 .sortTrack {
   @include ctl.segmented-track;
-  flex: 1 1 12rem;
+  // Stay compact to the three sort labels; the filter field takes the rest.
+  flex: 0 0 auto;
   min-width: 0;
 }
 

@@ -154,6 +154,9 @@ function SearchHistoryPopoverBody({
     0,
   );
   const showFilter = entries.length > 6 || filter.length > 0;
+  // With only a couple of entries there is nothing meaningful to sort, so the
+  // whole toolbar stays out of the panel until a filter is applied.
+  const showToolbar = entries.length > 2 || filter.length > 0;
 
   useEffect(() => {
     if (renamingId === null) {
@@ -431,36 +434,38 @@ function SearchHistoryPopoverBody({
           </button>
         </header>
 
-        <div className={styles.toolbar}>
-          <div className={styles.sortTrack} role="group" aria-label="Sort searches">
-            {SORT_OPTIONS.map(([mode, label]) => (
-              <button
-                key={mode}
-                type="button"
-                className={cx(
-                  styles.sortItem,
-                  sort === mode && styles.sortItemActive,
-                )}
-                aria-pressed={sort === mode}
-                onClick={() => setSort(mode)}
-              >
-                {label}
-              </button>
-            ))}
+        {showToolbar ? (
+          <div className={styles.toolbar}>
+            <div className={styles.sortTrack} role="group" aria-label="Sort searches">
+              {SORT_OPTIONS.map(([mode, label]) => (
+                <button
+                  key={mode}
+                  type="button"
+                  className={cx(
+                    styles.sortItem,
+                    sort === mode && styles.sortItemActive,
+                  )}
+                  aria-pressed={sort === mode}
+                  onClick={() => setSort(mode)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {showFilter ? (
+              <ClearSearchInput
+                wrapperClassName={styles.filterWrap}
+                className={styles.filterInput}
+                value={filter}
+                onValueChange={setFilter}
+                placeholder="Filter history…"
+                aria-label="Filter search history"
+                clearLabel="Clear history filter"
+                autoComplete="off"
+              />
+            ) : null}
           </div>
-          {showFilter ? (
-            <ClearSearchInput
-              wrapperClassName={styles.filterWrap}
-              className={styles.filterInput}
-              value={filter}
-              onValueChange={setFilter}
-              placeholder="Filter history…"
-              aria-label="Filter search history"
-              clearLabel="Clear history filter"
-              autoComplete="off"
-            />
-          ) : null}
-        </div>
+        ) : null}
 
         <div className={styles.scroll}>
           {entries.length === 0 ? (

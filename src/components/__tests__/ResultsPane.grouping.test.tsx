@@ -391,7 +391,7 @@ describe('ResultsPane table grouping', () => {
     );
 
     setViewport(scroller, 1920, 500);
-    expect(firstGridRow()?.style.gridTemplateColumns).toBe('repeat(6, minmax(0, 1fr))');
+    expect(firstGridRow()?.style.gridTemplateColumns).toBe('repeat(9, minmax(0, 1fr))');
 
     act(() => {
       useExplorerStore.setState({
@@ -418,7 +418,8 @@ describe('ResultsPane table grouping', () => {
     const headerTop = Number.parseFloat(activityHeader.style.top);
 
     act(() => useExplorerStore.getState().setSelectedResultIndex(3));
-    expect(scroller.scrollTop).toBe(headerTop + 32 + 8 + 80 - 100);
+    // 32px group header + 8px grid gap + one 66px (4.125rem) grid row.
+    expect(scroller.scrollTop).toBe(headerTop + 32 + 8 + 66 - 100);
     host.remove();
   });
 

@@ -2,6 +2,7 @@
 @use '../../styles/variables' as theme;
 
 .wrapper {
+  container-type: inline-size;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -222,6 +223,10 @@
 
 .toolBtn {
   @include ctl.button;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
   box-sizing: border-box;
   min-height: 1.75rem;
   font-size: 0.75rem;
@@ -229,6 +234,22 @@
 
   &:hover {
     text-decoration: none;
+  }
+}
+
+.toolBtnLabel {
+  white-space: nowrap;
+}
+
+@container (max-width: 34rem) {
+  .treeExpandBtn,
+  .treeCollapseBtn {
+    width: 1.75rem;
+    padding: 0;
+  }
+
+  .toolBtnLabel {
+    display: none;
   }
 }
 
@@ -877,6 +898,14 @@
     padding: 0 0.5rem;
   }
 
+  .treeExpandBtn,
+  .treeCollapseBtn {
+    // Keep the touch target large without forcing a square that would crush
+    // the visible Expand/Collapse labels on wide coarse-pointer screens.
+    min-width: var(--tap);
+    min-height: var(--tap);
+  }
+
   .filterContextLimit {
     padding-inline-start: 0.875rem;
   }
@@ -940,7 +969,7 @@
 
   .toolbar:not(.diffToolbar) {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-columns: minmax(0, 1fr) auto auto auto;
     align-items: center;
     gap: 0.375rem;
   }
@@ -949,15 +978,41 @@
     grid-column: 1 / -1;
   }
 
-  // Give search its own row on narrow phones only.
   .filterWrap {
-    grid-column: 1 / -1;
-    width: 100%;
+    grid-column: 1;
+    grid-row: 1;
+    width: auto;
     min-width: 0;
+  }
+
+  .searchModes {
+    grid-column: 2;
+    grid-row: 1;
   }
 
   .findControls {
     grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .treeExpandBtn {
+    grid-column: 3;
+    grid-row: 1;
+    width: var(--tap);
+    padding: 0;
+  }
+
+  .treeCollapseBtn {
+    grid-column: 4;
+    grid-row: 1;
+    width: var(--tap);
+    padding: 0;
+  }
+
+  // Phone-width layout hides the labels, matching the square touch targets
+  // above; wide coarse pointers never reach this query and stay labeled.
+  .toolBtnLabel {
+    display: none;
   }
 
   .toolBtn {

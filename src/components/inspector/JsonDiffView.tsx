@@ -9,6 +9,8 @@ import {
   ArrowUpIcon,
   CopyIcon,
   DownloadIcon,
+  MaximizeIcon,
+  MinimizeIcon,
 } from '../../ui/Icons';
 import styles from './JsonDiffView.module.scss';
 
@@ -689,7 +691,9 @@ export const JsonDiffView = memo(function JsonDiffView({
           </label>
           <button
             type="button"
-            className={styles.toolbarBtn}
+            className={`${styles.toolbarBtn} ${styles.iconToolbarBtn}`}
+            aria-label={expandAll ? 'Collapse unchanged' : 'Expand all'}
+            title={expandAll ? 'Collapse unchanged' : 'Expand all'}
             onClick={() => {
               const nextExpandAll = !expandAll;
               setExpandedLines(new Set());
@@ -700,7 +704,10 @@ export const JsonDiffView = memo(function JsonDiffView({
               });
             }}
           >
-            {expandAll ? 'Collapse unchanged' : 'Expand all'}
+            {expandAll ? <MinimizeIcon size={14} /> : <MaximizeIcon size={14} />}
+            <span className={styles.btnLabel}>
+              {expandAll ? 'Collapse unchanged' : 'Expand all'}
+            </span>
           </button>
           {onCopy && (
             <button

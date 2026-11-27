@@ -176,6 +176,13 @@
     flex-wrap: nowrap;
     gap: 0.25rem;
     padding-inline: 0.375rem;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+
+    &::-webkit-scrollbar {
+      display: none;
+    }
   }
 
   .toolbarInfo {
@@ -198,6 +205,10 @@
   .toolbarActions {
     flex-wrap: nowrap;
     gap: 0.125rem;
+  }
+
+  .toolbarActions > * {
+    flex-shrink: 0;
   }
 
   .layoutButton,
@@ -678,8 +689,22 @@
 }
 
 @include theme.mobile {
+  .toolbar {
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+
+    &::-webkit-scrollbar {
+      display: none;
+    }
+  }
+
   .toolbarActions {
     justify-content: flex-start;
+  }
+
+  .toolbarActions > * {
+    flex-shrink: 0;
   }
 
   .layoutToggle {

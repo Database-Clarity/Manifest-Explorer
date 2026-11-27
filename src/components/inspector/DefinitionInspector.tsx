@@ -1077,6 +1077,20 @@ function DefinitionInspectorImpl({
             <>
               <button
                 type="button"
+                className={styles.sessionBucketBtn}
+                aria-haspopup="dialog"
+                aria-expanded={diffBucketPopoverOpen}
+                title="Manage or clear Diff bucket"
+                onClick={(event) => {
+                  diffBucketTriggerRef.current = event.currentTarget;
+                  setDiffBucketPopoverOpen((open) => !open);
+                }}
+              >
+                <DiffIcon size={13} />
+                <span>Bucket ({bucketItems.length})</span>
+              </button>
+              <button
+                type="button"
                 className={`${styles.iconBtn} ${styles.sessionAction} ${styles.desktopCloseBtn}`}
                 onClick={toggleInspectorMaximized}
                 aria-label={inspectorMaximized ? 'Restore split view' : 'Maximize inspector'}

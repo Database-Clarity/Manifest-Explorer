@@ -503,7 +503,10 @@ const ReleaseOverview = memo(function ReleaseOverview({
 
       <div className={styles.overviewControls}>
         <div className={styles.kindFilters} role="group" aria-label="Filter changes by kind">
-          {CHANGE_KINDS.map(({ value, label }) => (
+          {CHANGE_KINDS.filter(({ value }) => {
+            if (value !== 'u' && value !== 'c') return true;
+            return kindFilter === value || allKindCounts[value] > 0;
+          }).map(({ value, label }) => (
             <button
               type="button"
               key={value}
